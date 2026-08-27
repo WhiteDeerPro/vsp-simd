@@ -1,0 +1,161 @@
+// Current RTL visualization plus explicitly marked gaps.
+digraph wide_narrow_dataflow {
+  graph [
+    rankdir=LR,
+    bgcolor="#ffffff",
+    fontname="DejaVu Sans",
+    fontsize=18,
+    label="Implemented VRF / ARF data transformations and explicit gaps",
+    labelloc=t,
+    nodesep=0.45,
+    ranksep=0.8,
+    pad=0.2,
+    splines=polyline
+  ];
+
+  node [
+    shape=box,
+    style="rounded,filled",
+    fillcolor="#f7f9fc",
+    color="#51606f",
+    fontname="DejaVu Sans",
+    fontsize=11,
+    margin="0.12,0.08"
+  ];
+  edge [
+    color="#2f6f9f",
+    fontcolor="#34495e",
+    fontname="DejaVu Sans",
+    fontsize=9,
+    arrowsize=0.7
+  ];
+
+  vrf_a [label="VRF-A\nper-lane narrow values", fillcolor="#eaf5ff"];
+  vrf_b [label="VRF-B\nper-lane operand / shift", fillcolor="#eaf5ff"];
+  scalar_imm [
+    label="Broadcast scalar immediate\nnormal: replaces B\nWADD/WSUB: shared align",
+    fillcolor="#edf9ef"
+  ];
+  b_mux [
+    shape=diamond,
+    label="B source",
+    fillcolor="#edf9ef"
+  ];
+  arf_src [label="ARF source\nper-lane wide values", fillcolor="#eaf5ff"];
+
+  widen [
+    label="WIDEN_U/S\nextend(A) << B\nVRF -> new ARF value",
+    fillcolor="#e8f7ec",
+    color="#4f8a5b"
+  ];
+  mul [
+    label="MUL_U/S\nA * B\nVRF x VRF/imm -> ARF",
+    fillcolor="#e8f7ec",
+    color="#4f8a5b"
+  ];
+  mac [
+    label="MAC_U/S\nARF + A * B\nB may be coefficient 2^s",
+    fillcolor="#e8f7ec",
+    color="#4f8a5b"
+  ];
+  wadd [
+    label="WADD_U/S\nARF + aligned(A) + aligned(B)\n3:2 compressor, one ARF result",
+    fillcolor="#e8f7ec",
+    color="#4f8a5b"
+  ];
+  wsub [
+    label="WSUB_U/S\nARF + aligned(A) - aligned(B)\n3:2 compressor, one ARF result",
+    fillcolor="#e8f7ec",
+    color="#4f8a5b"
+  ];
+  wide_scale [
+    label="RSHIFT_RND_U/S\nrounded ARF right shift\nwide result may return to ARF",
+    fillcolor="#e8f7ec",
+    color="#4f8a5b"
+  ];
+  nslice [
+    label="NSLICE\n(ARF >> B)[ELEM_W-1:0]\nno rounding / saturation",
+    fillcolor="#e8f7ec",
+    color="#4f8a5b"
+  ];
+  nclip [
+    label="NCLIP_U/S\nround + right shift + saturation",
+    fillcolor="#e8f7ec",
+    color="#4f8a5b"
+  ];
+
+  arf_dst [
+    label="ARF destination\nmasked ACC_W write",
+    fillcolor="#f4effa",
+    color="#7c5a8b"
+  ];
+  vrf_dst [
+    label="VRF destination\nmasked ELEM_W write",
+    fillcolor="#f4effa",
+    color="#7c5a8b"
+  ];
+
+  vrf_b -> b_mux [label="register form"];
+  scalar_imm -> b_mux [label="immediate form"];
+
+  vrf_a -> widen [label="A"];
+  b_mux -> widen [label="shift B"];
+  widen -> arf_dst;
+
+  vrf_a -> mul [label="A"];
+  b_mux -> mul [label="B"];
+  mul -> arf_dst;
+
+  vrf_a -> mac [label="A"];
+  b_mux -> mac [label="B"];
+  arf_src -> mac [label="acc"];
+  mac -> arf_dst;
+
+  vrf_a -> wadd [label="A"];
+  vrf_b -> wadd [label="B data"];
+  scalar_imm -> wadd [label="shared align"];
+  arf_src -> wadd [label="acc"];
+  wadd -> arf_dst;
+
+  vrf_a -> wsub [label="A"];
+  vrf_b -> wsub [label="B data"];
+  scalar_imm -> wsub [label="shared align"];
+  arf_src -> wsub [label="acc"];
+  wsub -> arf_dst;
+
+  arf_src -> wide_scale;
+  b_mux -> wide_scale [label="shift B"];
+  wide_scale -> arf_dst;
+
+  arf_src -> nslice;
+  b_mux -> nslice [label="shift B"];
+  nslice -> vrf_dst;
+
+  arf_src -> nclip;
+  b_mux -> nclip [label="shift B"];
+  nclip -> vrf_dst;
+
+  zero_sequence [
+    shape=note,
+    label="Implemented ARF clear sequence\nXOR VRFz, VRFx, VRFx\nWIDEN ARFdst, VRFz, shift=0\n(two ops unless a zero VRF already exists)",
+    fillcolor="#fff8df",
+    color="#b18a20"
+  ];
+  zero_sequence -> arf_dst [style=dashed, color="#b18a20"];
+
+  arf_arf_gap [
+    shape=note,
+    label="Not implemented\nARF + ARF / wide route\ncurrent ARF has one read port",
+    fillcolor="#fff0f0",
+    color="#b55b5b"
+  ];
+  seti_gap [
+    shape=note,
+    label="Deferred specialization\nset/clear ARF from value+shift immediates\nwould require immediate-A or a dedicated operation",
+    fillcolor="#fff0f0",
+    color="#b55b5b"
+  ];
+
+  arf_arf_gap -> arf_dst [style=dotted, color="#b55b5b", arrowhead=none];
+  seti_gap -> arf_dst [style=dotted, color="#b55b5b", arrowhead=none];
+}

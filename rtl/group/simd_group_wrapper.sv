@@ -1,0 +1,410 @@
+module simd_group_wrapper #(
+  parameter int LANES         = 4,
+  parameter int ELEM_W        = 8,
+  parameter int ACC_W         = 32,
+  parameter int VREGS         = 16,
+  parameter int AREGS         = 8,
+  parameter int MREGS         = 4,
+  parameter int CONTEXT_COUNT = 2,
+  parameter int TAG_W         = 8,
+  parameter int VRF_ADDR_W = (VREGS <= 2) ? 1 : $clog2(VREGS),
+  parameter int ARF_ADDR_W = (AREGS <= 2) ? 1 : $clog2(AREGS),
+  parameter int MRF_ADDR_W = (MREGS <= 2) ? 1 : $clog2(MREGS),
+  parameter int CONTEXT_W = (CONTEXT_COUNT <= 2) ? 1 :
+                            $clog2(CONTEXT_COUNT),
+  parameter int INDEX_W  = (LANES <= 2) ? 1 : $clog2(LANES),
+  parameter int OFFSET_W = $clog2(LANES + 1),
+  parameter int RF_ADDR_W =
+      (VRF_ADDR_W >= ARF_ADDR_W) ?
+          ((VRF_ADDR_W >= MRF_ADDR_W) ? VRF_ADDR_W : MRF_ADDR_W) :
+          ((ARF_ADDR_W >= MRF_ADDR_W) ? ARF_ADDR_W : MRF_ADDR_W)
+) (
+  input  logic clk_i,
+  input  logic rst_ni,
+
+  // Canonical, already-decoded SIMD execution transaction.  This interface
+  // deliberately stays on the decoded side of any future compact-uword
+  // decoder.  All fields must remain stable until exec_valid_i &&
+  // exec_ready_o.
+  input  logic                             exec_valid_i,
+  output logic                             exec_ready_o,
+  input  logic [CONTEXT_W-1:0]             exec_context_i,
+  input  logic [TAG_W-1:0]                 exec_tag_i,
+  input  logic                             exec_export_narrow_i,
+  input  logic [simd_pkg::SIMD_OP_W-1:0]  exec_op_i,
+  input  logic [simd_pkg::ELEM_MODE_W-1:0] exec_elem_mode_i,
+  input  logic [VRF_ADDR_W-1:0]            exec_src_a_addr_i,
+  input  logic [VRF_ADDR_W-1:0]            exec_src_b_addr_i,
+  input  logic                             exec_use_imm_i,
+  input  logic [(4*ELEM_W)-1:0]            exec_imm_i,
+  input  logic [VRF_ADDR_W-1:0]            exec_dst_vrf_addr_i,
+  input  logic [ARF_ADDR_W-1:0]            exec_src_arf_addr_i,
+  input  logic [ARF_ADDR_W-1:0]            exec_dst_arf_addr_i,
+  input  logic                             exec_mask_enable_i,
+  input  logic [MRF_ADDR_W-1:0]            exec_mask_addr_i,
+  input  logic [MRF_ADDR_W-1:0]            exec_select_mask_addr_i,
+  input  logic [MRF_ADDR_W-1:0]            exec_dst_mrf_addr_i,
+  input  logic                             exec_write_vrf_i,
+  input  logic                             exec_write_arf_i,
+  input  logic                             exec_write_mrf_i,
+  input  logic                             exec_reduce_enable_i,
+  input  logic [simd_pkg::REDUCE_OP_W-1:0] exec_reduce_op_i,
+  input  logic                             exec_route_enable_i,
+  input  logic [simd_pkg::ROUTE_OP_W-1:0]  exec_route_op_i,
+  input  logic [(LANES*INDEX_W)-1:0]       exec_route_index_i,
+  input  logic [INDEX_W-1:0]               exec_route_broadcast_index_i,
+  input  logic [OFFSET_W-1:0]              exec_route_slide_amount_i,
+  input  logic [(LANES*ELEM_W)-1:0]        exec_route_lower_i,
+  input  logic [(LANES*ELEM_W)-1:0]        exec_route_upper_i,
+
+  // One atomic register-file row write child request.  A future MEMORY actor
+  // supplies both routing metadata and state_write_data_i on this endpoint;
+  // program-level RF_FILL is a parent action that may expand into several of
+  // these beats.  This request is not a SIMD arithmetic opcode or an encoded
+  // ISA field, and its data does not live in the instruction queue.
+  input  logic                              state_write_valid_i,
+  output logic                              state_write_ready_o,
+  input  logic [CONTEXT_W-1:0]              state_write_context_i,
+  input  logic [TAG_W-1:0]                  state_write_tag_i,
+  input  logic [simd_pkg::SIMD_RF_FILE_W-1:0] state_write_file_i,
+  input  logic [RF_ADDR_W-1:0]              state_write_addr_i,
+  input  logic [LANES-1:0]                  state_write_mask_i,
+  input  logic [(LANES*ACC_W)-1:0]          state_write_data_i,
+
+  // Every accepted group child request produces exactly one child
+  // completion.  This is not a program-level RF_FILL completion.  The
+  // optional EXEC result travels independently so normal completions do not
+  // carry the widest datapath payload.
+  output logic                              cpl_valid_o,
+  input  logic                              cpl_ready_i,
+  output logic [CONTEXT_W-1:0]              cpl_context_o,
+  output logic [TAG_W-1:0]                  cpl_tag_o,
+  output logic [simd_pkg::SIMD_GROUP_REQ_KIND_W-1:0] cpl_kind_o,
+  output logic                              cpl_illegal_o,
+  output logic                              cpl_has_result_o,
+
+  output logic                              rsp_valid_o,
+  input  logic                              rsp_ready_i,
+  output logic [CONTEXT_W-1:0]              rsp_context_o,
+  output logic [TAG_W-1:0]                  rsp_tag_o,
+  output logic                              rsp_illegal_o,
+  output logic                              rsp_has_narrow_o,
+  output logic [(LANES*ELEM_W)-1:0]         rsp_narrow_o,
+  output logic [LANES-1:0]                  rsp_narrow_mask_o,
+  output logic                              rsp_has_reduce_o,
+  output logic [ACC_W-1:0]                  rsp_reduce_value_o,
+  output logic [INDEX_W-1:0]                rsp_reduce_index_o,
+  output logic                              rsp_has_count_o,
+  output logic [OFFSET_W-1:0]               rsp_count_o
+);
+  import simd_pkg::*;
+
+  logic prefer_state_write_q;
+
+  logic cpl_valid_q;
+  logic [CONTEXT_W-1:0] cpl_context_q;
+  logic [TAG_W-1:0] cpl_tag_q;
+  logic [SIMD_GROUP_REQ_KIND_W-1:0] cpl_kind_q;
+  logic cpl_illegal_q;
+  logic cpl_has_result_q;
+
+  logic rsp_valid_q;
+  logic [CONTEXT_W-1:0] rsp_context_q;
+  logic [TAG_W-1:0] rsp_tag_q;
+  logic rsp_illegal_q;
+  logic rsp_has_narrow_q;
+  logic [(LANES*ELEM_W)-1:0] rsp_narrow_q;
+  logic [LANES-1:0] rsp_narrow_mask_q;
+  logic rsp_has_reduce_q;
+  logic [ACC_W-1:0] rsp_reduce_value_q;
+  logic [INDEX_W-1:0] rsp_reduce_index_q;
+  logic rsp_has_count_q;
+  logic [OFFSET_W-1:0] rsp_count_q;
+
+  logic cpl_can_push;
+  logic rsp_can_push;
+  logic exec_rsp_required;
+  logic exec_eligible;
+  logic state_write_eligible;
+  logic exec_fire;
+  logic state_write_fire;
+  logic state_write_file_valid;
+  logic state_write_addr_valid;
+  logic state_write_illegal;
+  logic exec_endpoint_illegal;
+  logic exec_request_illegal;
+  logic exec_issue;
+
+  logic cfg_vrf_write;
+  logic cfg_arf_write;
+  logic cfg_mrf_write;
+  logic datapath_illegal;
+  logic [(LANES*ELEM_W)-1:0] datapath_narrow;
+  // F1 exports narrow/scalar results only.  Keep the existing datapath outputs
+  // connected so later wide-state and boundary endpoints can be added without
+  // changing the leaf module contract.
+  /* verilator lint_off UNUSED */
+  logic [(LANES*ACC_W)-1:0] datapath_wide_unused;
+  logic [LANES-1:0] datapath_boundary_mask_unused;
+  /* verilator lint_on UNUSED */
+  logic [LANES-1:0] datapath_predicate;
+  logic [LANES-1:0] datapath_exec_mask;
+  logic [ACC_W-1:0] datapath_reduce_value;
+  logic [INDEX_W-1:0] datapath_reduce_index;
+  logic datapath_reduce_valid;
+  logic [OFFSET_W-1:0] datapath_compact_count;
+  logic datapath_compact_valid;
+  logic compact_op;
+  logic mask_logic_op;
+  logic [LANES-1:0] exec_narrow_mask;
+
+  assign cpl_can_push = !cpl_valid_q || cpl_ready_i;
+  assign rsp_can_push = !rsp_valid_q || rsp_ready_i;
+  assign compact_op = (exec_op_i == SIMD_OP_COMPRESS) ||
+                      (exec_op_i == SIMD_OP_EXPAND);
+  assign mask_logic_op = (exec_op_i == SIMD_OP_MAND) ||
+                         (exec_op_i == SIMD_OP_MOR) ||
+                         (exec_op_i == SIMD_OP_MXOR) ||
+                         (exec_op_i == SIMD_OP_MNOT);
+  assign exec_rsp_required = simd_exec_requires_result(
+      exec_op_i, exec_export_narrow_i, exec_reduce_enable_i);
+  // Export is a narrow-result consumer, so it follows the same operation
+  // capability as VRF writeback.  Rejecting it at the endpoint also prevents
+  // an otherwise legal wide write from committing as part of a malformed
+  // request.  Context range checks provide a final guard even when an outer
+  // dispatcher is expected to validate canonical traffic.
+  assign exec_endpoint_illegal =
+      (int'(exec_context_i) >= CONTEXT_COUNT) ||
+      (exec_export_narrow_i && !simd_op_can_write_vrf(exec_op_i));
+  assign exec_eligible = rst_ni && cpl_can_push &&
+                         (!exec_rsp_required || rsp_can_push);
+  assign state_write_eligible = rst_ni && cpl_can_push;
+
+  always_comb begin
+    exec_ready_o = 1'b0;
+    state_write_ready_o = 1'b0;
+
+    if (exec_valid_i && state_write_valid_i) begin
+      if (prefer_state_write_q) begin
+        if (state_write_eligible) state_write_ready_o = 1'b1;
+        else if (exec_eligible) exec_ready_o = 1'b1;
+      end else begin
+        if (exec_eligible) exec_ready_o = 1'b1;
+        else if (state_write_eligible) state_write_ready_o = 1'b1;
+      end
+    end else if (exec_valid_i) begin
+      exec_ready_o = exec_eligible;
+    end else if (state_write_valid_i) begin
+      state_write_ready_o = state_write_eligible;
+    end else begin
+      // Advertise capacity while idle.  EXEC may still be withdrawn later if
+      // it requests a result and the result buffer is full.
+      exec_ready_o = exec_eligible;
+      state_write_ready_o = state_write_eligible;
+    end
+  end
+
+  assign exec_fire = exec_valid_i && exec_ready_o;
+  assign exec_issue = exec_fire && !exec_endpoint_illegal;
+  assign state_write_fire = state_write_valid_i && state_write_ready_o;
+
+  always_comb begin
+    state_write_file_valid = 1'b1;
+    state_write_addr_valid = 1'b0;
+    unique case (state_write_file_i)
+      SIMD_RF_VRF: state_write_addr_valid = int'(state_write_addr_i) < VREGS;
+      SIMD_RF_ARF: state_write_addr_valid = int'(state_write_addr_i) < AREGS;
+      SIMD_RF_MRF: state_write_addr_valid = int'(state_write_addr_i) < MREGS;
+      default: begin
+        state_write_file_valid = 1'b0;
+        state_write_addr_valid = 1'b0;
+      end
+    endcase
+  end
+  assign state_write_illegal =
+      (int'(state_write_context_i) >= CONTEXT_COUNT) ||
+      !state_write_file_valid || !state_write_addr_valid;
+  assign exec_request_illegal = exec_endpoint_illegal || datapath_illegal;
+
+  assign cfg_vrf_write = state_write_fire && !state_write_illegal &&
+                          (state_write_file_i == SIMD_RF_VRF);
+  assign cfg_arf_write = state_write_fire && !state_write_illegal &&
+                          (state_write_file_i == SIMD_RF_ARF);
+  assign cfg_mrf_write = state_write_fire && !state_write_illegal &&
+                          (state_write_file_i == SIMD_RF_MRF);
+
+  always_comb begin
+    if (mask_logic_op) exec_narrow_mask = {LANES{1'b1}};
+    else if (compact_op) exec_narrow_mask = datapath_predicate;
+    else exec_narrow_mask = datapath_exec_mask;
+  end
+
+  simd_datapath #(
+    .LANES(LANES),
+    .ELEM_W(ELEM_W),
+    .ACC_W(ACC_W),
+    .VREGS(VREGS),
+    .AREGS(AREGS),
+    .MREGS(MREGS),
+    .VRF_ADDR_W(VRF_ADDR_W),
+    .ARF_ADDR_W(ARF_ADDR_W),
+    .MRF_ADDR_W(MRF_ADDR_W),
+    .INDEX_W(INDEX_W),
+    .OFFSET_W(OFFSET_W)
+  ) u_datapath (
+    .clk_i(clk_i),
+    .issue_i(exec_issue),
+    .op_i(exec_op_i),
+    .elem_mode_i(exec_elem_mode_i),
+    .src_a_addr_i(exec_src_a_addr_i),
+    .src_b_addr_i(exec_src_b_addr_i),
+    .use_imm_i(exec_use_imm_i),
+    .imm_i(exec_imm_i),
+    .dst_vrf_addr_i(exec_dst_vrf_addr_i),
+    .src_arf_addr_i(exec_src_arf_addr_i),
+    .dst_arf_addr_i(exec_dst_arf_addr_i),
+    .mask_enable_i(exec_mask_enable_i),
+    .exec_mask_addr_i(exec_mask_addr_i),
+    .select_mask_addr_i(exec_select_mask_addr_i),
+    .dst_mrf_addr_i(exec_dst_mrf_addr_i),
+    .write_vrf_i(exec_write_vrf_i),
+    .write_arf_i(exec_write_arf_i),
+    .write_mrf_i(exec_write_mrf_i),
+    .reduce_enable_i(exec_reduce_enable_i),
+    .reduce_op_i(exec_reduce_op_i),
+    .route_enable_i(exec_route_enable_i),
+    .route_op_i(exec_route_op_i),
+    .route_index_i(exec_route_index_i),
+    .route_broadcast_index_i(exec_route_broadcast_index_i),
+    .route_slide_amount_i(exec_route_slide_amount_i),
+    .route_lower_i(exec_route_lower_i),
+    .route_upper_i(exec_route_upper_i),
+    .cfg_vrf_write_i(cfg_vrf_write),
+    .cfg_vrf_addr_i(state_write_addr_i[VRF_ADDR_W-1:0]),
+    .cfg_vrf_mask_i(state_write_mask_i),
+    .cfg_vrf_data_i(state_write_data_i[0 +: (LANES*ELEM_W)]),
+    .cfg_arf_write_i(cfg_arf_write),
+    .cfg_arf_addr_i(state_write_addr_i[ARF_ADDR_W-1:0]),
+    .cfg_arf_mask_i(state_write_mask_i),
+    .cfg_arf_data_i(state_write_data_i),
+    .cfg_mrf_write_i(cfg_mrf_write),
+    .cfg_mrf_addr_i(state_write_addr_i[MRF_ADDR_W-1:0]),
+    .cfg_mrf_mask_i(state_write_mask_i),
+    .cfg_mrf_data_i(state_write_data_i[0 +: LANES]),
+    .narrow_result_o(datapath_narrow),
+    .wide_result_o(datapath_wide_unused),
+    .predicate_result_o(datapath_predicate),
+    .exec_mask_o(datapath_exec_mask),
+    .reduce_value_o(datapath_reduce_value),
+    .reduce_index_o(datapath_reduce_index),
+    .reduce_valid_o(datapath_reduce_valid),
+    .compact_count_o(datapath_compact_count),
+    .compact_valid_o(datapath_compact_valid),
+    .route_boundary_mask_o(datapath_boundary_mask_unused),
+    .illegal_o(datapath_illegal)
+  );
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      prefer_state_write_q <= 1'b0;
+      cpl_valid_q <= 1'b0;
+      cpl_context_q <= '0;
+      cpl_tag_q <= '0;
+      cpl_kind_q <= SIMD_GROUP_REQ_EXEC;
+      cpl_illegal_q <= 1'b0;
+      cpl_has_result_q <= 1'b0;
+      rsp_valid_q <= 1'b0;
+      rsp_context_q <= '0;
+      rsp_tag_q <= '0;
+      rsp_illegal_q <= 1'b0;
+      rsp_has_narrow_q <= 1'b0;
+      rsp_narrow_q <= '0;
+      rsp_narrow_mask_q <= '0;
+      rsp_has_reduce_q <= 1'b0;
+      rsp_reduce_value_q <= '0;
+      rsp_reduce_index_q <= '0;
+      rsp_has_count_q <= 1'b0;
+      rsp_count_q <= '0;
+    end else begin
+      if (cpl_ready_i) cpl_valid_q <= 1'b0;
+      if (rsp_ready_i) rsp_valid_q <= 1'b0;
+
+      if (exec_fire) begin
+        prefer_state_write_q <= 1'b1;
+        cpl_valid_q <= 1'b1;
+        cpl_context_q <= exec_context_i;
+        cpl_tag_q <= exec_tag_i;
+        cpl_kind_q <= SIMD_GROUP_REQ_EXEC;
+        cpl_illegal_q <= exec_request_illegal;
+        cpl_has_result_q <= exec_rsp_required;
+
+        if (exec_rsp_required) begin
+          rsp_valid_q <= 1'b1;
+          rsp_context_q <= exec_context_i;
+          rsp_tag_q <= exec_tag_i;
+          rsp_illegal_q <= exec_request_illegal;
+          rsp_has_narrow_q <= exec_export_narrow_i &&
+                              !exec_request_illegal;
+          rsp_narrow_q <= (exec_export_narrow_i && !exec_request_illegal)
+                              ? datapath_narrow : '0;
+          rsp_narrow_mask_q <= (exec_export_narrow_i &&
+                                !exec_request_illegal)
+                                   ? exec_narrow_mask : '0;
+          rsp_has_reduce_q <= exec_reduce_enable_i &&
+                              datapath_reduce_valid &&
+                              !exec_request_illegal;
+          rsp_reduce_value_q <= (exec_reduce_enable_i &&
+                                 datapath_reduce_valid &&
+                                 !exec_request_illegal)
+                                    ? datapath_reduce_value : '0;
+          rsp_reduce_index_q <= (exec_reduce_enable_i &&
+                                 datapath_reduce_valid &&
+                                 !exec_request_illegal)
+                                    ? datapath_reduce_index : '0;
+          rsp_has_count_q <= datapath_compact_valid &&
+                             !exec_request_illegal;
+          rsp_count_q <= (datapath_compact_valid && !exec_request_illegal)
+                             ? datapath_compact_count : '0;
+        end
+      end else if (state_write_fire) begin
+        prefer_state_write_q <= 1'b0;
+        cpl_valid_q <= 1'b1;
+        cpl_context_q <= state_write_context_i;
+        cpl_tag_q <= state_write_tag_i;
+        cpl_kind_q <= SIMD_GROUP_REQ_STATE_WRITE;
+        cpl_illegal_q <= state_write_illegal;
+        cpl_has_result_q <= 1'b0;
+      end
+    end
+  end
+
+  assign cpl_valid_o = cpl_valid_q;
+  assign cpl_context_o = cpl_context_q;
+  assign cpl_tag_o = cpl_tag_q;
+  assign cpl_kind_o = cpl_kind_q;
+  assign cpl_illegal_o = cpl_illegal_q;
+  assign cpl_has_result_o = cpl_has_result_q;
+
+  assign rsp_valid_o = rsp_valid_q;
+  assign rsp_context_o = rsp_context_q;
+  assign rsp_tag_o = rsp_tag_q;
+  assign rsp_illegal_o = rsp_illegal_q;
+  assign rsp_has_narrow_o = rsp_has_narrow_q;
+  assign rsp_narrow_o = rsp_narrow_q;
+  assign rsp_narrow_mask_o = rsp_narrow_mask_q;
+  assign rsp_has_reduce_o = rsp_has_reduce_q;
+  assign rsp_reduce_value_o = rsp_reduce_value_q;
+  assign rsp_reduce_index_o = rsp_reduce_index_q;
+  assign rsp_has_count_o = rsp_has_count_q;
+  assign rsp_count_o = rsp_count_q;
+
+  initial begin
+    if (CONTEXT_COUNT < 1) $error("CONTEXT_COUNT must be positive");
+    if (TAG_W < 1) $error("TAG_W must be positive");
+    if (ACC_W < ELEM_W) $error("ACC_W must be at least ELEM_W");
+    if (RF_ADDR_W < VRF_ADDR_W || RF_ADDR_W < ARF_ADDR_W ||
+        RF_ADDR_W < MRF_ADDR_W) begin
+      $error("RF_ADDR_W must cover every RF address");
+    end
+  end
+endmodule

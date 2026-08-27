@@ -1,0 +1,207 @@
+// Current RTL visualization; placement is descriptive rather than architectural authority.
+digraph vsp_simd_microarchitecture {
+  graph [
+    rankdir=LR,
+    bgcolor="#ffffff",
+    fontname="DejaVu Sans",
+    fontsize=18,
+    label="Current VSP SIMD execution subsystem (behavioral microarchitecture)",
+    labelloc=t,
+    nodesep=0.42,
+    ranksep=0.75,
+    pad=0.2,
+    splines=polyline
+  ];
+
+  node [
+    shape=box,
+    style="rounded,filled",
+    fillcolor="#f7f9fc",
+    color="#51606f",
+    fontname="DejaVu Sans",
+    fontsize=11,
+    margin="0.12,0.08"
+  ];
+  edge [
+    color="#2f6f9f",
+    fontcolor="#34495e",
+    fontname="DejaVu Sans",
+    fontsize=9,
+    arrowsize=0.7
+  ];
+
+  subgraph cluster_control {
+    label="External control plane (current owner: sequencer/test driver)";
+    color="#9aa7b3";
+    style="rounded,dashed";
+
+    sequencer [
+      label="External sequencer / decoded test driver\n(issue queue outside leaf; no compact decoder RTL)",
+      fillcolor="#fff4d6",
+      color="#bd8b13"
+    ];
+    issue_bundle [
+      label="Issued control bundle\n6-bit function + element mode + RF addresses\nmask/writeback + route/reduce + use_imm/imm",
+      fillcolor="#fffaf0"
+    ];
+    uop_legal [
+      label="Shared uop legality\nop x mode x writeback x route x reduce",
+      fillcolor="#fff4d6",
+      color="#bd8b13"
+    ];
+    state_transfer [
+      label="cfg_* state-transfer ports\npriority over execute writeback\n(future DMA / LSU attachment)",
+      fillcolor="#f4f0ff",
+      color="#7357a5"
+    ];
+
+    sequencer -> issue_bundle [style=dashed, color="#8a6d1d"];
+    issue_bundle -> uop_legal [style=dashed, color="#8a6d1d"];
+  }
+
+  subgraph cluster_state {
+    label="Architectural SIMD state (parameterized; defaults shown)";
+    color="#7da1bc";
+    style=rounded;
+
+    vrf [
+      label="VRF-N\n16 rows x LANES x 8 bit\n2 read / 1 masked write",
+      fillcolor="#eaf5ff"
+    ];
+    arf [
+      label="ARF\n8 rows x LANES x 32 bit\n1 read / 1 masked write",
+      fillcolor="#eaf5ff"
+    ];
+    mrf [
+      label="MRF\n4 rows x LANES bit\n2 read / 1 masked write",
+      fillcolor="#eaf5ff"
+    ];
+  }
+
+  subgraph cluster_operand {
+    label="Operand preparation";
+    color="#77a882";
+    style=rounded;
+
+    route_a [
+      label="Optional source-A route\ngather / broadcast / permutation\nslide up/down",
+      fillcolor="#edf9ef"
+    ];
+    adjacent [
+      label="Adjacent SIMD-group\nboundary elements",
+      fillcolor="#f4fbf5"
+    ];
+    imm_broadcast [
+      label="Scalar immediate broadcast\nnormal ops: replace B\nWADD/WSUB: shared align\n(no vector immediate)",
+      fillcolor="#edf9ef"
+    ];
+    b_mux [
+      shape=diamond,
+      label="B source\nnormal ops: use_imm ? imm : VRF-B\nWADD/WSUB: always VRF-B",
+      fillcolor="#edf9ef"
+    ];
+    exec_mask [
+      label="Execution mask\nMRF mask or all lanes",
+      fillcolor="#edf9ef"
+    ];
+  }
+
+  subgraph cluster_execute {
+    label="Combinational SIMD execution";
+    color="#c18c57";
+    style=rounded;
+
+    lanes [
+      label="Byte lanes + dynamic element path\n\nBYTE/HALF/WORD partitioned ADD/SUB\nshared 5-stage partitioned shifter\npartitioned MIN/MAX + comparison chain\nbyte logic / 8x8 MUL/MAC\nWIDEN and WADD/WSUB\nARF scale / NCLIP / NSLICE",
+      fillcolor="#fff2e5",
+      color="#ad6c2f"
+    ];
+    compact [
+      label="MRF-driven stable rearrange\nCOMPRESS / EXPAND\nzero fill + population count",
+      fillcolor="#fff2e5",
+      color="#ad6c2f"
+    ];
+    mask_alu [
+      label="MRF boolean ALU\nMAND / MOR / MXOR / MNOT\noptional all-ones/zero VRF materialization",
+      fillcolor="#fff2e5",
+      color="#ad6c2f"
+    ];
+    narrow_result [label="narrow result mux\nLANES x ELEM_W", fillcolor="#fff8ef"];
+    wide_result [label="wide result\nLANES x ACC_W", fillcolor="#fff8ef"];
+    predicate [label="predicate result\nLANES bits", fillcolor="#fff8ef"];
+    reduce [
+      label="Mask-aware reduction tree\nsum / min / max + index\n(narrow input only)",
+      fillcolor="#fff2e5"
+    ];
+  }
+
+  subgraph cluster_commit {
+    label="Clock-edge state commit";
+    color="#a37dad";
+    style=rounded;
+
+    vrf_commit [label="VRF execute/cfg write mux\nmasked commit at posedge", fillcolor="#f8effa"];
+    arf_commit [label="ARF execute/cfg write mux\nmasked commit at posedge", fillcolor="#f8effa"];
+    mrf_commit [label="MRF execute/cfg write mux\nmasked commit at posedge", fillcolor="#f8effa"];
+    scalar_out [
+      label="Scalar results to sequencer\nreduction: value + index + valid\ncompact: count + valid",
+      fillcolor="#f8effa"
+    ];
+    side_effect_gate [
+      label="Unified !uop_illegal gate\ninvalid transaction commits nothing",
+      fillcolor="#fff4d6",
+      color="#bd8b13"
+    ];
+  }
+
+  issue_bundle -> route_a [style=dashed, color="#7a7a7a", label="route control"];
+  issue_bundle -> b_mux [style=dashed, color="#7a7a7a", label="use_imm"];
+  issue_bundle -> lanes [style=dashed, color="#7a7a7a", label="op"];
+  issue_bundle -> compact [style=dashed, color="#7a7a7a", label="op"];
+  issue_bundle -> mask_alu [style=dashed, color="#7a7a7a", label="op"];
+  issue_bundle -> exec_mask [style=dashed, color="#7a7a7a"];
+  issue_bundle -> reduce [style=dashed, color="#7a7a7a"];
+
+  vrf -> route_a [label="source A"];
+  vrf -> b_mux [label="source B\nper-lane values"];
+  issue_bundle -> imm_broadcast [style=dashed, color="#7a7a7a", label="scalar imm"];
+  imm_broadcast -> b_mux [label="same value / lane"];
+  imm_broadcast -> lanes [label="WADD/WSUB align"];
+  adjacent -> route_a [label="slide boundary"];
+  route_a -> lanes [label="A"];
+  route_a -> compact [label="A"];
+  b_mux -> lanes [label="B"];
+  arf -> lanes [label="acc / wide source"];
+  mrf -> exec_mask [label="exec mask"];
+  mrf -> lanes [label="select bits"];
+  mrf -> mask_alu [label="A / B mask data"];
+  exec_mask -> lanes [label="lane enable"];
+  exec_mask -> compact [label="selection mask"];
+
+  lanes -> narrow_result;
+  compact -> narrow_result;
+  compact -> predicate [label="result mask"];
+  compact -> scalar_out [label="count + valid"];
+  mask_alu -> narrow_result [label="all ones / zero"];
+  mask_alu -> predicate [label="boolean result"];
+  lanes -> wide_result;
+  lanes -> predicate;
+  narrow_result -> reduce;
+  narrow_result -> vrf_commit;
+  wide_result -> arf_commit;
+  predicate -> mrf_commit;
+  reduce -> scalar_out;
+  uop_legal -> side_effect_gate [style=dashed, color="#8a6d1d", label="contract legal"];
+  reduce -> side_effect_gate [style=dashed, color="#8a6d1d", label="reduce legal"];
+  side_effect_gate -> vrf_commit [style=dashed, color="#8a6d1d", label="write enable"];
+  side_effect_gate -> arf_commit [style=dashed, color="#8a6d1d"];
+  side_effect_gate -> mrf_commit [style=dashed, color="#8a6d1d"];
+  side_effect_gate -> scalar_out [style=dashed, color="#8a6d1d", label="valid"];
+
+  legend [
+    shape=note,
+    label="Legend\nblue solid: data path\ngray dashed: issued control\npurple boxes: cfg state transfer / commit\nAll execute/route/reduce logic is combinational\nRF masked writes commit on the clock edge",
+    fillcolor="#ffffff",
+    color="#9aa7b3"
+  ];
+}
