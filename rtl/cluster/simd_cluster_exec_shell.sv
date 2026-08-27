@@ -108,6 +108,35 @@ module simd_cluster_exec_shell #(
   output logic [TAG_W-1:0]                  state_cpl_tag_o,
   output logic                              state_cpl_illegal_o,
 
+  // One trusted VRF row-read child lane. Completion and data response are
+  // independent tagged channels because MEMORY/EXCHANGE may consume them in
+  // either order. Both remain outside the GROUP_EXEC tracker and result
+  // collector. The group ID must be in range while valid is asserted.
+  input  logic                              state_read_valid_i,
+  output logic                              state_read_ready_o,
+  input  logic [GROUP_ID_W-1:0]             state_read_group_i,
+  input  logic [CONTEXT_W-1:0]              state_read_context_i,
+  input  logic [TAG_W-1:0]                  state_read_tag_i,
+  input  logic [VRF_ADDR_W-1:0]             state_read_addr_i,
+  input  logic [LANES-1:0]                  state_read_mask_i,
+  output logic                              state_read_group_error_o,
+
+  output logic                              state_read_cpl_valid_o,
+  input  logic                              state_read_cpl_ready_i,
+  output logic [GROUP_ID_W-1:0]             state_read_cpl_group_o,
+  output logic [CONTEXT_W-1:0]              state_read_cpl_context_o,
+  output logic [TAG_W-1:0]                  state_read_cpl_tag_o,
+  output logic                              state_read_cpl_illegal_o,
+
+  output logic                              state_read_rsp_valid_o,
+  input  logic                              state_read_rsp_ready_i,
+  output logic [GROUP_ID_W-1:0]             state_read_rsp_group_o,
+  output logic [CONTEXT_W-1:0]              state_read_rsp_context_o,
+  output logic [TAG_W-1:0]                  state_read_rsp_tag_o,
+  output logic                              state_read_rsp_illegal_o,
+  output logic [(LANES*ELEM_W)-1:0]         state_read_rsp_data_o,
+  output logic [LANES-1:0]                  state_read_rsp_mask_o,
+
   // One command-level completion.  Pre-dispatch owner/empty-mask rejects use
   // this same lossless output but are marked separately from child-execution
   // illegality.
@@ -241,6 +270,20 @@ module simd_cluster_exec_shell #(
   logic [GROUP_COUNT-1:0] wrapper_exec_ready;
   logic [GROUP_COUNT-1:0] wrapper_state_write_valid;
   logic [GROUP_COUNT-1:0] wrapper_state_write_ready;
+  logic [GROUP_COUNT-1:0] wrapper_state_read_valid;
+  logic [GROUP_COUNT-1:0] wrapper_state_read_ready;
+  logic [GROUP_COUNT-1:0] wrapper_state_read_cpl_valid;
+  logic [GROUP_COUNT-1:0] wrapper_state_read_cpl_ready;
+  logic [(GROUP_COUNT*CONTEXT_W)-1:0] wrapper_state_read_cpl_context;
+  logic [(GROUP_COUNT*TAG_W)-1:0] wrapper_state_read_cpl_tag;
+  logic [GROUP_COUNT-1:0] wrapper_state_read_cpl_illegal;
+  logic [GROUP_COUNT-1:0] wrapper_state_read_rsp_valid;
+  logic [GROUP_COUNT-1:0] wrapper_state_read_rsp_ready;
+  logic [(GROUP_COUNT*CONTEXT_W)-1:0] wrapper_state_read_rsp_context;
+  logic [(GROUP_COUNT*TAG_W)-1:0] wrapper_state_read_rsp_tag;
+  logic [GROUP_COUNT-1:0] wrapper_state_read_rsp_illegal;
+  logic [(GROUP_COUNT*NARROW_W)-1:0] wrapper_state_read_rsp_data;
+  logic [(GROUP_COUNT*LANES)-1:0] wrapper_state_read_rsp_mask;
   logic [GROUP_COUNT-1:0] wrapper_cpl_valid;
   logic [GROUP_COUNT-1:0] wrapper_cpl_ready;
   logic [(GROUP_COUNT*CONTEXT_W)-1:0] wrapper_cpl_context;
@@ -319,6 +362,20 @@ module simd_cluster_exec_shell #(
   logic state_cpl_select_valid;
   logic [GROUP_ID_W-1:0] state_cpl_select_group;
   logic state_cpl_fire;
+
+  logic [GROUP_ID_W-1:0] state_read_cpl_rr_q;
+  logic state_read_cpl_hold_valid_q;
+  logic [GROUP_ID_W-1:0] state_read_cpl_hold_group_q;
+  logic state_read_cpl_select_valid;
+  logic [GROUP_ID_W-1:0] state_read_cpl_select_group;
+  logic state_read_cpl_fire;
+
+  logic [GROUP_ID_W-1:0] state_read_rsp_rr_q;
+  logic state_read_rsp_hold_valid_q;
+  logic [GROUP_ID_W-1:0] state_read_rsp_hold_group_q;
+  logic state_read_rsp_select_valid;
+  logic [GROUP_ID_W-1:0] state_read_rsp_select_group;
+  logic state_read_rsp_fire;
 
   always_comb begin
     command_payload = '0;
@@ -573,6 +630,17 @@ module simd_cluster_exec_shell #(
     end
   end
 
+  always_comb begin
+    wrapper_state_read_valid = '0;
+    state_read_ready_o = 1'b0;
+    state_read_group_error_o = state_read_valid_i &&
+                               (int'(state_read_group_i) >= GROUP_COUNT);
+    if (int'(state_read_group_i) < GROUP_COUNT) begin
+      wrapper_state_read_valid[state_read_group_i] = state_read_valid_i;
+      state_read_ready_o = wrapper_state_read_ready[state_read_group_i];
+    end
+  end
+
   for (genvar group = 0; group < GROUP_COUNT; group++) begin : g_group
     assign tracker_child_cpl_valid[group] = wrapper_cpl_valid[group] &&
         (wrapper_cpl_kind[(group*SIMD_GROUP_REQ_KIND_W) +:
@@ -655,6 +723,30 @@ module simd_cluster_exec_shell #(
       .state_write_addr_i(state_write_addr_i),
       .state_write_mask_i(state_write_mask_i),
       .state_write_data_i(state_write_data_i),
+      .state_read_valid_i(wrapper_state_read_valid[group]),
+      .state_read_ready_o(wrapper_state_read_ready[group]),
+      .state_read_context_i(state_read_context_i),
+      .state_read_tag_i(state_read_tag_i),
+      .state_read_addr_i(state_read_addr_i),
+      .state_read_mask_i(state_read_mask_i),
+      .state_read_cpl_valid_o(wrapper_state_read_cpl_valid[group]),
+      .state_read_cpl_ready_i(wrapper_state_read_cpl_ready[group]),
+      .state_read_cpl_context_o(wrapper_state_read_cpl_context[
+          (group*CONTEXT_W) +: CONTEXT_W]),
+      .state_read_cpl_tag_o(wrapper_state_read_cpl_tag[
+          (group*TAG_W) +: TAG_W]),
+      .state_read_cpl_illegal_o(wrapper_state_read_cpl_illegal[group]),
+      .state_read_rsp_valid_o(wrapper_state_read_rsp_valid[group]),
+      .state_read_rsp_ready_i(wrapper_state_read_rsp_ready[group]),
+      .state_read_rsp_context_o(wrapper_state_read_rsp_context[
+          (group*CONTEXT_W) +: CONTEXT_W]),
+      .state_read_rsp_tag_o(wrapper_state_read_rsp_tag[
+          (group*TAG_W) +: TAG_W]),
+      .state_read_rsp_illegal_o(wrapper_state_read_rsp_illegal[group]),
+      .state_read_rsp_data_o(wrapper_state_read_rsp_data[
+          (group*NARROW_W) +: NARROW_W]),
+      .state_read_rsp_mask_o(wrapper_state_read_rsp_mask[
+          (group*LANES) +: LANES]),
       .cpl_valid_o(wrapper_cpl_valid[group]),
       .cpl_ready_i(wrapper_cpl_ready[group]),
       .cpl_context_o(wrapper_cpl_context[
@@ -754,6 +846,142 @@ module simd_cluster_exec_shell #(
         if (int'(state_cpl_select_group) == GROUP_COUNT - 1)
           state_rr_q <= '0;
         else state_rr_q <= state_cpl_select_group + 1'b1;
+      end
+    end
+  end
+
+  // State-read completion and data are independently arbitrated. Holding the
+  // chosen group while its sink is blocked prevents a newly arriving lower
+  // group from changing visible metadata or payload. Neither channel feeds
+  // the GROUP_EXEC tracker/result collector below.
+  always_comb begin
+    if (state_read_cpl_hold_valid_q) begin
+      state_read_cpl_select_valid = 1'b1;
+      state_read_cpl_select_group = state_read_cpl_hold_group_q;
+    end else begin
+      state_read_cpl_select_valid = 1'b0;
+      state_read_cpl_select_group = '0;
+      for (int offset = 0; offset < GROUP_COUNT; offset++) begin
+        int candidate;
+        candidate = int'(state_read_cpl_rr_q) + offset;
+        if (candidate >= GROUP_COUNT) candidate -= GROUP_COUNT;
+        if (!state_read_cpl_select_valid &&
+            wrapper_state_read_cpl_valid[candidate]) begin
+          state_read_cpl_select_valid = 1'b1;
+          state_read_cpl_select_group = GROUP_ID_W'(candidate);
+        end
+      end
+    end
+  end
+
+  always_comb begin
+    wrapper_state_read_cpl_ready = '0;
+    if (state_read_cpl_select_valid) begin
+      wrapper_state_read_cpl_ready[state_read_cpl_select_group] =
+          state_read_cpl_ready_i;
+    end
+  end
+
+  assign state_read_cpl_valid_o = state_read_cpl_select_valid;
+  assign state_read_cpl_group_o = state_read_cpl_select_group;
+  assign state_read_cpl_context_o = state_read_cpl_select_valid
+      ? wrapper_state_read_cpl_context[
+            (state_read_cpl_select_group*CONTEXT_W) +: CONTEXT_W] : '0;
+  assign state_read_cpl_tag_o = state_read_cpl_select_valid
+      ? wrapper_state_read_cpl_tag[
+            (state_read_cpl_select_group*TAG_W) +: TAG_W] : '0;
+  assign state_read_cpl_illegal_o = state_read_cpl_select_valid
+      ? wrapper_state_read_cpl_illegal[state_read_cpl_select_group] : 1'b0;
+  assign state_read_cpl_fire = state_read_cpl_valid_o &&
+                               state_read_cpl_ready_i;
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      state_read_cpl_rr_q <= '0;
+      state_read_cpl_hold_valid_q <= 1'b0;
+      state_read_cpl_hold_group_q <= '0;
+    end else begin
+      if (state_read_cpl_hold_valid_q) begin
+        if (state_read_cpl_fire) state_read_cpl_hold_valid_q <= 1'b0;
+      end else if (state_read_cpl_select_valid &&
+                   !state_read_cpl_ready_i) begin
+        state_read_cpl_hold_valid_q <= 1'b1;
+        state_read_cpl_hold_group_q <= state_read_cpl_select_group;
+      end
+
+      if (state_read_cpl_fire) begin
+        if (int'(state_read_cpl_select_group) == GROUP_COUNT - 1)
+          state_read_cpl_rr_q <= '0;
+        else state_read_cpl_rr_q <= state_read_cpl_select_group + 1'b1;
+      end
+    end
+  end
+
+  always_comb begin
+    if (state_read_rsp_hold_valid_q) begin
+      state_read_rsp_select_valid = 1'b1;
+      state_read_rsp_select_group = state_read_rsp_hold_group_q;
+    end else begin
+      state_read_rsp_select_valid = 1'b0;
+      state_read_rsp_select_group = '0;
+      for (int offset = 0; offset < GROUP_COUNT; offset++) begin
+        int candidate;
+        candidate = int'(state_read_rsp_rr_q) + offset;
+        if (candidate >= GROUP_COUNT) candidate -= GROUP_COUNT;
+        if (!state_read_rsp_select_valid &&
+            wrapper_state_read_rsp_valid[candidate]) begin
+          state_read_rsp_select_valid = 1'b1;
+          state_read_rsp_select_group = GROUP_ID_W'(candidate);
+        end
+      end
+    end
+  end
+
+  always_comb begin
+    wrapper_state_read_rsp_ready = '0;
+    if (state_read_rsp_select_valid) begin
+      wrapper_state_read_rsp_ready[state_read_rsp_select_group] =
+          state_read_rsp_ready_i;
+    end
+  end
+
+  assign state_read_rsp_valid_o = state_read_rsp_select_valid;
+  assign state_read_rsp_group_o = state_read_rsp_select_group;
+  assign state_read_rsp_context_o = state_read_rsp_select_valid
+      ? wrapper_state_read_rsp_context[
+            (state_read_rsp_select_group*CONTEXT_W) +: CONTEXT_W] : '0;
+  assign state_read_rsp_tag_o = state_read_rsp_select_valid
+      ? wrapper_state_read_rsp_tag[
+            (state_read_rsp_select_group*TAG_W) +: TAG_W] : '0;
+  assign state_read_rsp_illegal_o = state_read_rsp_select_valid
+      ? wrapper_state_read_rsp_illegal[state_read_rsp_select_group] : 1'b0;
+  assign state_read_rsp_data_o = state_read_rsp_select_valid
+      ? wrapper_state_read_rsp_data[
+            (state_read_rsp_select_group*NARROW_W) +: NARROW_W] : '0;
+  assign state_read_rsp_mask_o = state_read_rsp_select_valid
+      ? wrapper_state_read_rsp_mask[
+            (state_read_rsp_select_group*LANES) +: LANES] : '0;
+  assign state_read_rsp_fire = state_read_rsp_valid_o &&
+                               state_read_rsp_ready_i;
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      state_read_rsp_rr_q <= '0;
+      state_read_rsp_hold_valid_q <= 1'b0;
+      state_read_rsp_hold_group_q <= '0;
+    end else begin
+      if (state_read_rsp_hold_valid_q) begin
+        if (state_read_rsp_fire) state_read_rsp_hold_valid_q <= 1'b0;
+      end else if (state_read_rsp_select_valid &&
+                   !state_read_rsp_ready_i) begin
+        state_read_rsp_hold_valid_q <= 1'b1;
+        state_read_rsp_hold_group_q <= state_read_rsp_select_group;
+      end
+
+      if (state_read_rsp_fire) begin
+        if (int'(state_read_rsp_select_group) == GROUP_COUNT - 1)
+          state_read_rsp_rr_q <= '0;
+        else state_read_rsp_rr_q <= state_read_rsp_select_group + 1'b1;
       end
     end
   end

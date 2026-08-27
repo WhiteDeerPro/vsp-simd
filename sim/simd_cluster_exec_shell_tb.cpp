@@ -88,13 +88,25 @@ void clear_state_write(Vsimd_cluster_exec_shell& dut) {
   for (int word = 0; word < 4; ++word) dut.state_write_data_i[word] = 0;
 }
 
+void clear_state_read(Vsimd_cluster_exec_shell& dut) {
+  dut.state_read_valid_i = 0;
+  dut.state_read_group_i = 0;
+  dut.state_read_context_i = 0;
+  dut.state_read_tag_i = 0;
+  dut.state_read_addr_i = 0;
+  dut.state_read_mask_i = 0;
+}
+
 void clear_inputs(Vsimd_cluster_exec_shell& dut) {
   clear_command(dut);
   clear_state_write(dut);
+  clear_state_read(dut);
   dut.group_owner_valid_i = 0;
   dut.group_owner_i = 0;
   dut.issue_slot_grant_i = 0;
   dut.state_cpl_ready_i = 0;
+  dut.state_read_cpl_ready_i = 0;
+  dut.state_read_rsp_ready_i = 0;
   dut.cpl_ready_i = 0;
   dut.result_ready_i = 0;
   dut.protocol_error_clear_i = 0;
@@ -162,6 +174,32 @@ void issue_vrf_write(Vsimd_cluster_exec_shell& dut, uint8_t group,
       std::exit(1);
     }
   }
+}
+
+void issue_vrf_read(Vsimd_cluster_exec_shell& dut, uint8_t group,
+                    uint8_t row, uint8_t mask, uint8_t tag,
+                    uint8_t context = 0) {
+  clear_state_read(dut);
+  dut.state_read_valid_i = 1;
+  dut.state_read_group_i = group;
+  dut.state_read_context_i = context;
+  dut.state_read_tag_i = tag;
+  dut.state_read_addr_i = row;
+  dut.state_read_mask_i = mask;
+
+  for (int timeout = 0; timeout < 100; ++timeout) {
+    eval_low(dut);
+    expect_eq("valid state-read group is in range", 0,
+              dut.state_read_group_error_o);
+    if (dut.state_read_ready_o) {
+      tick(dut);
+      clear_state_read(dut);
+      return;
+    }
+    tick(dut);
+  }
+  std::cerr << "timeout state-read request\n";
+  std::exit(1);
 }
 
 void write_vrf(Vsimd_cluster_exec_shell& dut, uint8_t group,
@@ -300,12 +338,14 @@ int main(int argc, char** argv) {
   expect_eq("empty ingress after reset", 0, dut.group_ingress_valid_o);
   expect_eq("no protocol error after reset", 0, dut.protocol_error_o);
 
+  std::array<uint32_t, 4> expected_a{};
   std::array<uint32_t, 4> expected_sum{};
   for (uint8_t group = 0; group < 4; ++group) {
     const uint32_t a = 0x04030201u + 0x01010101u * group;
     const uint32_t b = 0x10101010u + 0x01010101u * group;
     // Every byte stays below 0xff, so packed integer addition matches four
     // independent byte additions without cross-byte carries.
+    expected_a[group] = a;
     expected_sum[group] = a + b;
     write_vrf(dut, group, 0, a, static_cast<uint8_t>(0x80 + group));
     write_vrf(dut, group, 1, b, static_cast<uint8_t>(0x90 + group));
@@ -338,6 +378,93 @@ int main(int argc, char** argv) {
   dut.state_cpl_ready_i = 1;
   tick(dut);
   dut.state_cpl_ready_i = 0;
+
+  // Two groups may have independent state-read returns pending. The shared
+  // completion and response selectors must each hold group2 while blocked,
+  // even after group1 arrives. Then retire the response first to prove the
+  // two cluster return channels can advance in different orders without
+  // entering GROUP_EXEC accounting.
+  expect_eq("tracker empty before state reads", 0,
+            dut.tracker_occupancy_o);
+  issue_vrf_read(dut, 2, 0, 0x5, 0xb2, 1);
+  eval_low(dut);
+  expect_eq("state-read completion visible", 1,
+            dut.state_read_cpl_valid_o);
+  expect_eq("state-read response visible", 1,
+            dut.state_read_rsp_valid_o);
+  expect_eq("first state-read cpl group", 2,
+            dut.state_read_cpl_group_o);
+  expect_eq("first state-read rsp group", 2,
+            dut.state_read_rsp_group_o);
+  expect_eq("first state-read data", expected_a[2],
+            dut.state_read_rsp_data_o);
+  expect_eq("first state-read mask", 0x5,
+            dut.state_read_rsp_mask_o);
+
+  issue_vrf_read(dut, 1, 0, 0xa, 0xb1, 0);
+  for (int cycle = 0; cycle < 4; ++cycle) {
+    eval_low(dut);
+    expect_eq("blocked read cpl selection stable", 2,
+              dut.state_read_cpl_group_o);
+    expect_eq("blocked read cpl tag stable", 0xb2,
+              dut.state_read_cpl_tag_o);
+    expect_eq("blocked read rsp selection stable", 2,
+              dut.state_read_rsp_group_o);
+    expect_eq("blocked read rsp tag stable", 0xb2,
+              dut.state_read_rsp_tag_o);
+    expect_eq("blocked read rsp data stable", expected_a[2],
+              dut.state_read_rsp_data_o);
+    tick(dut);
+  }
+
+  dut.state_read_rsp_ready_i = 1;
+  tick(dut);
+  dut.state_read_rsp_ready_i = 0;
+  eval_low(dut);
+  expect_eq("second response advances independently", 1,
+            dut.state_read_rsp_group_o);
+  expect_eq("second response tag", 0xb1, dut.state_read_rsp_tag_o);
+  expect_eq("second response data", expected_a[1],
+            dut.state_read_rsp_data_o);
+  expect_eq("second response mask", 0xa, dut.state_read_rsp_mask_o);
+  expect_eq("first completion remains held", 2,
+            dut.state_read_cpl_group_o);
+  expect_eq("first completion tag remains held", 0xb2,
+            dut.state_read_cpl_tag_o);
+
+  dut.state_read_cpl_ready_i = 1;
+  tick(dut);
+  dut.state_read_cpl_ready_i = 0;
+  eval_low(dut);
+  expect_eq("second completion follows", 1,
+            dut.state_read_cpl_group_o);
+  expect_eq("second completion tag", 0xb1,
+            dut.state_read_cpl_tag_o);
+  expect_eq("state-read completion legal", 0,
+            dut.state_read_cpl_illegal_o);
+  expect_eq("state-read response legal", 0,
+            dut.state_read_rsp_illegal_o);
+
+  // Retire group1 in the opposite local order: completion, then response.
+  dut.state_read_cpl_ready_i = 1;
+  tick(dut);
+  dut.state_read_cpl_ready_i = 0;
+  eval_low(dut);
+  expect_eq("all state-read completions drained", 0,
+            dut.state_read_cpl_valid_o);
+  expect_eq("second response still held", 1,
+            dut.state_read_rsp_valid_o);
+  expect_eq("second response still group1", 1,
+            dut.state_read_rsp_group_o);
+  dut.state_read_rsp_ready_i = 1;
+  tick(dut);
+  dut.state_read_rsp_ready_i = 0;
+  eval_low(dut);
+  expect_eq("all state-read responses drained", 0,
+            dut.state_read_rsp_valid_o);
+  expect_eq("state reads bypass tracker", 0, dut.tracker_occupancy_o);
+  expect_eq("state reads bypass result collector", 0,
+            dut.result_valid_o);
 
   enqueue(dut, 0, 1, 0xf, kOpAdd, 0, 1, 2, true);
   expect_normal_completion(consume_completion(dut), 0, 1, 0xf);

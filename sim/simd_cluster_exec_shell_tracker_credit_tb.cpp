@@ -91,6 +91,14 @@ void clear_inputs(Vsimd_cluster_exec_shell& dut) {
   dut.state_write_mask_i = 0;
   for (int word = 0; word < 4; ++word) dut.state_write_data_i[word] = 0;
   dut.state_cpl_ready_i = 0;
+  dut.state_read_valid_i = 0;
+  dut.state_read_group_i = 0;
+  dut.state_read_context_i = 0;
+  dut.state_read_tag_i = 0;
+  dut.state_read_addr_i = 0;
+  dut.state_read_mask_i = 0;
+  dut.state_read_cpl_ready_i = 0;
+  dut.state_read_rsp_ready_i = 0;
   dut.cpl_ready_i = 0;
   dut.result_ready_i = 1;
   dut.protocol_error_clear_i = 0;
