@@ -51,6 +51,9 @@ VRF_SPAN_ENGINE_TB  := $(abspath sim/vsp_vrf_span_engine_tb.cpp)
 CLUSTER_VRF_SERVICE_TOP := vsp_cluster_vrf_service
 CLUSTER_VRF_SERVICE_OBJ := $(BUILD_DIR)/cluster_vrf_service_obj_dir
 CLUSTER_VRF_SERVICE_TB  := $(abspath sim/vsp_cluster_vrf_service_tb.cpp)
+CLUSTER_MEMORY_SHELL_TOP := vsp_cluster_memory_shell
+CLUSTER_MEMORY_SHELL_OBJ := $(BUILD_DIR)/cluster_memory_shell_obj_dir
+CLUSTER_MEMORY_SHELL_TB  := $(abspath sim/vsp_cluster_memory_shell_tb.cpp)
 UOP_LEGAL_TOP := simd_uop_legal
 UOP_LEGAL_OBJ := $(BUILD_DIR)/uop_legal_obj_dir
 UOP_LEGAL_TB  := $(abspath sim/simd_uop_legal_tb.cpp)
@@ -85,7 +88,8 @@ MUL32_MICRO_TB := sim/mul32_microcode_tb.cpp
 MUL32_MICRO_BIN := $(BUILD_DIR)/mul32_microcode_tb
 
 .PHONY: all lint test test-benes-exchange-engine \
-	test-cluster-exec-tracker-credit test-cluster-vrf-service clean
+	test-cluster-exec-tracker-credit test-cluster-vrf-service \
+	test-cluster-memory-shell clean
 
 all: test
 
@@ -162,6 +166,13 @@ lint:
 		--top-module $(CLUSTER_VRF_SERVICE_TOP) -GCLIENT_COUNT=3 \
 		-GGROUP_COUNT=6 -GVRF_ROWS=7 -GEXEC_CONTEXT_COUNT=3 \
 		$(CLUSTER_VRF_SERVICE_RTL)
+	$(VERILATOR) --lint-only -Wall -Wno-fatal \
+		--top-module $(CLUSTER_MEMORY_SHELL_TOP) \
+		$(CLUSTER_MEMORY_SHELL_RTL)
+	$(VERILATOR) --lint-only -Wall -Wno-fatal \
+		--top-module $(CLUSTER_MEMORY_SHELL_TOP) -GGROUP_COUNT=6 \
+		-GISSUE_SLOTS=3 -GQUEUE_DEPTH=3 -GTRACKER_ENTRIES=5 \
+		-GLANES=8 -GCONTEXT_COUNT=3 $(CLUSTER_MEMORY_SHELL_RTL)
 	$(VERILATOR) --lint-only -Wall -Wno-fatal \
 		--top-module $(UOP_LEGAL_TOP) $(UOP_LEGAL_RTL)
 	$(VERILATOR) --lint-only -Wall -Wno-fatal --top-module $(ROUTE_TOP) $(ROUTE_RTL)
@@ -336,6 +347,20 @@ test-cluster-vrf-service: \
 		$(CLUSTER_VRF_SERVICE_OBJ)/V$(CLUSTER_VRF_SERVICE_TOP)
 	$(CLUSTER_VRF_SERVICE_OBJ)/V$(CLUSTER_VRF_SERVICE_TOP)
 
+$(CLUSTER_MEMORY_SHELL_OBJ)/V$(CLUSTER_MEMORY_SHELL_TOP): \
+		$(CLUSTER_MEMORY_SHELL_RTL) $(CLUSTER_MEMORY_SHELL_TB) \
+		$(BUILD_META) | $(BUILD_DIR)
+	$(VERILATOR) -Wall -Wno-fatal --cc --exe \
+		--top-module $(CLUSTER_MEMORY_SHELL_TOP) \
+		--Mdir $(CLUSTER_MEMORY_SHELL_OBJ) \
+		$(CLUSTER_MEMORY_SHELL_RTL) $(CLUSTER_MEMORY_SHELL_TB)
+	$(MAKE) -C $(CLUSTER_MEMORY_SHELL_OBJ) \
+		-f V$(CLUSTER_MEMORY_SHELL_TOP).mk
+
+test-cluster-memory-shell: \
+		$(CLUSTER_MEMORY_SHELL_OBJ)/V$(CLUSTER_MEMORY_SHELL_TOP)
+	$(CLUSTER_MEMORY_SHELL_OBJ)/V$(CLUSTER_MEMORY_SHELL_TOP)
+
 $(UOP_LEGAL_OBJ)/V$(UOP_LEGAL_TOP): $(UOP_LEGAL_RTL) \
 		$(UOP_LEGAL_TB) $(BUILD_META) | $(BUILD_DIR)
 	$(VERILATOR) -Wall -Wno-fatal --cc --exe \
@@ -409,6 +434,7 @@ test: $(OBJ_DIR)/V$(TOP) $(BENES_OBJ)/V$(BENES_TOP) \
 		$(CLUSTER_EXEC_TRACKER_CREDIT_OBJ)/V$(CLUSTER_EXEC_SHELL_TOP) \
 		$(VRF_SPAN_ENGINE_OBJ)/V$(VRF_SPAN_ENGINE_TOP) \
 		$(CLUSTER_VRF_SERVICE_OBJ)/V$(CLUSTER_VRF_SERVICE_TOP) \
+		$(CLUSTER_MEMORY_SHELL_OBJ)/V$(CLUSTER_MEMORY_SHELL_TOP) \
 		$(UOP_LEGAL_OBJ)/V$(UOP_LEGAL_TOP) \
 		$(ROUTE_OBJ)/V$(ROUTE_TOP) \
 		$(COMPACT_OBJ)/V$(COMPACT_TOP) \
@@ -433,6 +459,7 @@ test: $(OBJ_DIR)/V$(TOP) $(BENES_OBJ)/V$(BENES_TOP) \
 	$(CLUSTER_EXEC_TRACKER_CREDIT_OBJ)/V$(CLUSTER_EXEC_SHELL_TOP)
 	$(VRF_SPAN_ENGINE_OBJ)/V$(VRF_SPAN_ENGINE_TOP)
 	$(CLUSTER_VRF_SERVICE_OBJ)/V$(CLUSTER_VRF_SERVICE_TOP)
+	$(CLUSTER_MEMORY_SHELL_OBJ)/V$(CLUSTER_MEMORY_SHELL_TOP)
 	$(UOP_LEGAL_OBJ)/V$(UOP_LEGAL_TOP)
 	$(ROUTE_OBJ)/V$(ROUTE_TOP)
 	$(COMPACT_OBJ)/V$(COMPACT_TOP)
