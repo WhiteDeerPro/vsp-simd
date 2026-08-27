@@ -81,8 +81,10 @@ module vsp_vrf_span_engine #(
   // independent channels and may arrive in either order; both are consumed
   // before the row is written to memory. Every accepted read must produce one
   // completion and one response even on error (an error response may carry
-  // zero data), matching the current group-wrapper EXEC/export contract. This
-  // is deliberately VRF-only. An ARF value is first transformed with
+  // zero data and an arbitrary mask), matching the current group-wrapper
+  // EXEC/export contract. Response identity remains meaningful and is checked
+  // even when error is asserted. This is deliberately VRF-only. An ARF value
+  // is first transformed with
   // NSLICE/NCLIP into VRF by the program.
   output logic                              vrf_read_valid_o,
   input  logic                              vrf_read_ready_i,
@@ -400,7 +402,8 @@ module vsp_vrf_span_engine #(
       (vrf_read_rsp_exec_context_i != command_exec_context_q) ||
       (vrf_read_rsp_tag_i != command_tag_q) ||
       (vrf_read_rsp_group_i != current_group_q) ||
-      ((vrf_read_rsp_mask_i & current_byte_mask) != current_byte_mask);
+      (!vrf_read_rsp_error_i &&
+       ((vrf_read_rsp_mask_i & current_byte_mask) != current_byte_mask));
 
   assign store_cpl_seen_after = store_cpl_seen_q || vrf_read_cpl_fire;
   assign store_rsp_seen_after = store_rsp_seen_q || vrf_read_rsp_fire;

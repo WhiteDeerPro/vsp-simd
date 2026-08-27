@@ -141,6 +141,8 @@ struct RunOptions {
   bool store_same_cycle = false;
   unsigned completion_stall = 0;
   unsigned memory_fault_cause = kFaultBus;
+  int store_rsp_error_group = -1;
+  unsigned store_rsp_error_mask = 0;
 };
 
 struct WriteRecord {
@@ -266,13 +268,17 @@ RunResult run_command(Vvsp_vrf_span_engine& dut, const Command& command,
           options.vrf_error_group == static_cast<int>(child_group);
     }
     if (read_response_pending && allow_store_rsp && ready_value(12)) {
+      const bool response_error =
+          options.store_rsp_error_group == static_cast<int>(child_group);
       dut.vrf_read_rsp_valid_i = 1;
       dut.vrf_read_rsp_exec_context_i = child_context;
       dut.vrf_read_rsp_tag_i = child_tag;
       dut.vrf_read_rsp_group_i = child_group;
       dut.vrf_read_rsp_data_i = child_data;
-      dut.vrf_read_rsp_mask_i = child_mask;
-      dut.vrf_read_rsp_error_i = 0;
+      dut.vrf_read_rsp_mask_i = response_error
+                                     ? options.store_rsp_error_mask
+                                     : child_mask;
+      dut.vrf_read_rsp_error_i = response_error;
     }
 
     if (dut.cpl_valid_o) {
@@ -761,6 +767,29 @@ int main(int argc, char** argv) {
             result.fault_cause);
   expect_eq("store VRF committed prefix", 0x2, result.completed);
   expect_eq("store VRF failed group", 0x4, result.failed);
+
+  // An error response still carries matching parent identity, but its data and
+  // mask are not meaningful. A zero mask must terminate the parent as a normal
+  // VRF runtime error without also setting the protocol-error sticky bit.
+  expect_eq("protocol clean before STORE response error", 0,
+            dut.protocol_error_o);
+  RunOptions response_error;
+  response_error.random_backpressure = true;
+  response_error.store_rsp_first = true;
+  response_error.store_rsp_error_group = 2;
+  response_error.store_rsp_error_mask = 0;
+  result = run_command(dut, failing_store, response_error, rng);
+  expect_eq("STORE response error status", kStatusVrfError, result.status);
+  expect_eq("STORE response error has no memory cause", kFaultNone,
+            result.fault_cause);
+  expect_eq("STORE response error committed prefix", 0x2,
+            result.completed);
+  expect_eq("STORE response error failed group", 0x4, result.failed);
+  expect_eq("STORE response error committed bytes", 4, result.bytes);
+  expect_eq("STORE response error issues no failing-group memory request", 1,
+            result.memory_requests.size());
+  expect_eq("STORE response error leaves protocol sticky clear", 0,
+            dut.protocol_error_o);
 
   // Every defined downstream fault class propagates without changing the
   // single-outstanding accounting contract. The engine derives fault_eaddr
