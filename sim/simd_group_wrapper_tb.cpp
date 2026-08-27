@@ -91,11 +91,22 @@ void clear_state_write(Vsimd_group_wrapper& dut) {
   }
 }
 
+void clear_state_read(Vsimd_group_wrapper& dut) {
+  dut.state_read_valid_i = 0;
+  dut.state_read_context_i = 0;
+  dut.state_read_tag_i = 0;
+  dut.state_read_addr_i = 0;
+  dut.state_read_mask_i = 0;
+}
+
 void clear_inputs(Vsimd_group_wrapper& dut) {
   clear_exec(dut);
   clear_state_write(dut);
+  clear_state_read(dut);
   dut.cpl_ready_i = 0;
   dut.rsp_ready_i = 0;
+  dut.state_read_cpl_ready_i = 0;
+  dut.state_read_rsp_ready_i = 0;
 }
 
 void drive_state_write(Vsimd_group_wrapper& dut, uint8_t context, uint8_t tag,
@@ -131,6 +142,16 @@ void drive_pass_export(Vsimd_group_wrapper& dut, uint8_t context, uint8_t tag,
   dut.exec_src_a_addr_i = source;
 }
 
+void drive_state_read(Vsimd_group_wrapper& dut, uint8_t context, uint8_t tag,
+                      uint8_t addr, uint8_t mask) {
+  clear_state_read(dut);
+  dut.state_read_valid_i = 1;
+  dut.state_read_context_i = context;
+  dut.state_read_tag_i = tag;
+  dut.state_read_addr_i = addr;
+  dut.state_read_mask_i = mask;
+}
+
 void accept_state_write(Vsimd_group_wrapper& dut) {
   dut.eval();
   expect_eq("state write ready", 1, dut.state_write_ready_o);
@@ -143,6 +164,13 @@ void accept_exec(Vsimd_group_wrapper& dut) {
   expect_eq("exec ready", 1, dut.exec_ready_o);
   tick(dut);
   clear_exec(dut);
+}
+
+void accept_state_read(Vsimd_group_wrapper& dut) {
+  dut.eval();
+  expect_eq("state read ready", 1, dut.state_read_ready_o);
+  tick(dut);
+  clear_state_read(dut);
 }
 
 void expect_completion(Vsimd_group_wrapper& dut, uint8_t context, uint8_t tag,
@@ -168,9 +196,36 @@ void expect_narrow_response(Vsimd_group_wrapper& dut, uint8_t context,
   expect_eq("response narrow mask", mask, dut.rsp_narrow_mask_o);
 }
 
+void expect_state_read_completion(Vsimd_group_wrapper& dut, uint8_t context,
+                                  uint8_t tag, bool illegal) {
+  dut.eval();
+  expect_eq("state read completion valid", 1,
+            dut.state_read_cpl_valid_o);
+  expect_eq("state read completion context", context,
+            dut.state_read_cpl_context_o);
+  expect_eq("state read completion tag", tag, dut.state_read_cpl_tag_o);
+  expect_eq("state read completion illegal", illegal,
+            dut.state_read_cpl_illegal_o);
+}
+
+void expect_state_read_response(Vsimd_group_wrapper& dut, uint8_t context,
+                                uint8_t tag, bool illegal, uint32_t data,
+                                uint8_t mask) {
+  dut.eval();
+  expect_eq("state read response valid", 1, dut.state_read_rsp_valid_o);
+  expect_eq("state read response context", context,
+            dut.state_read_rsp_context_o);
+  expect_eq("state read response tag", tag, dut.state_read_rsp_tag_o);
+  expect_eq("state read response illegal", illegal,
+            dut.state_read_rsp_illegal_o);
+  expect_eq("state read response data", data, dut.state_read_rsp_data_o);
+  expect_eq("state read response mask", mask, dut.state_read_rsp_mask_o);
+}
+
 void pop_completion(Vsimd_group_wrapper& dut) {
   clear_exec(dut);
   clear_state_write(dut);
+  clear_state_read(dut);
   dut.cpl_ready_i = 1;
   tick(dut);
   dut.cpl_ready_i = 0;
@@ -181,6 +236,7 @@ void pop_completion(Vsimd_group_wrapper& dut) {
 void pop_both(Vsimd_group_wrapper& dut) {
   clear_exec(dut);
   clear_state_write(dut);
+  clear_state_read(dut);
   dut.cpl_ready_i = 1;
   dut.rsp_ready_i = 1;
   tick(dut);
@@ -189,6 +245,21 @@ void pop_both(Vsimd_group_wrapper& dut) {
   dut.eval();
   expect_eq("completion popped", 0, dut.cpl_valid_o);
   expect_eq("response popped", 0, dut.rsp_valid_o);
+}
+
+void pop_state_read_both(Vsimd_group_wrapper& dut) {
+  clear_exec(dut);
+  clear_state_write(dut);
+  clear_state_read(dut);
+  dut.state_read_cpl_ready_i = 1;
+  dut.state_read_rsp_ready_i = 1;
+  tick(dut);
+  dut.state_read_cpl_ready_i = 0;
+  dut.state_read_rsp_ready_i = 0;
+  dut.eval();
+  expect_eq("state read completion popped", 0,
+            dut.state_read_cpl_valid_o);
+  expect_eq("state read response popped", 0, dut.state_read_rsp_valid_o);
 }
 
 uint32_t xorshift32(uint32_t& state) {
@@ -332,9 +403,11 @@ int main(int argc, char** argv) {
   dut.rst_ni = 0;
   dut.exec_valid_i = 1;
   dut.state_write_valid_i = 1;
+  dut.state_read_valid_i = 1;
   dut.eval();
   expect_eq("exec blocked in reset", 0, dut.exec_ready_o);
   expect_eq("state write blocked in reset", 0, dut.state_write_ready_o);
+  expect_eq("state read blocked in reset", 0, dut.state_read_ready_o);
   tick(dut);
   dut.rst_ni = 1;
   clear_inputs(dut);
@@ -430,6 +503,110 @@ int main(int argc, char** argv) {
   accept_exec(dut);
   expect_narrow_response(dut, 0, 0x25, 0x041e020au, 0xf);
   pop_both(dut);
+
+  // State-read snapshots a raw VRF row through the shared source-A port. Its
+  // completion and payload are independent from GROUP_EXEC and from each
+  // other: consume the payload first while holding the completion stable.
+  drive_state_read(dut, 1, 0x26, 0, 0x5);
+  accept_state_read(dut);
+  expect_state_read_completion(dut, 1, 0x26, false);
+  expect_state_read_response(dut, 1, 0x26, false, 0x041e020au, 0x5);
+  const uint8_t held_read_context = dut.state_read_cpl_context_o;
+  const uint8_t held_read_tag = dut.state_read_cpl_tag_o;
+  dut.state_read_rsp_ready_i = 1;
+  tick(dut);
+  dut.state_read_rsp_ready_i = 0;
+  expect_eq("state read response consumed first", 0,
+            dut.state_read_rsp_valid_o);
+  for (unsigned stall = 0; stall < 3; ++stall) {
+    tick(dut);
+    expect_eq("held state read completion valid", 1,
+              dut.state_read_cpl_valid_o);
+    expect_eq("held state read completion context", held_read_context,
+              dut.state_read_cpl_context_o);
+    expect_eq("held state read completion tag", held_read_tag,
+              dut.state_read_cpl_tag_o);
+  }
+
+  // One half-consumed state-read blocks only the next state-read. An unrelated
+  // no-result EXEC may still use the group and its normal completion channel.
+  drive_state_read(dut, 0, 0x27, 1, 0xf);
+  clear_exec(dut);
+  dut.exec_valid_i = 1;
+  dut.exec_context_i = 0;
+  dut.exec_tag_i = 0x28;
+  dut.exec_op_i = kPassA;
+  dut.eval();
+  expect_eq("next state read waits for both buffer credits", 0,
+            dut.state_read_ready_o);
+  expect_eq("exec independent of held state read completion", 1,
+            dut.exec_ready_o);
+  tick(dut);
+  clear_exec(dut);
+  clear_state_read(dut);
+  expect_completion(dut, 0, 0x28, kReqExec, false, false);
+  pop_completion(dut);
+  dut.state_read_cpl_ready_i = 1;
+  tick(dut);
+  dut.state_read_cpl_ready_i = 0;
+  expect_eq("state read completion consumed last", 0,
+            dut.state_read_cpl_valid_o);
+
+  // Exercise the opposite return order. While only the state-read response is
+  // held, a state-write can commit through its independent completion path.
+  drive_state_read(dut, 0, 0x29, 1, 0xa);
+  accept_state_read(dut);
+  expect_state_read_completion(dut, 0, 0x29, false);
+  expect_state_read_response(dut, 0, 0x29, false, 0x281e140au, 0xa);
+  const uint32_t held_read_data = dut.state_read_rsp_data_o;
+  const uint8_t held_read_mask = dut.state_read_rsp_mask_o;
+  dut.state_read_cpl_ready_i = 1;
+  tick(dut);
+  dut.state_read_cpl_ready_i = 0;
+  expect_eq("state read completion consumed first", 0,
+            dut.state_read_cpl_valid_o);
+  drive_state_write32(dut, 1, 0x2a, kVrf, 9, 0xf, 0xa1b2c3d4u);
+  dut.eval();
+  expect_eq("state write independent of held state read response", 1,
+            dut.state_write_ready_o);
+  tick(dut);
+  clear_state_write(dut);
+  expect_completion(dut, 1, 0x2a, kReqStateWrite, false, false);
+  expect_eq("held state read response valid", 1,
+            dut.state_read_rsp_valid_o);
+  expect_eq("held state read response data", held_read_data,
+            dut.state_read_rsp_data_o);
+  expect_eq("held state read response mask", held_read_mask,
+            dut.state_read_rsp_mask_o);
+  pop_completion(dut);
+  dut.state_read_rsp_ready_i = 1;
+  tick(dut);
+  dut.state_read_rsp_ready_i = 0;
+  expect_eq("state read response consumed last", 0,
+            dut.state_read_rsp_valid_o);
+
+  // Transaction-domain reset discards both halves of an outstanding read but
+  // does not reset RF storage or admit a request presented during reset.
+  drive_state_read(dut, 0, 0x2b, 0, 0xf);
+  accept_state_read(dut);
+  expect_state_read_completion(dut, 0, 0x2b, false);
+  expect_state_read_response(dut, 0, 0x2b, false, 0x041e020au, 0xf);
+  drive_state_read(dut, 0, 0x2c, 1, 0xf);
+  dut.rst_ni = 0;
+  dut.eval();
+  expect_eq("reset clears state read completion", 0,
+            dut.state_read_cpl_valid_o);
+  expect_eq("reset clears state read response", 0,
+            dut.state_read_rsp_valid_o);
+  expect_eq("reset blocks presented state read", 0,
+            dut.state_read_ready_o);
+  tick(dut);
+  dut.rst_ni = 1;
+  clear_inputs(dut);
+  drive_state_read(dut, 0, 0x2d, 0, 0xf);
+  accept_state_read(dut);
+  expect_state_read_response(dut, 0, 0x2d, false, 0x041e020au, 0xf);
+  pop_state_read_both(dut);
 
   // ARF and MRF use the same state-write endpoint. ARF extraction deliberately
   // remains composed from NSLICE rather than adding a new wide read port.
@@ -603,11 +780,59 @@ int main(int argc, char** argv) {
                     exec_first ? kReqStateWrite : kReqExec, false, false);
   pop_completion(dut);
 
+  // Reset the protocol arbiter and keep all three request classes asserted.
+  // The next-preference pointer must grant EXEC, write, then read without a
+  // dual fire; this preserves old EXEC/write fairness while adding read.
+  dut.rst_ni = 0;
+  tick(dut);
+  dut.rst_ni = 1;
+  clear_inputs(dut);
+  clear_exec(dut);
+  dut.exec_valid_i = 1;
+  dut.exec_context_i = 0;
+  dut.exec_tag_i = 0x60;
+  dut.exec_op_i = kPassA;
+  drive_state_write32(dut, 0, 0x61, kVrf, 10, 0xf, 0x44332211u);
+  drive_state_read(dut, 0, 0x62, 0, 0xf);
+  dut.cpl_ready_i = 1;
+
+  dut.eval();
+  expect_eq("three-way first exec", 1, dut.exec_ready_o);
+  expect_eq("three-way first exclusive", 1,
+            unsigned(dut.exec_ready_o) +
+                unsigned(dut.state_write_ready_o) +
+                unsigned(dut.state_read_ready_o));
+  tick(dut);
+
+  dut.eval();
+  expect_eq("three-way second write", 1, dut.state_write_ready_o);
+  expect_eq("three-way second exclusive", 1,
+            unsigned(dut.exec_ready_o) +
+                unsigned(dut.state_write_ready_o) +
+                unsigned(dut.state_read_ready_o));
+  tick(dut);
+
+  dut.eval();
+  expect_eq("three-way third read", 1, dut.state_read_ready_o);
+  expect_eq("three-way third exclusive", 1,
+            unsigned(dut.exec_ready_o) +
+                unsigned(dut.state_write_ready_o) +
+                unsigned(dut.state_read_ready_o));
+  tick(dut);
+  clear_exec(dut);
+  clear_state_write(dut);
+  clear_state_read(dut);
+  dut.cpl_ready_i = 0;
+  expect_state_read_completion(dut, 0, 0x62, false);
+  expect_state_read_response(dut, 0, 0x62, false, 0x041e020au, 0xf);
+  pop_state_read_both(dut);
+
   randomized_backpressure(dut);
 
   dut.final();
   std::cout << "PASS: " << checks
-            << " F1 state-write/EXEC arbitration, completion/result elasticity, "
-               "state transfer, export, and randomized backpressure checks\n";
+            << " F1 state-read/write/EXEC arbitration, independent read "
+               "completion/data elasticity, state transfer, export, and "
+               "randomized backpressure checks\n";
   return 0;
 }

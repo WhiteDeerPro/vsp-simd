@@ -62,6 +62,11 @@ module simd_datapath #(
   input  logic [LANES-1:0]                cfg_mrf_mask_i,
   input  logic [LANES-1:0]                cfg_mrf_data_i,
 
+  // Raw VRF source-A observation for the enclosing state-transfer endpoint.
+  // The wrapper multiplexes src_a_addr_i only when it grants a state read, so
+  // this does not add another physical RF read port or alter EXEC semantics.
+  output logic [(LANES*ELEM_W)-1:0]       vrf_src_a_data_o,
+
   output logic [(LANES*ELEM_W)-1:0]       narrow_result_o,
   output logic [(LANES*ACC_W)-1:0]        wide_result_o,
   output logic [LANES-1:0]                predicate_result_o,
@@ -143,6 +148,7 @@ module simd_datapath #(
 
   assign src_a = vrf_read_data[0 +: (LANES*ELEM_W)];
   assign src_b = vrf_read_data[(LANES*ELEM_W) +: (LANES*ELEM_W)];
+  assign vrf_src_a_data_o = src_a;
   assign acc_src = arf_read_data;
   assign stored_exec_mask = mrf_read_data[0 +: LANES];
   assign select_mask = mrf_read_data[LANES +: LANES];

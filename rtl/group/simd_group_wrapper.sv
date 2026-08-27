@@ -71,6 +71,33 @@ module simd_group_wrapper #(
   input  logic [LANES-1:0]                  state_write_mask_i,
   input  logic [(LANES*ACC_W)-1:0]          state_write_data_i,
 
+  // One atomic VRF row read child request. It shares the existing VRF source-A
+  // read port with EXEC, so request arbitration admits at most one of EXEC,
+  // state-write, or state-read per cycle. Every accepted request produces one
+  // completion and one data response, in either sink-observed order, including
+  // on error. These channels are deliberately separate from GROUP_EXEC's
+  // completion/result channels and therefore never enter its tracker.
+  input  logic                              state_read_valid_i,
+  output logic                              state_read_ready_o,
+  input  logic [CONTEXT_W-1:0]              state_read_context_i,
+  input  logic [TAG_W-1:0]                  state_read_tag_i,
+  input  logic [VRF_ADDR_W-1:0]             state_read_addr_i,
+  input  logic [LANES-1:0]                  state_read_mask_i,
+
+  output logic                              state_read_cpl_valid_o,
+  input  logic                              state_read_cpl_ready_i,
+  output logic [CONTEXT_W-1:0]              state_read_cpl_context_o,
+  output logic [TAG_W-1:0]                  state_read_cpl_tag_o,
+  output logic                              state_read_cpl_illegal_o,
+
+  output logic                              state_read_rsp_valid_o,
+  input  logic                              state_read_rsp_ready_i,
+  output logic [CONTEXT_W-1:0]              state_read_rsp_context_o,
+  output logic [TAG_W-1:0]                  state_read_rsp_tag_o,
+  output logic                              state_read_rsp_illegal_o,
+  output logic [(LANES*ELEM_W)-1:0]         state_read_rsp_data_o,
+  output logic [LANES-1:0]                  state_read_rsp_mask_o,
+
   // Every accepted group child request produces exactly one child
   // completion.  This is not a program-level RF_FILL completion.  The
   // optional EXEC result travels independently so normal completions do not
@@ -99,7 +126,8 @@ module simd_group_wrapper #(
 );
   import simd_pkg::*;
 
-  logic prefer_state_write_q;
+  // Round-robin next preference: 0=EXEC, 1=state-write, 2=state-read.
+  logic [1:0] request_rr_q;
 
   logic cpl_valid_q;
   logic [CONTEXT_W-1:0] cpl_context_q;
@@ -121,16 +149,33 @@ module simd_group_wrapper #(
   logic rsp_has_count_q;
   logic [OFFSET_W-1:0] rsp_count_q;
 
+  logic state_read_cpl_valid_q;
+  logic [CONTEXT_W-1:0] state_read_cpl_context_q;
+  logic [TAG_W-1:0] state_read_cpl_tag_q;
+  logic state_read_cpl_illegal_q;
+  logic state_read_rsp_valid_q;
+  logic [CONTEXT_W-1:0] state_read_rsp_context_q;
+  logic [TAG_W-1:0] state_read_rsp_tag_q;
+  logic state_read_rsp_illegal_q;
+  logic [(LANES*ELEM_W)-1:0] state_read_rsp_data_q;
+  logic [LANES-1:0] state_read_rsp_mask_q;
+
   logic cpl_can_push;
   logic rsp_can_push;
+  logic state_read_cpl_can_push;
+  logic state_read_rsp_can_push;
   logic exec_rsp_required;
   logic exec_eligible;
   logic state_write_eligible;
+  logic state_read_eligible;
   logic exec_fire;
   logic state_write_fire;
+  logic state_read_fire;
   logic state_write_file_valid;
   logic state_write_addr_valid;
   logic state_write_illegal;
+  logic state_read_addr_valid;
+  logic state_read_illegal;
   logic exec_endpoint_illegal;
   logic exec_request_illegal;
   logic exec_issue;
@@ -157,9 +202,15 @@ module simd_group_wrapper #(
   logic compact_op;
   logic mask_logic_op;
   logic [LANES-1:0] exec_narrow_mask;
+  logic [VRF_ADDR_W-1:0] datapath_src_a_addr;
+  logic [(LANES*ELEM_W)-1:0] datapath_vrf_src_a;
 
   assign cpl_can_push = !cpl_valid_q || cpl_ready_i;
   assign rsp_can_push = !rsp_valid_q || rsp_ready_i;
+  assign state_read_cpl_can_push = !state_read_cpl_valid_q ||
+                                   state_read_cpl_ready_i;
+  assign state_read_rsp_can_push = !state_read_rsp_valid_q ||
+                                   state_read_rsp_ready_i;
   assign compact_op = (exec_op_i == SIMD_OP_COMPRESS) ||
                       (exec_op_i == SIMD_OP_EXPAND);
   assign mask_logic_op = (exec_op_i == SIMD_OP_MAND) ||
@@ -179,34 +230,53 @@ module simd_group_wrapper #(
   assign exec_eligible = rst_ni && cpl_can_push &&
                          (!exec_rsp_required || rsp_can_push);
   assign state_write_eligible = rst_ni && cpl_can_push;
+  assign state_read_eligible = rst_ni && state_read_cpl_can_push &&
+                               state_read_rsp_can_push;
 
   always_comb begin
     exec_ready_o = 1'b0;
     state_write_ready_o = 1'b0;
+    state_read_ready_o = 1'b0;
 
-    if (exec_valid_i && state_write_valid_i) begin
-      if (prefer_state_write_q) begin
-        if (state_write_eligible) state_write_ready_o = 1'b1;
-        else if (exec_eligible) exec_ready_o = 1'b1;
-      end else begin
-        if (exec_eligible) exec_ready_o = 1'b1;
-        else if (state_write_eligible) state_write_ready_o = 1'b1;
-      end
-    end else if (exec_valid_i) begin
-      exec_ready_o = exec_eligible;
-    end else if (state_write_valid_i) begin
-      state_write_ready_o = state_write_eligible;
+    if (exec_valid_i || state_write_valid_i || state_read_valid_i) begin
+      // Scan from the rotating preference and skip absent or blocked request
+      // classes. A grant is exclusive even though the return paths differ.
+      unique case (request_rr_q)
+        2'd0: begin
+          if (exec_valid_i && exec_eligible) exec_ready_o = 1'b1;
+          else if (state_write_valid_i && state_write_eligible)
+            state_write_ready_o = 1'b1;
+          else if (state_read_valid_i && state_read_eligible)
+            state_read_ready_o = 1'b1;
+        end
+        2'd1: begin
+          if (state_write_valid_i && state_write_eligible)
+            state_write_ready_o = 1'b1;
+          else if (state_read_valid_i && state_read_eligible)
+            state_read_ready_o = 1'b1;
+          else if (exec_valid_i && exec_eligible) exec_ready_o = 1'b1;
+        end
+        default: begin
+          if (state_read_valid_i && state_read_eligible)
+            state_read_ready_o = 1'b1;
+          else if (exec_valid_i && exec_eligible) exec_ready_o = 1'b1;
+          else if (state_write_valid_i && state_write_eligible)
+            state_write_ready_o = 1'b1;
+        end
+      endcase
     end else begin
-      // Advertise capacity while idle.  EXEC may still be withdrawn later if
-      // it requests a result and the result buffer is full.
+      // Advertise independent capacity while idle. Once one or more valids are
+      // present, the exclusive arbiter exposes ready on only the winner.
       exec_ready_o = exec_eligible;
       state_write_ready_o = state_write_eligible;
+      state_read_ready_o = state_read_eligible;
     end
   end
 
   assign exec_fire = exec_valid_i && exec_ready_o;
   assign exec_issue = exec_fire && !exec_endpoint_illegal;
   assign state_write_fire = state_write_valid_i && state_write_ready_o;
+  assign state_read_fire = state_read_valid_i && state_read_ready_o;
 
   always_comb begin
     state_write_file_valid = 1'b1;
@@ -224,7 +294,19 @@ module simd_group_wrapper #(
   assign state_write_illegal =
       (int'(state_write_context_i) >= CONTEXT_COUNT) ||
       !state_write_file_valid || !state_write_addr_valid;
+  assign state_read_addr_valid = int'(state_read_addr_i) < VREGS;
+  assign state_read_illegal =
+      (int'(state_read_context_i) >= CONTEXT_COUNT) ||
+      !state_read_addr_valid;
   assign exec_request_illegal = exec_endpoint_illegal || datapath_illegal;
+
+  // The asynchronous VRF A port observes the state-read row only on the
+  // granted request. An illegal address is replaced with row zero so even a
+  // non-power-of-two experimental profile cannot index storage out of range.
+  assign datapath_src_a_addr = state_read_fire
+                                   ? (state_read_illegal
+                                          ? '0 : state_read_addr_i)
+                                   : exec_src_a_addr_i;
 
   assign cfg_vrf_write = state_write_fire && !state_write_illegal &&
                           (state_write_file_i == SIMD_RF_VRF);
@@ -256,7 +338,7 @@ module simd_group_wrapper #(
     .issue_i(exec_issue),
     .op_i(exec_op_i),
     .elem_mode_i(exec_elem_mode_i),
-    .src_a_addr_i(exec_src_a_addr_i),
+    .src_a_addr_i(datapath_src_a_addr),
     .src_b_addr_i(exec_src_b_addr_i),
     .use_imm_i(exec_use_imm_i),
     .imm_i(exec_imm_i),
@@ -291,6 +373,7 @@ module simd_group_wrapper #(
     .cfg_mrf_addr_i(state_write_addr_i[MRF_ADDR_W-1:0]),
     .cfg_mrf_mask_i(state_write_mask_i),
     .cfg_mrf_data_i(state_write_data_i[0 +: LANES]),
+    .vrf_src_a_data_o(datapath_vrf_src_a),
     .narrow_result_o(datapath_narrow),
     .wide_result_o(datapath_wide_unused),
     .predicate_result_o(datapath_predicate),
@@ -306,7 +389,7 @@ module simd_group_wrapper #(
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
-      prefer_state_write_q <= 1'b0;
+      request_rr_q <= 2'd0;
       cpl_valid_q <= 1'b0;
       cpl_context_q <= '0;
       cpl_tag_q <= '0;
@@ -325,12 +408,24 @@ module simd_group_wrapper #(
       rsp_reduce_index_q <= '0;
       rsp_has_count_q <= 1'b0;
       rsp_count_q <= '0;
+      state_read_cpl_valid_q <= 1'b0;
+      state_read_cpl_context_q <= '0;
+      state_read_cpl_tag_q <= '0;
+      state_read_cpl_illegal_q <= 1'b0;
+      state_read_rsp_valid_q <= 1'b0;
+      state_read_rsp_context_q <= '0;
+      state_read_rsp_tag_q <= '0;
+      state_read_rsp_illegal_q <= 1'b0;
+      state_read_rsp_data_q <= '0;
+      state_read_rsp_mask_q <= '0;
     end else begin
       if (cpl_ready_i) cpl_valid_q <= 1'b0;
       if (rsp_ready_i) rsp_valid_q <= 1'b0;
+      if (state_read_cpl_ready_i) state_read_cpl_valid_q <= 1'b0;
+      if (state_read_rsp_ready_i) state_read_rsp_valid_q <= 1'b0;
 
       if (exec_fire) begin
-        prefer_state_write_q <= 1'b1;
+        request_rr_q <= 2'd1;
         cpl_valid_q <= 1'b1;
         cpl_context_q <= exec_context_i;
         cpl_tag_q <= exec_tag_i;
@@ -367,16 +462,42 @@ module simd_group_wrapper #(
                              ? datapath_compact_count : '0;
         end
       end else if (state_write_fire) begin
-        prefer_state_write_q <= 1'b0;
+        request_rr_q <= 2'd2;
         cpl_valid_q <= 1'b1;
         cpl_context_q <= state_write_context_i;
         cpl_tag_q <= state_write_tag_i;
         cpl_kind_q <= SIMD_GROUP_REQ_STATE_WRITE;
         cpl_illegal_q <= state_write_illegal;
         cpl_has_result_q <= 1'b0;
+      end else if (state_read_fire) begin
+        request_rr_q <= 2'd0;
+        state_read_cpl_valid_q <= 1'b1;
+        state_read_cpl_context_q <= state_read_context_i;
+        state_read_cpl_tag_q <= state_read_tag_i;
+        state_read_cpl_illegal_q <= state_read_illegal;
+        state_read_rsp_valid_q <= 1'b1;
+        state_read_rsp_context_q <= state_read_context_i;
+        state_read_rsp_tag_q <= state_read_tag_i;
+        state_read_rsp_illegal_q <= state_read_illegal;
+        state_read_rsp_data_q <= state_read_illegal
+                                     ? '0 : datapath_vrf_src_a;
+        state_read_rsp_mask_q <= state_read_illegal
+                                     ? '0 : state_read_mask_i;
       end
     end
   end
+
+  assign state_read_cpl_valid_o = state_read_cpl_valid_q;
+  assign state_read_cpl_context_o = state_read_cpl_context_q;
+  assign state_read_cpl_tag_o = state_read_cpl_tag_q;
+  assign state_read_cpl_illegal_o = state_read_cpl_illegal_q;
+
+  assign state_read_rsp_valid_o = state_read_rsp_valid_q;
+  assign state_read_rsp_context_o = state_read_rsp_context_q;
+  assign state_read_rsp_tag_o = state_read_rsp_tag_q;
+  assign state_read_rsp_illegal_o = state_read_rsp_illegal_q;
+  assign state_read_rsp_data_o = state_read_rsp_data_q;
+  assign state_read_rsp_mask_o = state_read_rsp_mask_q;
 
   assign cpl_valid_o = cpl_valid_q;
   assign cpl_context_o = cpl_context_q;
