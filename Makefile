@@ -48,6 +48,9 @@ CLUSTER_EXEC_TRACKER_CREDIT_TB  := \
 VRF_SPAN_ENGINE_TOP := vsp_vrf_span_engine
 VRF_SPAN_ENGINE_OBJ := $(BUILD_DIR)/vrf_span_engine_obj_dir
 VRF_SPAN_ENGINE_TB  := $(abspath sim/vsp_vrf_span_engine_tb.cpp)
+CLUSTER_VRF_SERVICE_TOP := vsp_cluster_vrf_service
+CLUSTER_VRF_SERVICE_OBJ := $(BUILD_DIR)/cluster_vrf_service_obj_dir
+CLUSTER_VRF_SERVICE_TB  := $(abspath sim/vsp_cluster_vrf_service_tb.cpp)
 UOP_LEGAL_TOP := simd_uop_legal
 UOP_LEGAL_OBJ := $(BUILD_DIR)/uop_legal_obj_dir
 UOP_LEGAL_TB  := $(abspath sim/simd_uop_legal_tb.cpp)
@@ -82,7 +85,7 @@ MUL32_MICRO_TB := sim/mul32_microcode_tb.cpp
 MUL32_MICRO_BIN := $(BUILD_DIR)/mul32_microcode_tb
 
 .PHONY: all lint test test-benes-exchange-engine \
-	test-cluster-exec-tracker-credit clean
+	test-cluster-exec-tracker-credit test-cluster-vrf-service clean
 
 all: test
 
@@ -152,6 +155,13 @@ lint:
 		--top-module $(VRF_SPAN_ENGINE_TOP) -GGROUP_COUNT=6 \
 		-GVRF_ROWS=7 -GEXEC_CONTEXT_COUNT=3 -GMEM_OFFSET_W=12 \
 		-GADDR_CONTEXT_W=5 $(VRF_SPAN_ENGINE_RTL)
+	$(VERILATOR) --lint-only -Wall -Wno-fatal \
+		--top-module $(CLUSTER_VRF_SERVICE_TOP) \
+		$(CLUSTER_VRF_SERVICE_RTL)
+	$(VERILATOR) --lint-only -Wall -Wno-fatal \
+		--top-module $(CLUSTER_VRF_SERVICE_TOP) -GCLIENT_COUNT=3 \
+		-GGROUP_COUNT=6 -GVRF_ROWS=7 -GEXEC_CONTEXT_COUNT=3 \
+		$(CLUSTER_VRF_SERVICE_RTL)
 	$(VERILATOR) --lint-only -Wall -Wno-fatal \
 		--top-module $(UOP_LEGAL_TOP) $(UOP_LEGAL_RTL)
 	$(VERILATOR) --lint-only -Wall -Wno-fatal --top-module $(ROUTE_TOP) $(ROUTE_RTL)
@@ -312,6 +322,20 @@ $(VRF_SPAN_ENGINE_OBJ)/V$(VRF_SPAN_ENGINE_TOP): \
 	$(MAKE) -C $(VRF_SPAN_ENGINE_OBJ) \
 		-f V$(VRF_SPAN_ENGINE_TOP).mk
 
+$(CLUSTER_VRF_SERVICE_OBJ)/V$(CLUSTER_VRF_SERVICE_TOP): \
+		$(CLUSTER_VRF_SERVICE_RTL) $(CLUSTER_VRF_SERVICE_TB) \
+		$(BUILD_META) | $(BUILD_DIR)
+	$(VERILATOR) -Wall -Wno-fatal --cc --exe \
+		--top-module $(CLUSTER_VRF_SERVICE_TOP) \
+		--Mdir $(CLUSTER_VRF_SERVICE_OBJ) \
+		$(CLUSTER_VRF_SERVICE_RTL) $(CLUSTER_VRF_SERVICE_TB)
+	$(MAKE) -C $(CLUSTER_VRF_SERVICE_OBJ) \
+		-f V$(CLUSTER_VRF_SERVICE_TOP).mk
+
+test-cluster-vrf-service: \
+		$(CLUSTER_VRF_SERVICE_OBJ)/V$(CLUSTER_VRF_SERVICE_TOP)
+	$(CLUSTER_VRF_SERVICE_OBJ)/V$(CLUSTER_VRF_SERVICE_TOP)
+
 $(UOP_LEGAL_OBJ)/V$(UOP_LEGAL_TOP): $(UOP_LEGAL_RTL) \
 		$(UOP_LEGAL_TB) $(BUILD_META) | $(BUILD_DIR)
 	$(VERILATOR) -Wall -Wno-fatal --cc --exe \
@@ -384,6 +408,7 @@ test: $(OBJ_DIR)/V$(TOP) $(BENES_OBJ)/V$(BENES_TOP) \
 		$(CLUSTER_EXEC_SHELL_OBJ)/V$(CLUSTER_EXEC_SHELL_TOP) \
 		$(CLUSTER_EXEC_TRACKER_CREDIT_OBJ)/V$(CLUSTER_EXEC_SHELL_TOP) \
 		$(VRF_SPAN_ENGINE_OBJ)/V$(VRF_SPAN_ENGINE_TOP) \
+		$(CLUSTER_VRF_SERVICE_OBJ)/V$(CLUSTER_VRF_SERVICE_TOP) \
 		$(UOP_LEGAL_OBJ)/V$(UOP_LEGAL_TOP) \
 		$(ROUTE_OBJ)/V$(ROUTE_TOP) \
 		$(COMPACT_OBJ)/V$(COMPACT_TOP) \
@@ -407,6 +432,7 @@ test: $(OBJ_DIR)/V$(TOP) $(BENES_OBJ)/V$(BENES_TOP) \
 	$(CLUSTER_EXEC_SHELL_OBJ)/V$(CLUSTER_EXEC_SHELL_TOP)
 	$(CLUSTER_EXEC_TRACKER_CREDIT_OBJ)/V$(CLUSTER_EXEC_SHELL_TOP)
 	$(VRF_SPAN_ENGINE_OBJ)/V$(VRF_SPAN_ENGINE_TOP)
+	$(CLUSTER_VRF_SERVICE_OBJ)/V$(CLUSTER_VRF_SERVICE_TOP)
 	$(UOP_LEGAL_OBJ)/V$(UOP_LEGAL_TOP)
 	$(ROUTE_OBJ)/V$(ROUTE_TOP)
 	$(COMPACT_OBJ)/V$(COMPACT_TOP)

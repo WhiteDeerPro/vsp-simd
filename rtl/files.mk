@@ -31,6 +31,7 @@ RTL_GROUP_COMPLETION_TRACKER := rtl/cluster/simd_group_completion_tracker.sv
 RTL_ISSUE_DECODE_SHELL := rtl/cluster/simd_issue_decode_shell.sv
 RTL_CLUSTER_RESULT_COLLECTOR := rtl/cluster/simd_cluster_result_collector.sv
 RTL_CLUSTER_EXEC_SHELL := rtl/cluster/simd_cluster_exec_shell.sv
+RTL_CLUSTER_VRF_SERVICE := rtl/cluster/vsp_cluster_vrf_service.sv
 RTL_UOP_LEGAL := rtl/cluster/simd_uop_legal.sv
 RTL_VRF_SPAN_ENGINE := rtl/memory/vsp_vrf_span_engine.sv
 
@@ -48,6 +49,7 @@ CLUSTER_ISSUE_FRONTEND_RTL := $(RTL_ISSUE_QUEUE) $(RTL_ISSUE_DISPATCH) \
 GROUP_COMPLETION_TRACKER_RTL := $(RTL_GROUP_COMPLETION_TRACKER)
 ISSUE_DECODE_SHELL_RTL := $(RTL_ISSUE_DECODE_SHELL)
 CLUSTER_RESULT_COLLECTOR_RTL := $(RTL_CLUSTER_RESULT_COLLECTOR)
+CLUSTER_VRF_SERVICE_RTL := $(RTL_CLUSTER_VRF_SERVICE)
 UOP_LEGAL_RTL := $(RTL_PKG) $(RTL_UOP_LEGAL)
 VRF_SPAN_ENGINE_RTL := $(RTL_VSP_PKG) $(RTL_VRF_SPAN_ENGINE)
 ROUTE_RTL := $(RTL_PKG) $(RTL_CROSSBAR) $(RTL_ROUTE)
