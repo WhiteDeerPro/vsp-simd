@@ -23,11 +23,14 @@ collector 组成可运行的 full-decoded 参考闭环。`simd_issue_decode_shel
 每 issue slot 一项、可背压的 late-decode holding 边界，但其 decode hook 仍由参考
 driver 提供；predecoder、真实 compact-uword parser 和 class router 尚未实现，见
 [指令交付](../design/instruction-delivery.md)。
-独立 `vsp_vrf_span_engine` 已实现 VRF-only blocking LOAD/STORE parent，
-但尚未接入 class router、wrapper、local SRAM 或 DMA。
-它传递 effective address、address-space kind 和 address context，但没有
-MMU、TLB、PTW 或 cache。当前也没有 architectural IFetch；controller
-内部 uword/control-store 交付与未来 IFetch 是不同边界。
+`vsp_cluster_memory_shell` 已把 VRF-only blocking `vsp_vrf_span_engine` 经共享
+VRF child service 接到 wrapper/cluster state-read/write endpoint，形成 decoded
+LOAD→GROUP_EXEC→STORE 参考闭环。它传递 effective address、address-space kind
+和 address context，但 `dmem_*` 仍是逻辑边界；仓库中没有物理 local SRAM、
+MMU、TLB、PTW、cache 或 DMA。该 shell 的 GROUP_EXEC/MEMORY command 入口彼此
+独立，没有 common class router 或 program-order enforcement。当前也没有
+architectural IFetch；controller 内部 uword/control-store 交付与未来 IFetch 是
+不同边界。
 
 ### 命名边界 `[当前约定]`
 
@@ -112,8 +115,8 @@ canonical bundle 见[数据通路](datapath.md)与
 - 是否值得为当前 byte-only 的饱和、平均、绝对差、绝对值、乘法和宽 ARF
   操作另行增加宽元素变体；当前控制契约不把它们解释为 HALF/WORD；
 - 寄存器文件端口、流水级数、发射宽度和旁路；
-- 已有 blocking VRF-only LOAD/STORE 之上的多 outstanding、二维地址、
-  物理局部 SRAM、DMA、地址空间/翻译 adapter 与系统集成；
+- 已有 decoded blocking VRF-only LOAD/STORE 闭环之上的 common class ordering、
+  多 outstanding、二维地址、物理局部 SRAM、DMA、地址空间/翻译 adapter 与系统集成；
 - 跨 SIMD group 的任意 shuffle、gather/scatter，以及跨组压缩流拼接；
 - 稀疏 mask 的存储方式及其调度成本；
 - 是否增加其他定点舍入模式、异常和统计状态；
@@ -134,12 +137,14 @@ operation 三层。当前既没有 32-bit 也没有 16-bit instruction；queue
 3. compact/expand 与 MRF 穷举验证组内稀疏重排；
 4. byte-convolution 参考模型验证 low-32 多 byte 乘法分解。
 
-transaction wrapper、GROUP_EXEC cluster exec shell、decode holding shell 和独立
-VRF-only span engine 已完成参考实现；cluster 默认为四组、两 context、两 slot，
-但还不是有状态 controller。当前工作计划继续实现真实 predecode/canonical
-expansion、class router、owner/barrier 状态，并把已有 span engine 接到 wrapper 与
-local SRAM，形成 VRF LOAD/STORE 数据供应闭环，并根据结果决定 exchange、DMA
-与进一步 lane feature 的顺序。见
+transaction wrapper、GROUP_EXEC cluster exec shell、decode holding shell、VRF-only
+span engine、shared VRF service 与 decoded cluster memory shell 已完成参考实现；
+cluster 默认为四组、两 context、两 slot，但还不是有状态 controller。testbench
+已在 `dmem_*` 外用 local-memory model 验证 LOAD→GROUP_EXEC→STORE；这不表示
+local SRAM RTL 或最终 MEMORY ISA 已完成。当前工作计划继续实现真实
+predecode/canonical expansion、common class router、跨 class program order、
+owner/resource/barrier 状态，并根据结果决定 exchange、物理 memory hierarchy、
+DMA 与进一步 lane feature 的顺序。见
 [实验路线](../design/development-roadmap.md)。
 
 数据带宽不能只用一个“每周期向量数”概括；逻辑产生、存储写入、网络交付、唯一

@@ -17,7 +17,8 @@ dispatcher。`simd_cluster_exec_shell` 又在其外加入 per-group ingress、�
 tracker、reject buffer 和 result collector，形成 full-decoded GROUP_EXEC 参考闭环；
 compact-uword predecoder、真实 canonical expander 和 class router 尚未实现。
 已经实现的 `simd_group_wrapper` 也位于本叶数据
-通路图外，负责 decoded EXEC/state-write ready/valid、状态写仲裁和返回缓存，见
+通路图外，负责 decoded EXEC、state-write 与 VRF state-read ready/valid、状态访问
+仲裁和独立返回缓存，见
 [指令交付](../design/instruction-delivery.md)与
 [开发路线](../design/development-roadmap.md)。
 `simd_group_completion_tracker` 与 `simd_cluster_result_collector` 也位于图外；
@@ -26,10 +27,13 @@ per-group result 并产生 retire pulse，二者已接入 exec shell。
 `vsp_vrf_span_engine` 同样位于图外；它是 VRF-only blocking actor，
 每次处理一个 parent 和一个 outstanding memory beat。LOAD 经 VRF state-write
 child 提交，STORE 收齐 VRF read child 的 completion 与 data response 后再写
-memory。它尚未与 wrapper、class router、local SRAM 或 DMA 接通。
+memory。`vsp_cluster_vrf_service` 已把这些 child 接到 cluster wrapper；
+`vsp_cluster_memory_shell` 再把 span actor 与 full-decoded GROUP_EXEC shell 组合成
+reference integration。它尚未接 common class router、物理 local SRAM 或 DMA。
 `dmem_req/rsp` 是无 ID 的单飞行有序 data-memory 逻辑口；它携带
 address-space/address-context 与 fault cause，但 engine 内没有 MMU、TLB、
-PTW 或 cache。它也不是 IFetch 端口。
+PTW 或 cache。端到端 testbench 在该逻辑口外模拟 local memory；它也不是 IFetch
+端口。
 
 `vsp_benes_exchange_engine` 也位于图外。它把一个 SIMD4 group 对齐为一个
 `{byte_we[3:0], data[31:0]}` Bênes 端口；一条 command 只完成一个 row pass。
@@ -154,8 +158,9 @@ RF read -> optional route / operand mux -> lane execute -> optional reduce
   result collector 与 reject path，但尚未成为完整 VSP controller；
 - pre-dispatch ordered error sink 的跨 class 汇聚、host completion 和
   barrier/controller；
-- span engine 与 wrapper/local SRAM/DMA/地址空间 adapter 的集成，以及可选的多 outstanding、
-  二维地址生成；当前 engine 仅支持 VRF，ARF 需先用
+- 跨 class program-order enforcement，以及物理 local SRAM、DMA、地址空间
+  adapter 的集成与可选的多 outstanding、二维地址生成；span→shared VRF
+  service→wrapper 的 decoded reference wiring 已完成，当前 engine 仅支持 VRF，ARF 需先用
   `NSLICE/NCLIP` 转到 VRF 再 STORE；
 - row-exchange engine 与 route table、VRF read/state-write child bridge、共享 Bênes
   资源仲裁及 cluster quiescence 的集成；

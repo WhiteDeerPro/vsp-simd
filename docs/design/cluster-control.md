@@ -277,26 +277,30 @@ pending mask 清零，不等待外部读取已缓冲 response。tag 在 collecto
 
 单 group wrapper 只返回 `context+tag`；tracker 的 child lane 代表物理
 `group_id`。exec shell 已处理 GROUP_EXEC child、pre-dispatch reject 和 group result，
-但仍不处理 host completion、MEMORY parent、owner state 或 barrier。
+并已提供独立的 VRF state-read/write child 边界，但 exec shell 本身仍不处理
+host completion、MEMORY parent、owner state 或 barrier。当前 decoded MEMORY
+reference integration 位于其外层的 `vsp_cluster_memory_shell`。
 
 ## 9. 当前 group wrapper RTL 边界 `[RTL事实]`
 
 `simd_group_wrapper` 已包住一个 `simd_datapath`：
 
-- canonical decoded EXEC 与 state-write child 各有 valid/ready、context 和 tag；
-- 每周期二者最多接受一个，完全串行，因而不会触发裸 datapath 的 cfg 静默优先；
+- canonical decoded EXEC、state-write child 与 VRF state-read child 各有
+  valid/ready、context 和 tag；
+- 每周期三者最多接受一个，完全串行，因而不会触发裸 datapath 的 cfg 静默优先；
 - 每个 accepted child transaction 恰好产生一个 tagged group-child completion；
+- state-read 另产生独立、可背压的 tagged data response；接受 read 前同时检查
+  completion/response buffer credit，非法 read 返回零 data/mask；
 - 窄导出、reduction 和 compact count 进入独立 1-entry result buffer；
 - result 阻塞时，不需要 result 的事务仍可在 completion 有 credit 时推进；
 - VRF 用 `PASS_A` 无本地写回导出，ARF 当前用多次 `NSLICE` 组合导出；
 - invalid context/RF file/address、非法 EXEC 和非法窄导出形状均消费请求、零副作用并返回错误。
 
-当前 wrapper RTL 实现的是 VRF span engine 可使用的单行 state-write/
-export child endpoint，而不是
-program-level `RF_FILL`。它不属于 `simd_op_e`；metadata 与 data 在叶端作为一个
-原子 beat 接受，data 直接来自 staging/data path，不进入指令队列。已有
-`vsp_vrf_span_engine` 能把一个 VRF-only LOAD/STORE parent 分解为
-一个或多个 child beat，但尚未与 wrapper 接通。
+当前 wrapper RTL 实现的是 span/exchange actor 可使用的单行 VRF state-read/write
+child endpoint，而不是 program-level `RF_FILL`。它不属于 `simd_op_e`；metadata
+与 write data 在叶端作为一个原子 beat 接受，data 不进入指令队列。
+`vsp_vrf_span_engine` 能把一个 VRF-only LOAD/STORE parent 分解为多个 child beat；
+当前 MEMORY reference shell 已把这些 child 接到 wrapper，EXCHANGE 尚未接入。
 
 ## 10. 当前 GROUP_EXEC frontend RTL 边界 `[RTL事实]`
 
@@ -332,6 +336,7 @@ per-group 1-entry EXEC ingress
 4 × simd_group_wrapper
    ├─ EXEC child completion → command tracker
    ├─ STATE_WRITE child completion → independent state return
+   ├─ VRF STATE_READ completion/data → independent state returns
    └─ EXEC response → RR result collector → cluster result
 ```
 
@@ -345,10 +350,11 @@ per-group 1-entry EXEC ingress
   让 multicast 只在部分 group fire；
 - result obligation 由共享 `simd_exec_requires_result` 同时供 wrapper 与 tracker
   使用，避免两处形状判断漂移；
-- 一个可信、带 group ID 的 state-write child lane允许未来 MEMORY actor 接入真实
-  RF data path；它的 completion 按 kind 与 GROUP_EXEC tracker 精确分流；
-- 多 group 的 state-write completion 由 RR 选择；一旦输出在背压下可见，所选 group
-  会锁定到握手完成，`group/context/tag/status` 不会在 `valid && !ready` 时跳变；
+- 可信、带 group ID 的 VRF state-read 与 state-write child lane允许外部 actor 接入
+  真实 RF data path；这些返回与 GROUP_EXEC tracker 精确分流；
+- 多 group 的 state-write completion、state-read completion 和 state-read data
+  response 分别由 RR 选择；一旦输出在背压下可见，所选 group 会锁定到握手完成，
+  metadata/data 不会在 `valid && !ready` 时跳变；
 - 当前 canonical bundle 在 shell 入口已完全展开，内部私有 packed layout 不是
   encoded instruction format；
 - `context_exec_quiescent` 只表示 tracker 中的 EXEC child 已清空，不包含仍在 queue
@@ -359,7 +365,38 @@ per-group 1-entry EXEC ingress
 跨 group boundary staging 或 host/OS completion。因此此模块只称 exec shell，
 不称 VSP controller。
 
-## 12. 当前 dispatcher RTL 边界 `[RTL事实]`
+## 12. 当前 decoded MEMORY integration `[RTL事实 + 里程碑基线]`
+
+`vsp_cluster_vrf_service` 为多个 VRF-only parent client 提供一个共享 cluster child
+边界。它以 RR 在 client read/write request lane 间选择，一次只接受一个 child；
+read transaction 保持 client owner，直到 completion 与 data response 都各自完成，
+write transaction 保持到 completion。这个 owner 只是返回路由状态，不是 group
+ownership、scoreboard 或 program-order 状态。
+
+`vsp_cluster_memory_shell` 组合：
+
+```text
+decoded MEMORY → vsp_vrf_span_engine ─┐
+                                      ├→ shared VRF service
+decoded GROUP_EXEC → cluster exec shell┘       ↓
+                                      group VRF state-read/write
+
+span dmem_* ↔ external data-memory logical boundary
+```
+
+当前 shell 以单个 MEMORY client 使用 service；多 client 接口为未来 EXCHANGE 等
+actor 保留，但 EXCHANGE 尚未接线。GROUP_EXEC 与 MEMORY 各有独立 command/completion
+端口，没有 common class router、统一 error/completion mux 或 program-order
+enforcement。reference test 通过等待 LOAD completion 后提交 GROUP_EXEC、再等待其
+completion 后提交 STORE 来建立顺序；shell 不会从两个入口自行推导数据依赖。
+
+owner snapshot 仍由外部输入，GROUP_EXEC resource grant 在此参考壳中固定为全可用；
+动态 owner/resource controller、barrier 与跨 class quiescence 尚未实现。`dmem_*`
+是 effective-address 逻辑边界；testbench 的 local-memory model 不等于物理 local
+SRAM RTL，也不包含 cache、MMU/TLB/PTW、DMA 或 coherence。当前 117 项端到端检查
+只支持“decoded LOAD→GROUP_EXEC→STORE 接线可工作”的声明，不定义最终 ISA。
+
+## 13. 当前 dispatcher RTL 边界 `[RTL事实]`
 
 `simd_issue_dispatch` 只实现以下组合策略：
 
@@ -374,15 +411,16 @@ per-group 1-entry EXEC ingress
 它只分发槽号，不携带完整操作 bundle，也不保存 owner table。这使控制策略能够
 先被穷举验证，而不预先规定指令格式或 sequencer 状态组织。
 
-## 13. 后续实验顺序 `[计划]`
+## 14. 后续实验顺序 `[计划]`
 
 1. 在已有 decode holding shell 的 `hook_*` 位置实现 compact-uword predecode 与
    canonical expander，并把当前 full-decoded admission 重排到 selected-head late
    decode/class-router 边界；terminal/pop 由最终 engine fire 或 error sink 回传；
-2. 增加 owner state、barrier/quiescent 和 resource-aware scheduling，把当前外部
-   owner/grant 配置收进有状态 controller；
-3. 按[数据准备与 DMA 边界](data-movement.md)把已有 VRF span engine
-   接到 wrapper state-write/export child 和 local SRAM；
+2. 增加 common class router、program-order/error/completion 汇聚、owner state、
+   barrier/quiescent 和 resource-aware scheduling，把当前两个 decoded command
+   入口及外部 owner/grant 配置收进有状态 controller；
+3. 保留当前 span→shared VRF service→wrapper 接线，在 `dmem_*` 下游比较并接入
+   物理 local SRAM、cache/MMU adapter 或 DMA 边界；
 4. 把已有四端口 `4×36-bit` row-level exchange engine 接到 EXCHANGE class、
    route-register resolve 和 group wrapper，并用 sequencer 多 pass + local route
    验证 word 分发和重组；

@@ -53,10 +53,10 @@ Graphviz 源与生成图和说明文档放在一起：
 
 | 文档 | 状态 | 内容 |
 |---|---|---|
-| [集群控制工作稿](design/cluster-control.md) | GROUP_EXEC exec shell RTL 事实 + 候选 controller | frontend、ingress、group wrapper、completion/result、owner、multicast 与 exchange |
+| [集群控制工作稿](design/cluster-control.md) | GROUP_EXEC/MEMORY decoded reference RTL 事实 + 候选 controller | frontend、ingress、group wrapper、VRF child service、completion/result、owner、multicast 与 exchange |
 | [队列与译码候选](design/instruction-delivery.md) | decode holding 已实现，真实译码/展开待实现 | queue、live-head、locked shadow、predecode、expander 与 CPU decoder 差异 |
-| [数据准备与 DMA 边界](design/data-movement.md) | 独立 VRF span engine 已实现，系统集成待办 | MEMORY LOAD/STORE、data-memory 逻辑口、local SRAM 与 DMA |
-| [集群实验路线](design/development-roadmap.md) | GROUP_EXEC shell、decode holding、VRF span 与 row-exchange engine 已实现 + 集成计划 | wrapper、cluster、controller、exchange、DMA |
+| [数据准备与 DMA 边界](design/data-movement.md) | decoded VRF LOAD/STORE cluster 闭环已实现，物理 memory 集成待办 | MEMORY LOAD/STORE、shared VRF service、data-memory 逻辑口、local SRAM 与 DMA |
+| [集群实验路线](design/development-roadmap.md) | GROUP_EXEC shell、decode holding、VRF span/service、decoded memory shell 与 row-exchange engine 已实现 + 控制集成计划 | wrapper、cluster、controller、exchange、DMA |
 
 这里的 decoder 属于 sequencer 到执行 group 之间的内部控制层，不意味着 SIMD4
 获得取指、分支或异常能力。
@@ -78,7 +78,8 @@ Graphviz 源与生成图和说明文档放在一起：
 
 SAD、动态 ALU、local route、Bênes、row exchange、compact、MRF、reduction、
 issue/decode frontend、dispatcher、cluster exec shell、result collector、completion
-tracker、VRF span engine 与 legality 的具体覆盖仍由 `sim/` 中的自检 testbench 记录。
+tracker、VRF span engine、cluster VRF service、decoded memory shell 与 legality 的
+具体覆盖仍由 `sim/` 中的自检 testbench 记录。
 
 ## 5. 证据关系与维护
 

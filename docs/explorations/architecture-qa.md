@@ -151,7 +151,9 @@ entry 可以留在 FIFO，也可以原子转移到被跟踪的 issue stage。
 
 **当前观察 `[RTL事实]`**：裸 SIMD4 没有 load/store、地址生成或 cache
 coherence。独立 `vsp_vrf_span_engine` 已实现 VRF LOAD/STORE parent 和
-单飞行有序 `dmem_req/rsp`；`cfg_*` 仍只是初始化/状态传输叶端。
+单飞行有序 `dmem_req/rsp`；`vsp_cluster_memory_shell` 已经由 shared VRF service
+把 span child 接到 cluster VRF state-read/write endpoint。`dmem_*` 后端与
+controller/class ordering 仍外置；`cfg_*` 仍只是初始化/状态传输叶端。
 
 **工作方向 `[候选]`**：地址状态和 DMA/local-memory request 位于 sequencer/controller
 层，采用 decoupled request/response；以显式 ownership 和 buffer 同步开始，比在

@@ -22,8 +22,9 @@
 - 默认 `4 group / 2 queue / 2 slot` 的 GROUP_EXEC issue frontend：RR
   live-head、opaque locked shadow、explicit reject credit、terminal pop 与 atomic
   group dispatch；
-- 单 SIMD4 transaction wrapper：decoded EXEC/state-write 仲裁、`context+tag`、
-  child completion/result elastic buffer、masked state write 与窄结果导出；
+- 单 SIMD4 transaction wrapper：decoded EXEC/state-write/VRF state-read 仲裁、
+  `context+tag`、独立 child completion/response elastic buffer、masked state write、
+  无执行副作用的 VRF row read 与窄结果导出；
 - 默认 `4 group / 2 alloc slot / 2 context / 4 entry` 的独立 GROUP_EXEC
   completion tracker：乱序/同拍 child 聚合、illegal mask、RR 可背压
   command completion、独立 expected-result 生命期与 protocol-error sticky；
@@ -36,13 +37,18 @@
 - 独立 VRF-only `vsp_vrf_span_engine`：single active parent/single
   outstanding memory beat、稀疏 group-mask 连续 beat 映射、LOAD/STORE 子事务与
   stop-on-first partial completion；
+- `simd_cluster_exec_shell` 的 group-addressed VRF state-read/write child 路径，以及
+  `vsp_cluster_vrf_service` 的多 client read/write 仲裁和返回归属保持；
+- `vsp_cluster_memory_shell` decoded reference integration：span engine 经 shared
+  VRF service 接入四组 cluster，端到端 LOAD→GROUP_EXEC→STORE 回归已通过；
 - 独立 `vsp_benes_exchange_engine`：一条 command 一个 row pass，external resolved
   route descriptor 快照、mask-shadow 核对、全 source capture 后的
   `GROUP_COUNT×36-bit` Bênes、串行 masked write 和 stop-on-first completion；
 - 全量 lint/test 基线。
 
-当前优先级转向 decoder/controller 与 MEMORY 集成；在出现新的阻塞负载证据前，
-暂缓增加 lane arithmetic feature。
+当前优先级转向 decoder/class router、跨 class 顺序、owner/resource controller 与
+EXCHANGE 集成；物理 memory hierarchy 仍在 `dmem_*` 逻辑边界之外。在出现新的
+阻塞负载证据前，暂缓增加 lane arithmetic feature。
 
 ## M1：SIMD4 transaction wrapper `[已实现参考]`
 
@@ -51,25 +57,29 @@
 - 已展开 uop 的 `exec_valid/exec_ready`；
 - `context_id + tag`；
 - `fire` 产生唯一一次 `issue_i`；
-- 每周期 EXEC/state-write 最多接受一个，二者完全串行仲裁；
+- 每周期 EXEC/state-write/state-read 最多接受一个，三者完全串行仲裁；
 - 普通 completion 与需要外部观察的 result response 分离；
 - narrow export/reduction/count 请求先用 1-entry elastic result buffer 验证协议；
   所有事务另有 completion，其 `illegal` 位不要求额外 result；深度不是架构容量结论；
 - state-write endpoint 把 VRF/ARF/MRF masked write 提升为有握手的子事务，并与 EXEC
   在接受前仲裁，不依靠 cfg 的静默优先；
+- VRF state-read endpoint 直接读取指定 row，独立返回 tagged completion 与
+  data response/byte mask；两条返回可分别背压；
 - 导出窄结果的 valid mask，供以后 exchange staging 使用；
 - 控制状态复位，RF 数据仍不复位。
 
-当前物理返回各使用一个 1-entry elastic buffer；result 被阻塞时，不需要 result 的
-EXEC/state-write 仍可在 completion 有 credit 时推进。两条返回均携带 context+tag，
-上层在 result 被接受前不得复用相同 tag。
+当前 EXEC 与 state-write 共用一个 1-entry completion buffer；EXEC result、
+state-read completion 和 state-read data response 各有一个独立的 1-entry elastic
+buffer。state-read 只有在它的两条返回都可写时才接受。EXEC result 被阻塞时，
+不需要 result 的 EXEC/state-write 仍可在共享 completion 有 credit 时推进。返回均
+携带 context+tag，上层在事务要求的返回被接受前不得复用相同 tag。
 
-验收已经覆盖随机 response backpressure、同周期 pop+push、连续 RAW、EXEC/state-write
-竞争、VRF/ARF/MRF 写入、窄导出、reduction/count、非法零副作用和每个 accepted tag
-恰好一个 child completion。program-level VRF LOAD/STORE parent 行为已由独立
-`vsp_vrf_span_engine` 实现；当前 wrapper 只实现它可能使用的单行
-state-write/export child endpoint，二者尚未接通。MEMORY action 与 child 都不属于
-`simd_op_e`，真实数据也不进入指令 FIFO。
+验收已经覆盖随机 response backpressure、同周期 pop+push、连续 RAW、
+EXEC/state-write/state-read 竞争、VRF/ARF/MRF 写入、VRF row read、窄导出、
+reduction/count、非法零副作用和 accepted child 返回守恒。program-level VRF
+LOAD/STORE parent 由 `vsp_vrf_span_engine` 处理，并已通过 shared VRF service 接到
+wrapper/cluster 参考路径。MEMORY action 与 child 都不属于 `simd_op_e`，真实数据也
+不进入指令 FIFO。
 
 ## M2：四组、双发射 cluster shell `[已实现参考]`
 
@@ -94,13 +104,15 @@ tracker、四个 group wrapper 和 result/reject 返回路径组成事务闭环�
 - 每 group tagged completion lane 接入 tracker；RR collector 捕获 group result 时
   产生 retire，command completion 可先于 result，但 entry/tag 保持 busy 直到所有
   expected result 被 collector 安全接管；
-- trusted state-write child lane 与独立 state completion 输出已接入 wrapper 仲裁，
-  供测试驱动和未来 MEMORY actor 使用；它不进入 GROUP_EXEC tracker；
+- trusted state-write 与 VRF state-read child lane 已接入 wrapper 仲裁；read
+  completion/data response 和 write completion 各自独立汇聚，均不进入
+  GROUP_EXEC tracker；
 - empty-mask/owner reject 先进入有容量的 buffer，再与执行 completion 合并输出；
 - 相邻 slide 先从 boundary staging/ingress 读取，不隐式读取另一个正在执行的
   group RF。
 
-当前集成验收已覆盖：四组 ADD 广播、state-write 初始化、PASS_A 窄导出、结果
+当前集成验收已覆盖：四组 ADD 广播、state-write 初始化、state-read 返回、
+PASS_A 窄导出、结果
 backpressure 与 tag 延寿、两条不同 context 的不相交双发射、empty mask、owner
 mismatch、endpoint illegal、state completion 竞争下的背压稳定、无 partial group
 fire、单 tracker entry 下未获 grant 的 slot 不虚占 credit，以及最终 tracker 清空。独立
@@ -136,7 +148,7 @@ frontend/dispatcher/tracker 随机测试继续覆盖 mask overlap、表满和多
 之前 tag 不重用；barrier
 ack 时目标 inflight 必须为零。
 
-## M4：blocking 数据供应闭环 `[独立 span engine 已实现，集成待办]`
+## M4：blocking 数据供应闭环 `[decoded reference closure 已实现]`
 
 本阶段的候选分层与延期项集中在[数据准备与 DMA 边界](data-movement.md)。
 
@@ -152,16 +164,22 @@ ack 时目标 inflight 必须为零。
   committed bytes 和 partial，已提交的较早 group 不回滚；
 - 当前仅 VRF；ARF 先用 `NSLICE/NCLIP` 转换到 VRF 再 STORE，
   MRF 不在此 controller 的数据端点内；
-- 待把 span engine 接到 MEMORY class router、group wrappers 和 local SRAM；
-  queue 仍只保存 descriptor/metadata，真实 transfer data 走 staging/data path；
+- 已实现 `vsp_cluster_vrf_service`，在 parent clients 与 cluster 的单组 VRF
+  state-read/write endpoint 之间仲裁；当前一次只保留一个 child owner，read 等待
+  completion 与 response 两者，write 等待 completion；
+- 已实现 `vsp_cluster_memory_shell`，把 span engine 经该 service 接到四组 exec
+  shell。它暴露彼此独立的 decoded GROUP_EXEC 与 MEMORY command 入口，尚无
+  common class router、program-order enforcement、owner/resource controller；
+- queue 仍只保存 descriptor/metadata，真实 transfer data 走 child/data path；
 - `dmem_req/rsp` 保持无 ID 的单飞行有序 data-memory 逻辑口；
   fault cause/eaddr 返回 parent completion；当前没有 MMU、TLB、PTW、
-  cache、一致性或乱序执行；
+  cache、物理 local SRAM RTL、DMA、一致性或乱序执行；
 
 独立 span engine 验收已覆盖 LOAD/STORE 顺序、背压、tail、稀疏 mask、
-错误与 partial 记账。集成验收仍是 local SRAM → VRF → EXEC → export →
-local SRAM 的 tagged 小闭环；
-随机下游背压时不丢行、不重复写、parent completion 不早到。
+错误与 partial 记账。集成 testbench 在 `dmem_*` 外提供 local-memory model，
+顺序执行 LOAD → ADD-immediate GROUP_EXEC → STORE；117 项检查覆盖四组结果、
+请求背压、parent completion 与 protocol-error。该测试证明 decoded wiring 闭环，
+不证明硬件 local SRAM、最终 MEMORY ISA 或跨 class 自动排序已经完成。
 
 ## M5：group-aligned row exchange 与多 pass `[独立 engine 已实现，集成待办]`
 

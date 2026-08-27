@@ -1,10 +1,12 @@
 # 数据准备与 DMA 边界
 
-> 状态：独立 VRF-only `vsp_vrf_span_engine` 和 row-level
-> `vsp_benes_exchange_engine` 已有参考 RTL；
-> class routing、wrapper、local SRAM 和 DMA 集成仍待办。本文不规定总线
-> 宽度、SRAM 组织、DMA 描述符格式或 Bênes 的物理分级；跨组交换采用
-> group-aligned row packet 语义。
+> 状态：VRF-only `vsp_vrf_span_engine`、row-level
+> `vsp_benes_exchange_engine`、wrapper/cluster 的独立 VRF state-read 路径及
+> `vsp_cluster_vrf_service` 已有参考 RTL。`vsp_cluster_memory_shell` 已把 blocking
+> span actor 接到 GROUP_EXEC cluster，形成 decoded LOAD→GROUP_EXEC→STORE 参考闭环。
+> class router、跨 class 程序顺序、owner/resource controller、物理 local SRAM、
+> MMU/cache、DMA 与 EXCHANGE 接线仍待实现。本文不规定总线宽度、SRAM 组织、
+> DMA 描述符格式或 Bênes 的物理分级；跨组交换采用 group-aligned row packet 语义。
 
 ## 1. 控制动作与传输数据分离 `[候选]`
 
@@ -15,8 +17,9 @@ instruction queue。queue 只需保存 descriptor reference、目标摘要、依
 
 候选数据层级为：
 
-下面是最终可能出现的完整层级；M4 先从 local SRAM 向下闭合，SoC DMA 与它上方
-接口延期到后续集成。
+下面是最终可能出现的完整层级。当前 decoded reference integration 在 `dmem_*`
+逻辑边界处终止；testbench 在边界外提供 local-memory model。物理 local SRAM、
+cache/MMU adapter、SoC DMA 及其上方接口延期到后续集成。
 
 ```text
 SoC memory / producer
@@ -151,24 +154,47 @@ protocol 错误可区分。
 必须共享事务域 reset，并在 reset 时共同丢弃旧 outstanding response；异步保留旧
 response 后立即启动新命令不属于当前协议。
 
-## 5. 首个集成闭环与延期项 `[里程碑基线]`
+### 4.1 当前 cluster VRF child 路径 `[RTL事实]`
+
+`simd_group_wrapper` 除 state-write 外，已有独立的 VRF state-read request、
+completion 和 data response。read completion 与 response 可以分别背压；wrapper
+在接受 read 时同时保留两条返回的容量，非法 context/row 返回 illegal、零 data
+与零 mask，不修改 RF。`simd_cluster_exec_shell` 按 group demux state-read/write，
+并分别用 stall-stable RR 汇聚 read completion、read response 与 write completion。
+
+`vsp_cluster_vrf_service` 在多个 parent actor 与上述 cluster endpoint 之间仲裁
+VRF-only read/write child。参考实现一次只允许一个 accepted child 在途；read owner
+保持到 completion 和 response 都被对应 client 接受，write owner 保持到 completion
+被接受。仲裁和 owner capture 解决的是 child 返回归属，不提供 program-level
+class ordering、寄存器依赖或 group ownership 判定。
+
+`vsp_cluster_memory_shell` 当前以一个 MEMORY client 实例化该 service，把 span
+engine 的 LOAD state-write 和 STORE state-read 接到 `simd_cluster_exec_shell`。
+service 的多 client 接口为以后并接 EXCHANGE 留出边界，但当前 shell 没有连接
+EXCHANGE，也没有在 EXEC 与 MEMORY 两个独立 command 入口之间建立统一顺序。
+
+## 5. 首个集成闭环与延期项 `[已实现参考 + 延期项]`
 
 首个闭环可以保持 blocking：
 
 ```text
-RF_FILL parent
-  -> 若干 state-write child beat
-  -> EXEC
-  -> 若干 export/capture child beat
-  -> RF_DRAIN parent completion
+dmem LOAD response
+  -> 若干 VRF state-write child beat
+  -> decoded GROUP_EXEC
+  -> 若干 VRF state-read child beat
+  -> dmem STORE request/ack
 ```
 
-当前 `simd_group_wrapper` 已提供单行 state-write endpoint，以及由 decoded EXEC
-触发的窄 export/result 边界；span engine 已实现 parent/beat 推进与聚合，
-但二者还没有接通。独立 exchange engine 已有内部 row capture 和路由/写回状态机，
-但尚未接到 EXCHANGE class router、group wrapper 或 cluster completion。local SRAM、
-DMA、packetizer/gearbox 和系统级 ingress/capture FIFO 同样未集成。初版仍可先 fill 完再 execute；
-ping-pong、计算/搬运重叠、多 outstanding、
-二维地址、cache/IOMMU/一致性都在真实 trace 和 SoC 边界出现后再评估。
+`vsp_cluster_memory_shell` 已完成上述 decoded reference wiring；自检 testbench 用
+边界外 local-memory model 顺序驱动 LOAD、ADD-immediate GROUP_EXEC 和 STORE，
+117 项检查覆盖四组数据变换、请求背压、完成状态与 protocol-error 清洁。这里的
+“顺序”来自 test driver 等待前一 parent completion 后再提交下一 action，并非 shell
+已实现 common class router 或 program-order enforcement。
+
+独立 exchange engine 已有内部 row capture 和路由/写回状态机，但尚未接到
+EXCHANGE class、shared VRF service 或 cluster completion。物理 local SRAM、DMA、
+cache/MMU adapter、packetizer/gearbox 和系统级 ingress/capture FIFO 也未集成；
+`dmem_*` 仍只是 effective-address 逻辑边界。ping-pong、计算/搬运重叠、
+多 outstanding、二维地址和一致性在真实 trace 与 SoC 边界出现后再评估。
 
 实施顺序与验收条件见[集群实验路线的 M4](development-roadmap.md)。
