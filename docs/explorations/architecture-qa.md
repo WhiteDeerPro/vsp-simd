@@ -129,8 +129,9 @@ queue、两 slot。
 `payload/resolved/sched_meta/tag/group_mask` 的 EXEC frontend；它已有
 RR 队头选择和受阻后稳定的 opaque holding slot。`simd_cluster_exec` 已用
 full-decoded profile 接到 group wrappers，`simd_issue_decode_stage` 也已验证晚译码
-holding 协议；`vsp_exec_uword_expander` 已能解析内部 profile v0，但还没有
-admission predecoder 或 queue-head integration。另一个 action-stream reference 已把
+holding 协议；`vsp_exec_uword_expander` 已能解析内部 profile v0，standalone bundle
+predecoder 也已实现 record framing/class 预判，但还没有 admission legality/cached
+metadata 或 queue-head integration。另一个 action-stream reference 已把
 该 expander 接到 strict class router，但尚未替换 FIFO head/holding hook；datapath
 仍只暴露展开控制边界。当前 32-bit payload、16-bit
 resolved 和 16-bit sched-meta 只是 opaque

@@ -1,9 +1,10 @@
 # 队列、微指令与译码器候选设计
 
-> 状态：EXEC cluster integration、late-decode holding stage、EXEC-uword profile-v0
-> canonical expander，以及 strict ordered class router 已有参考 RTL；expander/router
-> 已在 action-stream wrapper 接通，admission predecoder 与 queue-head integration
-> 尚未实现。本文用于比较实现路径，不拥有
+> 状态：uword bundle framing/class predecoder、EXEC cluster integration、late-decode
+> holding stage、EXEC-uword profile-v0 canonical expander，以及 strict ordered class
+> router 已有参考 RTL；expander/router 已在 action-stream wrapper 接通。跨 bundle
+> assembler、admission legality/cached metadata 与 queue-head integration 尚未实现。
+> 本文用于比较实现路径，不拥有
 > 最终外部指令格式或控制器组织的决策权。
 
 ## 1. 当前真实状态 `[RTL事实]`
@@ -38,6 +39,9 @@
   32-bit scalar-immediate extension，覆盖当前全部非 route EXEC function；它复用
   `simd_uop_legal`，对非法项输出确定 cause 并把所有 canonical 副作用归零。具体
   位域见 [EXEC uword profile v0](exec-uword-profile-v0.md)。
+- `vsp_uword_predecoder` 组合扫描一个默认 4-word 的连续 uword bundle，划分完整
+  record、预判 `EXEC/MEMORY/CONTROL` class，并把未完成尾 record 作为续接提示输出；
+  它不保存跨 bundle 状态，不检查 class 内语义，也不绑定 action envelope。
 - `vsp_decoded_action_controller` 已按 `EXEC/MEMORY/CONTROL` 分流一条统一 action
   流，并用统一 completion 保持严格程序顺序；`vsp_cluster_controller_wrapper`
   已把 profile-v0 EXEC expander、decoded MEMORY 和最小 `CONTROL.END` 接到这条路径。
@@ -45,9 +49,46 @@
 
 因此现在可以准确地说：full-decoded reference profile 已能执行和退休 EXEC，
 decode holding 协议、EXEC canonical expansion、跨 class 严格顺序和 `END` 也已验证。
-尚缺的是 admission predecode/cached metadata，以及把 expander、late-decode stage、
-class router 和 terminal feedback 接到 queue head。当前 action-stream 接法证明控制
+尚缺的是跨 bundle assembler、admission legality/cached metadata，以及把 expander、
+late-decode stage、class router 和 terminal feedback 接到 queue head。当前 standalone
+bundle predecode 只解决 record 边界与早期 class 分流；action-stream 接法证明控制
 合同可闭环，不等于 hybrid queue 控制链或完整 sequencer 已完成。
+
+### 1.1 Uword bundle framing 与 class predecode `[RTL事实 + 内部实验]`
+
+当前 `vsp_uword_predecoder` 的默认输入是一组按 stream 顺序排列的
+`4 × 32-bit` word，word 0 最老，有效部分必须从 word 0 连续开始。它使用
+`vsp_uword_pkg` 中的内部实验 framing：
+
+| header `[31:28]` | 初步 class | record word 数 |
+|---|---|---:|
+| `0x1..0xa` | `EXEC` | 由 EXEC format 的 extension 规则决定 1 或 2 |
+| `0xb` | `MEMORY` | `1 + header[27:26]`，即 1 至 4 |
+| `0xc` | `CONTROL` | `1 + header[27:26]`，即 1 至 4 |
+| `0x0, 0xd..0xf` | undefined | 固定 1，并留给后级形成有序错误记录 |
+
+EXEC 是否拥有 extension 由 `vsp_exec_uword_extension_required()` 唯一判定，canonical
+expander 复用同一函数。已经识别的 EXEC format 即使 sub-op、reserved bit 或地址
+随后被判非法，仍按结构位消费 extension。MEMORY/CONTROL body 与 EXEC extension
+都是 opaque 32-bit word；它们的高 nibble 即使看起来像另一个 header，也不会被再次
+分类。
+
+`0xb/0xc + body_count` 只是当前内部 stream framing experiment，不定义
+MEMORY/CONTROL body 字段，也不承诺最终 ISA。它以两个 header bit 换取 class decoder
+尚未完成时的通用 1..4-word framing；相应代价是这些位损坏可能使扫描多消费后续
+word。若后续可靠性或 code-density 证据不接受该权衡，可以版本化改成
+`(major, subformat)` 固定长度表；不能让两套长度规则在同一 profile 中并存。
+
+一个 bundle 可同时输出多条归一化 record；未完成的最后一条不输出为完整 record，
+只报告 start/required/present 与已有 word。当前模块是无握手的组合原语：它不知道
+stream end、epoch、PC 或地址，也不把 tail 判成 truncated error。后续 bundle
+assembler 才负责 ready/valid、跨 bundle 补齐、结束/flush/discontinuity 处理和稳定
+输出。
+
+这些 record 仍缺 `context/tag/group_mask`、静态 legality、scheduling metadata 和
+class-specific canonical payload，不能直接接 `vsp_decoded_action_controller`。此外，
+当前 issue queue 只有一个 admission lane；在 bundle 最多产生四条 record 与现有单
+入队边界之间，还需要 serializer/staging 或显式 multi-enqueue 协议。
 
 ## 2. 区分三种表示 `[分析模型]`
 
@@ -77,9 +118,9 @@ canonical EXEC bundle 中的 function，不是完整 opcode。
 
 当前 `simd_issue_queue`、frontend 与 decode holding stage 提供第三种 hybrid 可复用
 的存储、发射和稳定输出协议边界，但不规定不透明字段的 bit layout。profile v0
-已经给出一个可测的 EXEC bit layout；方案比较仍需要 admission predecoder、实际
-integration、queue 面积和代表性 trace
-比较；前两种方案没有因此被架构性排除。“无解码队列”不是独立方案：保存
+已经给出一个可测的 EXEC bit layout 与 standalone bundle framing/class predecode；
+方案比较仍需要 admission legality/cached metadata、实际 integration、queue 面积和
+代表性 trace 比较；前两种方案没有因此被架构性排除。“无解码队列”不是独立方案：保存
 encoded uword 只是把译码推迟到队头之后。
 
 ## 4. 当前参考数据流 `[候选]`
@@ -439,10 +480,11 @@ barrier 语义的实测复杂度。
 - 当前 RTL：已有 legality、decoded group wrapper、EXEC frontend、completion
   tracker、decode holding stage，以及闭合 queue/dispatch/ingress/wrapper/
   result/reject 的 `simd_cluster_exec`；
-- 当前已有 strict single-active class router、ordered error/completion、最小
-  `CONTROL.END` 和已接入的 VRF-only memory engine；仍没有 admission predecoder、
-  queue-head integration、动态 owner/resource state、一般化 barrier、sequencer
-  control store/PC/loop 或 host completion；
+- 当前已有 standalone bundle framing/class predecoder、strict single-active class
+  router、ordered error/completion、最小 `CONTROL.END` 和已接入的 VRF-only memory
+  engine；仍没有跨 bundle assembler、admission legality/resource predecode、
+  action-envelope adapter、queue-head integration、动态 owner/resource state、一般化
+  barrier、sequencer control store/PC/loop 或 host completion；
 - action-stream wrapper 的 EXEC 输入是已收齐的 `base + optional extension` packet；
   `extension_required_diag` 不是跨拍 refill handshake。该 wrapper 的 exact-resource
   metadata 在 global non-overlap profile 中为零，不能作为 resource predecode 已完成

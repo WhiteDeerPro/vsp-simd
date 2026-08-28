@@ -20,8 +20,9 @@ VSP / SoC 子系统（未来）
     │   └── CONTROL.END → strong-quiescent completion
     ├── VRF vector memory engine（独立参考 RTL 已实现）
     ├── VRF arbiter（参考 RTL 已实现）
+    ├── 4-word uword bundle framing / class predecode（独立参考 RTL 已实现）
     ├── lane route（组内 crossbar 已实现；跨组 route 延期）
-    └── admission predecoder、动态 owner/resource 与 sequencer/control store（待实现）
+    └── bundle assembler、admission metadata、动态 owner/resource 与 sequencer/control store（待实现）
 ```
 
 “搜索、凝视、分层、附着、抽象、联合、追踪”属于软件算法。硬件不预设这些语义，只提供能够忠实、高效编纂这些算法的通用原语。
@@ -83,10 +84,12 @@ tracker、reject buffer 和 result collector 已组成可背压事务闭环。�
 state-read/write subrequest lane 使外部 engine 能传输 VRF row；它们不是算术指令。
 `simd_issue_decode_stage` 已给出晚译码后的稳定 holding 边界，profile-v0 EXEC
 parser/expander 也已在 controller wrapper 的 action 入口接入。当前 class router
-验证的是一个保守的、全局单 active action 路径；admission predecoder、cached
-resource metadata 与 queue-head late-decode 重排尚未实现。因此该 reference
-integration 可以验证程序顺序和完成合同，但还不是完整 sequencer，也不代表最终
-吞吐组织。
+验证的是一个保守的、全局单 active action 路径。`vsp_uword_predecoder` 已能在
+一个 4-word bundle 内划分 mixed uword record 并预判 dispatch class，但没有跨
+bundle 状态、action envelope、class-specific semantic decode 或 queue admission。
+admission legality/cached resource metadata 与 queue-head late-decode 重排尚未实现。
+因此该 reference integration 可以验证程序顺序和完成合同，但还不是完整 sequencer，
+也不代表最终吞吐组织。
 跨 lane 路由不再候选为与 MEMORY 并列的独立 command class。当前候选是寄存器形式的
 gather：`DR[lane] = SR[IR[lane]]`，其中索引向量 IR 由 VRF 提供，允许一对一置换
 与广播，不支持 scatter（同一操作内不会出现多通道写同一通道）。它属于 Vector ALU

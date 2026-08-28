@@ -11,8 +11,9 @@ canonical decoded control。
 EXEC reference frontend，它保存 opaque entry，并实现 RR live-head、
 locked shadow 和 dispatch；`simd_cluster_exec` 已把 full-decoded canonical
 control 送入多个 datapath wrapper，并闭合 completion/result。当前仍没有真实
-admission/queue-head predecoder；profile-v0 canonical expander 与 strict class router
-已在外层 action reference wrapper 接通，datapath/cluster leaf 仍只接收 canonical
+admission legality/queue-head predecoder；standalone bundle framing/class predecode 已有
+参考 RTL，profile-v0 canonical expander 与 strict class router 已在外层 action
+reference wrapper 接通，datapath/cluster leaf 仍只接收 canonical
 decoded control。边界与候选组织见
 [指令交付](../design/instruction-delivery.md)。
 
@@ -188,6 +189,7 @@ value/index/valid，不写入内部标量寄存器；当前 group 事务边界�
 - 裸 datapath 内的 load/store、DMA 与二维地址生成；独立 VRF vector memory engine 已经由
   wrapper/cluster reference path 接到 RF，但不把地址或 memory action 下沉到裸 datapath；
 - 裸 datapath 内部的 ready/valid 和多周期单元；外层 group wrapper 已有事务握手；
-- compact-uword predecoder、canonical expander 与 decoded group holding/path；cluster 层
-  已有 queue、RR live-head 和 opaque locked shadow 组成的 EXEC frontend；
+- compact-uword admission metadata、queue-head canonical expansion 与 decoded group
+  holding/path 的集成；bundle framing/class predecode、canonical expander 以及 cluster
+  queue、RR live-head 和 opaque locked shadow 已分别有参考 RTL；
 - bank conflict、旁路及物理 SRAM 映射。

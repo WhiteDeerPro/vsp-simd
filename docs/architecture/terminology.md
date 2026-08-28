@@ -72,6 +72,9 @@ vector operation、element 和 register，不暴露不必要的物理分组。
 | action completion | action 的统一有序退休记录；`valid` 时保留原 class/context/tag/requested-group-mask 与 status，原 envelope 非法时 class/context 也保留该非法值供相关和诊断；class-specific engine detail 在 controller-local error 时为零 |
 | `program_done` | 成功 `END` completion 被接收时的单拍脉冲；表示结束记录退休，不自动证明此前每个 action 成功，也不等同于 host interrupt |
 | sequencer/control word (`uword`) | 候选的紧凑内部控制存储格式；不是已定义的 16/32-bit ISA instruction |
+| uword bundle | 同拍交给内部组合扫描逻辑的一组连续 32-bit uword stream word；不是 cache line、IFetch response 或软件 instruction bundle |
+| uword record | stream 中由一个 header 和零至多个 opaque body word 组成的结构记录；当前 EXEC record 也称 EXEC packet |
+| bundle predecoder | 只判定 uword record 边界、major 是否已定义和 `EXEC/MEMORY/CONTROL` class 的内部组合逻辑；不做完整 admission legality、资源派生或 class-specific decode |
 | EXEC uword profile v0 | 当前用于实验的 `32-bit base + optional immediate extension` 内部 EXEC 表示；不包含 action envelope、MEMORY/CONTROL 或外部 ISA 承诺 |
 | micro-op (`uop`) | 已译码或部分译码、可供调度和执行消费的内部操作 |
 | function ID | canonical EXEC bundle 中的 `simd_op_e`；不是完整 opcode |

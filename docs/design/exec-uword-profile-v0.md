@@ -5,7 +5,8 @@
 > canonical EXEC 控制压缩后交给 sequencer、控制存储和 issue queue。
 > 它不定义外部软件 ISA，不声明 RVV 二进制兼容，也不改变
 > `simd_op_e` 在 SIMD4 边界上的 canonical function 角色。reference action wrapper
-> 已使用本 profile；admission/queue-head 集成仍在后续。
+> 已使用本 profile；standalone uword bundle predecoder 已复用其 packet 长度规则，
+> admission/queue-head 集成仍在后续。
 
 ## 1. 目标与适用范围
 
@@ -95,10 +96,16 @@ format summary：
 | `0x8` | WADD_WSUB | 禁止；align 在 base 内 |
 | `0x9` | COMPACT | 禁止 |
 | `0xa` | MRF_LOGIC | 禁止 |
-| `0xb..0xf` | reserved | 不适用 |
+| `0xb..0xf` | 非 EXEC / reserved | 不适用 |
 
 `alu_op`、`cmp_op`、`wide_op` 等都是 format-local sub-op。它们不是
 `simd_op_e` 的截短形式，也不能绕过映射表直接驱动 datapath。
+
+从本 EXEC expander 看，`0xb/0xc` 仍不是合法 EXEC format。独立的 mixed-uword
+framing experiment 在更外层暂用它们预判 `MEMORY/CONTROL` class，并用
+`header[27:26]` 表示 0..3 个 opaque body word；该规则定义在 `vsp_uword_pkg`，不属于
+本文的 MEMORY/CONTROL semantic encoding。若以后的 EXEC profile 要复用这两个
+值，必须同时版本化或替换外层 framing，不能静默重叠。
 
 ### 3.2 Execution mask selector
 
@@ -537,16 +544,23 @@ VRF/ARF/MRF、不产生 partial multicast；只有 error completion 获得可靠
 
 ```text
 control-store word stream
-        -> base/extension collector
-        -> format parse + static legality + cached sched metadata
+        -> stateful bundle assembler                       [待实现]
+        -> bundle framing + major/class predecode          [已有组合参考]
+        -> action-envelope binding + class-specific decode [待实现]
+        -> static legality + cached sched metadata         [待实现]
         -> per-context compact queue
         -> selected-head canonical expander
         -> exact legality/resource check
         -> EXEC class path
 ```
 
-collector 必须先取得完整 base/extension packet 才能报告 admission valid。静态错误也
+assembler 必须先取得完整 record，EXEC adapter 才能报告 admission valid。静态错误也
 以完整 entry 入队并按 context 顺序退休，不能在 enqueue 时越过更老 action。
+
+`vsp_uword_predecoder` 已组合划分一个 bundle 内的完整 record 与未完成尾部；它没有
+ready/valid、stream-end 或跨 bundle storage，因此不替代 assembler。对一条完整
+EXEC record，word 0 是 base，word 1（若存在）是 extension，body word 不再按 header
+分类。结构长度由 `vsp_exec_uword_extension_required()` 与 canonical expander 共享。
 
 `vsp_exec_uword_expander` 的 `base_valid_i` 表示输入 packet 已经结束，而不是“base
 到了、extension 也许稍后到”。因此 `out_valid_o=base_valid_i`；若格式要求 extension
@@ -577,8 +591,9 @@ route boundary operands = 0
 
 当前 local GATHER/BROADCAST/SLIDE 的 index、amount 与 boundary staging 需要自己的
 format/operand 合同。它们不复用 immediate extension，也不把 32-bit lower/upper
-boundary data 放进控制字。后续 route profile 可以占用保留的 `fmt`，或定义独立
-extension kind。
+boundary data 放进控制字。后续 route profile 可以占用仍可用的 EXEC format，或定义
+独立 extension kind；若与 mixed-uword experiment 使用的 `0xb/0xc` 重叠，应同时调整
+该版本的 outer framing。
 
 ### MEMORY 与 CONTROL
 

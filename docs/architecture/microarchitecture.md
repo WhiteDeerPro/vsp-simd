@@ -16,7 +16,8 @@ side-effect gate。`simd_cluster_issue_frontend` 位于图外的 cluster 控制
 dispatcher。`simd_cluster_exec` 又在其外加入 per-group ingress、四个 wrapper、
 tracker、reject buffer 和 result collector，形成 full-decoded EXEC 参考闭环。
 profile-v0 canonical expander 与 strict class router 已在更外层的 controller wrapper
-接入；admission predecoder 和 queue-head late-decode 仍未实现。
+接入；standalone bundle framing/class predecoder 也已实现，admission legality/
+resource metadata 和 queue-head late-decode 集成仍未实现。
 已经实现的 `simd_group_wrapper` 也位于本叶数据
 通路图外，负责 decoded EXEC、state-write 与 VRF state-read ready/valid、状态访问
 仲裁和独立返回缓存，见
@@ -147,7 +148,7 @@ RF read -> optional route / operand mux -> lane execute -> optional reduce
 
 尚未实现的主要结构包括：
 
-- admission predecoder、cached resource metadata、queue-head canonical expansion、
+- admission legality/cached resource metadata、queue-head canonical expansion、
   标量寄存器和标量 ALU；EXEC frontend 已有独立参考 RTL，slot 仍是 opaque shadow；
 - per-context/concurrent class scheduling、长期资源预留、动态 owner table、一般化
   barrier/admin 与 host completion；当前 strict controller 已提供单 active action 的

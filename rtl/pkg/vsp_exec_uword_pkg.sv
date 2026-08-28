@@ -124,6 +124,31 @@ package vsp_exec_uword_pkg;
     endcase
   endfunction
 
+  // Record framing needs to know whether an EXEC base word owns the following
+  // stream word before the full canonical decode runs. Keep that decision in
+  // the profile package so a uword-bundle predecoder and the canonical
+  // expander cannot silently disagree about EXEC packet boundaries.
+  /* verilator lint_off UNUSED */
+  function automatic logic vsp_exec_uword_extension_required(
+      input logic [VSP_EXEC_UWORD_W-1:0] base_word);
+    unique case (base_word[31:28])
+      VSP_EXEC_UWORD_FMT_ALU:
+        vsp_exec_uword_extension_required = base_word[5];
+      VSP_EXEC_UWORD_FMT_CMP:
+        vsp_exec_uword_extension_required = base_word[6];
+      VSP_EXEC_UWORD_FMT_SELECT,
+      VSP_EXEC_UWORD_FMT_MUL:
+        vsp_exec_uword_extension_required = base_word[8];
+      VSP_EXEC_UWORD_FMT_MAC_RI:
+        vsp_exec_uword_extension_required = 1'b1;
+      VSP_EXEC_UWORD_FMT_WIDE_CONVERT:
+        vsp_exec_uword_extension_required = base_word[9];
+      default:
+        vsp_exec_uword_extension_required = 1'b0;
+    endcase
+  endfunction
+  /* verilator lint_on UNUSED */
+
   function automatic logic vsp_exec_mask_sel_defined(
       input logic [2:0] mask_sel);
     vsp_exec_mask_sel_defined = mask_sel <= VSP_EXEC_MASK_M3;

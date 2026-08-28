@@ -36,6 +36,9 @@
 - `vsp_exec_uword_expander`：解析内部 profile v0 的 32-bit base 与可选 immediate
   extension，覆盖当前全部非 route EXEC function，并对非法 word 进行无副作用
   canonicalization；已接入 strict controller action 入口，尚未接入 queue/head holding；
+- `vsp_uword_predecoder`：默认并行扫描 4 个连续 32-bit uword stream word，按结构长度
+  划分完整 record、预判 dispatch class，并报告待续接尾 record；当前是无状态组合
+  reference，不含 assembler、envelope 或 class-specific semantic decode；
 - 独立 VRF-only `vsp_vector_memory_engine`：single active parent/single
   outstanding memory beat、稀疏 group-mask 连续 beat 映射、LOAD/STORE 子事务与
   stop-on-first partial completion；
@@ -49,9 +52,10 @@
   profile-v0 encoded EXEC → decoded STORE → CONTROL.END 回归已通过；
 - 全量 lint/test 基线。
 
-当前优先级转向 admission predecoder/queue-head integration、动态 owner/resource
-状态和 sequencer control-store/PC/loop 交付；跨组 route 已从这条执行闭环中解耦并
-延期。物理 memory hierarchy 仍在 `dmem_*` 逻辑边界之外。在出现新的阻塞负载证据
+当前优先级转向跨 bundle assembler、admission legality/cached metadata、queue-head
+integration、动态 owner/resource 状态和 sequencer control-store/PC/loop 交付；跨组
+route 已从这条执行闭环中解耦并延期。物理 memory hierarchy 仍在 `dmem_*` 逻辑边界
+之外。在出现新的阻塞负载证据
 前，暂缓增加 lane arithmetic feature。
 
 ## M1：SIMD4 transaction wrapper `[已实现参考]`
@@ -131,7 +135,8 @@ frontend/dispatcher/tracker 随机测试继续覆盖 mask overlap、表满和多
   group-mask 冲突避让和 terminal pop；
 - `simd_issue_decode_stage` 已实现每 issue slot 的 decoded holding、provenance、
   class/response/resource/canonical 元数据与同拍 retire/refill；EXEC
-  expander 已实现并接到 controller action 入口；待实现 admission predecode、
+  expander 已实现并接到 controller action 入口；bundle framing/class predecode 也有
+  standalone reference。待实现 action-envelope adapter、admission legality、
   class/resource metadata，并替换当前 `hook_*` 后接入 queue ownership；字段分层见
   [指令交付](instruction-delivery.md)；
 - 接入 late expander 时，把 reference frontend 当前内部的 dispatch terminal/pop

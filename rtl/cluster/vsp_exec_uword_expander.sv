@@ -127,7 +127,8 @@ module vsp_exec_uword_expander #(
     mask_selector_present = 1'b0;
     mask_sel = VSP_EXEC_MASK_NONE;
     reduce_sel = VSP_EXEC_REDUCE_NONE;
-    extension_required_raw = 1'b0;
+    extension_required_raw =
+        vsp_exec_uword_extension_required(base_word_i);
     immediate_kind = IMM_KIND_NONE;
     raw_reads_vrf_a = 1'b0;
     raw_reads_vrf_b = 1'b0;
@@ -189,13 +190,13 @@ module vsp_exec_uword_expander #(
         raw_dst_vrf_addr = base_word_i[12:9];
         mask_selector_present = 1'b1;
         mask_sel = base_word_i[8:6];
-        extension_required_raw = base_word_i[5];
-        raw_use_imm = base_word_i[5];
+        raw_use_imm = extension_required_raw;
         raw_write_vrf = base_word_i[4];
         raw_export_narrow = base_word_i[3];
         reduce_sel = base_word_i[2:0];
-        immediate_kind = base_word_i[5] ? IMM_KIND_ELEMENT : IMM_KIND_NONE;
-        if (base_word_i[5]) begin
+        immediate_kind = extension_required_raw ? IMM_KIND_ELEMENT :
+                                                   IMM_KIND_NONE;
+        if (extension_required_raw) begin
           raw_reads_vrf_b = 1'b0;
           unused_ok = unused_ok && (base_word_i[16:13] == 4'h0);
           raw_src_b_addr = '0;
@@ -227,14 +228,14 @@ module vsp_exec_uword_expander #(
         raw_dst_mrf_addr = base_word_i[11:10];
         mask_selector_present = 1'b1;
         mask_sel = base_word_i[9:7];
-        extension_required_raw = base_word_i[6];
-        raw_use_imm = base_word_i[6];
+        raw_use_imm = extension_required_raw;
         raw_write_vrf = base_word_i[5];
         raw_write_mrf = base_word_i[4];
         raw_export_narrow = base_word_i[3];
-        immediate_kind = base_word_i[6] ? IMM_KIND_ELEMENT : IMM_KIND_NONE;
+        immediate_kind = extension_required_raw ? IMM_KIND_ELEMENT :
+                                                   IMM_KIND_NONE;
         reserved_ok = base_word_i[2:0] == 3'h0;
-        if (base_word_i[6]) begin
+        if (extension_required_raw) begin
           raw_reads_vrf_b = 1'b0;
           unused_ok = unused_ok && (base_word_i[19:16] == 4'h0);
           raw_src_b_addr = '0;
@@ -256,14 +257,14 @@ module vsp_exec_uword_expander #(
         mask_selector_present = 1'b1;
         mask_sel = base_word_i[13:11];
         raw_select_mask_addr = base_word_i[10:9];
-        extension_required_raw = base_word_i[8];
-        raw_use_imm = base_word_i[8];
+        raw_use_imm = extension_required_raw;
         raw_write_vrf = base_word_i[7];
         raw_export_narrow = base_word_i[6];
         reduce_sel = base_word_i[5:3];
-        immediate_kind = base_word_i[8] ? IMM_KIND_ELEMENT : IMM_KIND_NONE;
+        immediate_kind = extension_required_raw ? IMM_KIND_ELEMENT :
+                                                   IMM_KIND_NONE;
         reserved_ok = base_word_i[2:0] == 3'h0;
-        if (base_word_i[8]) begin
+        if (extension_required_raw) begin
           raw_reads_vrf_b = 1'b0;
           unused_ok = unused_ok && (base_word_i[21:18] == 4'h0);
           raw_src_b_addr = '0;
@@ -282,15 +283,15 @@ module vsp_exec_uword_expander #(
         raw_dst_arf_addr = base_word_i[14:12];
         mask_selector_present = 1'b1;
         mask_sel = base_word_i[11:9];
-        extension_required_raw = base_word_i[8];
-        raw_use_imm = base_word_i[8];
+        raw_use_imm = extension_required_raw;
         raw_write_vrf = base_word_i[7];
         raw_write_arf = base_word_i[6];
         raw_export_narrow = base_word_i[5];
         reduce_sel = base_word_i[4:2];
-        immediate_kind = base_word_i[8] ? IMM_KIND_ELEMENT : IMM_KIND_NONE;
+        immediate_kind = extension_required_raw ? IMM_KIND_ELEMENT :
+                                                   IMM_KIND_NONE;
         reserved_ok = base_word_i[1:0] == 2'h0;
-        if (base_word_i[8]) begin
+        if (extension_required_raw) begin
           raw_reads_vrf_b = 1'b0;
           unused_ok = unused_ok && (base_word_i[22:19] == 4'h0);
           raw_src_b_addr = '0;
@@ -317,7 +318,6 @@ module vsp_exec_uword_expander #(
         raw_write_arf = base_word_i[4];
         raw_export_narrow = base_word_i[3];
         reduce_sel = base_word_i[2:0];
-        extension_required_raw = format == VSP_EXEC_UWORD_FMT_MAC_RI;
         raw_use_imm = extension_required_raw;
         immediate_kind = extension_required_raw ? IMM_KIND_ELEMENT :
                                                    IMM_KIND_NONE;
@@ -395,13 +395,13 @@ module vsp_exec_uword_expander #(
         raw_reads_vrf_b = 1'b1;
         mask_selector_present = 1'b1;
         mask_sel = base_word_i[12:10];
-        extension_required_raw = base_word_i[9];
-        raw_use_imm = base_word_i[9];
+        raw_use_imm = extension_required_raw;
         raw_export_narrow = base_word_i[7];
         reduce_sel = base_word_i[6:4];
-        immediate_kind = base_word_i[9] ? IMM_KIND_SHIFT : IMM_KIND_NONE;
+        immediate_kind = extension_required_raw ? IMM_KIND_SHIFT :
+                                                   IMM_KIND_NONE;
         reserved_ok = base_word_i[3:0] == 4'h0;
-        if (base_word_i[9]) begin
+        if (extension_required_raw) begin
           raw_reads_vrf_b = 1'b0;
           unused_ok = unused_ok && (base_word_i[20:17] == 4'h0);
           raw_src_b_addr = '0;
