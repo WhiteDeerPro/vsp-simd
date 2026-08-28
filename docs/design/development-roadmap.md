@@ -30,7 +30,7 @@
   command completion、独立 expected-result 生命期与 protocol-error sticky；
 - 默认 `4 group / 2 context / 2 slot` 的 GROUP_EXEC cluster exec shell：
   slot-specific tracker/resource gate、原子 ingress multicast、四个 group wrapper、
-  buffered reject completion、state-write child lane 与 RR result collector；
+  buffered reject completion、state-read/write child lane 与 RR result collector；
 - 每 issue slot 一项的 decode holding shell：raw/resolved/cached provenance 与
   canonical class/resource/payload 输出在背压下保持稳定；真实 compact decoder
   仍是可替换 hook；
@@ -41,6 +41,9 @@
   `vsp_cluster_vrf_service` 的多 client read/write 仲裁和返回归属保持；
 - `vsp_cluster_memory_shell` decoded reference integration：span engine 经 shared
   VRF service 接入四组 cluster，端到端 LOAD→GROUP_EXEC→STORE 回归已通过；
+- `vsp_cluster_actor_shell`：MEMORY span actor 与 row-exchange engine 作为
+  shared VRF service 的两个 client 同时在线，已验证 EXCHANGE 到真实 group VRF row
+  的数据通路、inverse-route 恢复、稀疏 src mask 与两 client 并发仲裁；
 - 独立 `vsp_benes_exchange_engine`：一条 command 一个 row pass，external resolved
   route descriptor 快照、mask-shadow 核对、全 source capture 后的
   `GROUP_COUNT×36-bit` Bênes、串行 masked write 和 stop-on-first completion；
@@ -181,7 +184,7 @@ ack 时目标 inflight 必须为零。
 请求背压、parent completion 与 protocol-error。该测试证明 decoded wiring 闭环，
 不证明硬件 local SRAM、最终 MEMORY ISA 或跨 class 自动排序已经完成。
 
-## M5：group-aligned row exchange 与多 pass `[独立 engine 已实现，集成待办]`
+## M5：group-aligned row exchange 与多 pass `[engine 与 cluster wiring 已实现，route table/class router 待办]`
 
 独立于普通 ALU 路径的四端口 row-level exchange engine 已实现：
 
@@ -207,8 +210,13 @@ ack 时目标 inflight 必须为零。
   使用 local route，不给 Bênes 增加复制能力；
 - 原地多 pass 使用 scratch/ping-pong 或编译器 cycle decomposition。
 
-route table、class router、cluster/group-wrapper wiring 和 shared-resource 仲裁仍为
-本阶段待实现内容；route-register 数量、装载方式与 compact-uword 编码仍开放。
+cluster/group-wrapper wiring 已由 `vsp_cluster_actor_shell` 完成：engine 作为
+shared VRF service 的第二个 client，与 MEMORY span actor 共用同一组 group VRF
+state-read/write 端点，并已验证两个 parent 并发在飞时各自返回归属正确。
+
+route table、EXCHANGE class router 和 shared-resource 仲裁仍为本阶段待实现内容；
+route-register 数量、装载方式与 compact-uword 编码仍开放。跨 class program order
+也仍不存在：并发命令的 VRF row 不重叠由上层保证。
 
 验收：随机四路 row permutation 上 data/byte mask 同步且 token 守恒；验证
 identity、route 与 inverse 恢复、partial mask、随机 backpressure，以及用

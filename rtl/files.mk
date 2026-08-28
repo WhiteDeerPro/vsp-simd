@@ -33,6 +33,7 @@ RTL_CLUSTER_RESULT_COLLECTOR := rtl/cluster/simd_cluster_result_collector.sv
 RTL_CLUSTER_EXEC_SHELL := rtl/cluster/simd_cluster_exec_shell.sv
 RTL_CLUSTER_VRF_SERVICE := rtl/cluster/vsp_cluster_vrf_service.sv
 RTL_CLUSTER_MEMORY_SHELL := rtl/cluster/vsp_cluster_memory_shell.sv
+RTL_CLUSTER_ACTOR_SHELL := rtl/cluster/vsp_cluster_actor_shell.sv
 RTL_UOP_LEGAL := rtl/cluster/simd_uop_legal.sv
 RTL_VRF_SPAN_ENGINE := rtl/memory/vsp_vrf_span_engine.sv
 
@@ -70,3 +71,9 @@ CLUSTER_EXEC_SHELL_RTL := $(GROUP_WRAPPER_RTL) $(RTL_ISSUE_QUEUE) \
 CLUSTER_MEMORY_SHELL_RTL := $(CLUSTER_EXEC_SHELL_RTL) $(RTL_VSP_PKG) \
 		$(RTL_CLUSTER_VRF_SERVICE) $(RTL_VRF_SPAN_ENGINE) \
 		$(RTL_CLUSTER_MEMORY_SHELL)
+# Both non-EXEC actors online at once. This closure adds the Benes network and
+# row-exchange engine on top of the MEMORY closure.
+CLUSTER_ACTOR_SHELL_RTL := $(CLUSTER_EXEC_SHELL_RTL) $(RTL_VSP_PKG) \
+		$(RTL_CLUSTER_VRF_SERVICE) $(RTL_VRF_SPAN_ENGINE) \
+		$(RTL_BENES) $(RTL_BENES_EXCHANGE_ENGINE) \
+		$(RTL_CLUSTER_ACTOR_SHELL)

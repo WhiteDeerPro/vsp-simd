@@ -52,8 +52,9 @@ RTL 是当前实现，testbench 是证据，设计文档表达意图。三者冲
 | 集成哨兵 | `simd_datapath_tb` | RF 读写、控制组合、写回和 illegal gate 能协同 | 上层 controller、DMA 或物理 RF 已闭合 |
 | 协议安全 | `simd_group_wrapper_tb`、`simd_group_completion_tracker_tb`、`simd_issue_queue_tb`、`simd_cluster_issue_frontend_tb`、`simd_issue_dispatch_tb`、`simd_issue_decode_shell_tb`、`simd_cluster_result_collector_tb`、`simd_cluster_exec_shell_tb`、`simd_cluster_exec_shell_tracker_credit_tb`、`simd_uop_legal_tb` | 单 group EXEC/state-write/state-read child 守恒、独立返回背压、FIFO 顺序/弹性替换、RR queue claim、opaque/decoded holding 稳定、reject credit、terminal pop、原子 multicast；tracker 的 candidate/commit 分离、乱序/同拍 child、pending/result lifetime、满表背压与 protocol-error sticky；full-decoded GROUP_EXEC shell 的 ingress/wrapper/tracker/result/reject 及 group-addressed VRF state-read/write 边界 | compact-uword parser/canonical expander、class router、有状态 resource scheduler/controller、host completion 或物理 local SRAM/DMA 已连接，或编码和容量选择最优 |
 | VRF span 协议 | `vsp_vrf_span_engine_tb` | single active parent/single outstanding dmem beat 的 LOAD/STORE，exec/address context 分离，address-space/eaddr 传递，4-byte 对齐，稀疏 group 升序 beat、tail，STORE child completion/result 任意序，fault cause/eaddr、背压、stop-on-first 与 partial masks/bytes | 仅凭独立 engine 测试就声称 cluster wiring、ARF/MRF 直接传输、MMU/TLB/PTW/cache/IFetch、多 outstanding/乱序返回或自动 command coalescing 已实现，或描述符已是最终 ISA |
-| Cluster VRF service | `vsp_cluster_vrf_service_tb` | 多 client read/write RR 仲裁、单 child owner 保持、read completion/response 独立返回与背压、write completion/error 路由、reset | common class/program-order controller、寄存器依赖检查、group ownership、EXCHANGE 已接线或多 child outstanding 已实现 |
-| Decoded memory 闭环 | `vsp_cluster_memory_shell_tb` | span engine 经 shared VRF service 接到 cluster state-read/write；边界外 local-memory model 下 LOAD→ADD-immediate GROUP_EXEC→STORE 的四组结果、dmem backpressure、completion/protocol 状态，共 117 项检查 | common class router/program-order enforcement、owner/resource controller、物理 local SRAM、MMU/cache/DMA、EXCHANGE wiring 或最终 MEMORY ISA 已实现 |
+| Cluster VRF service | `vsp_cluster_vrf_service_tb` | 多 client read/write RR 仲裁、单 child owner 保持、read completion/response 独立返回与背压、write completion/error 路由、reset | 仅凭 service 单元测试就声称 common class/program-order controller、寄存器依赖检查、group ownership、EXCHANGE 接线或多 child outstanding 已实现 |
+| Decoded memory 闭环 | `vsp_cluster_memory_shell_tb` | span engine 经 shared VRF service 接到 cluster state-read/write；边界外 local-memory model 下 LOAD→ADD-immediate GROUP_EXEC→STORE 的四组结果、dmem backpressure、completion/protocol 状态，共 117 项检查 | 仅凭 memory-only profile 就声称 common class router/program-order enforcement、owner/resource controller、物理 local SRAM、MMU/cache/DMA、EXCHANGE wiring 或最终 MEMORY ISA 已实现 |
+| 双 actor 共享 VRF 闭环 | `vsp_cluster_actor_shell_tb` | span actor 与 row-exchange engine 作为 shared VRF service 的两个 client 同时在线；EXCHANGE 到真实 group VRF row 的置换数据、inverse-route metamorphic 恢复、稀疏 src mask 下未路由目的 row 保持原值、两 client 并发在飞时各自 completion 归属与 tag 不串、parent completion 背压稳定 | route table、EXCHANGE class router、跨 class program-order、owner/resource controller、非二次幂 padding、整逻辑向量原子性、物理 local SRAM 或最终 EXCHANGE ISA 已实现；并发重叠 row 的顺序语义 |
 | Row exchange 协议 | `vsp_benes_exchange_engine_tb` | 一条 command 一个 row pass；data/byte mask 同路、route snapshot、全源 capture 后写回、稀疏 group、背压、错误与 partial；长逻辑向量可由独立 pass 组合 | route table/compiler、EXCHANGE class router、VRF bridge、共享资源仲裁、非二次幂 padding、整向量原子性或 Bênes broadcast 已实现 |
 | 参数稳健性 | `simd_issue_dispatch_wide_tb`，queue 的非二次幂与单项动态测试/lint，8/16-lane lint | 参数变化下实现没有暴露已测错误 | 8-group、具体 queue 深度或 8/16-lane 已成为架构 profile |
 | 组件性质 | `benes_network_tb` | 当前 8-port 裸网络控制能覆盖所有 permutation | 网络规模、流水、分级和物理实现合适 |
@@ -62,8 +63,8 @@ RTL 是当前实现，testbench 是证据，设计文档表达意图。三者冲
 
 当前 `make test` 仍是聚合入口；wrapper、completion tracker、decode holding、result
 collector、GROUP_EXEC exec shell、VRF span engine、cluster VRF service、decoded
-memory shell、row exchange engine、issue queue 与 frontend 都已纳入现有
-`lint/test` 聚合入口，没有为该分类另建顶层脚本。
+memory shell、双 actor shell、row exchange engine、issue queue 与 frontend 都已纳入
+现有 `lint/test` 聚合入口，没有为该分类另建顶层脚本。
 
 ## 4. 新测试的准入问题
 

@@ -183,7 +183,9 @@ mask 当作允许复制或吞掉活动 packet 的选择网络。
 首版 engine 是单飞行状态机：source row 按 group 编号串行读取，所有 active source
 完整 capture 后通过 `GROUP_COUNT × 36-bit` Bênes 锁存结果，再按 group 编号串行
 提交 masked write。read/write child 错误 stop-on-first；parent completion 报告
-requested/completed/failed mask 和 partial。该 actor 尚未接入现有 cluster shell。
+requested/completed/failed mask 和 partial。该 actor 已由
+`vsp_cluster_actor_shell` 经 shared VRF service 接到四组 cluster（见 §12），
+但仍没有 route table、EXCHANGE class router 与共享资源仲裁。
 
 逻辑向量通常超出一个 pass 的 row 容量。sequencer 把交换拆成多个无 source/destination
 端口冲突的 pass；跨组复制可通过多次读取源 row 完成，组内复制交给 local
@@ -300,7 +302,8 @@ reference integration 位于其外层的 `vsp_cluster_memory_shell`。
 child endpoint，而不是 program-level `RF_FILL`。它不属于 `simd_op_e`；metadata
 与 write data 在叶端作为一个原子 beat 接受，data 不进入指令队列。
 `vsp_vrf_span_engine` 能把一个 VRF-only LOAD/STORE parent 分解为多个 child beat；
-当前 MEMORY reference shell 已把这些 child 接到 wrapper，EXCHANGE 尚未接入。
+当前 MEMORY reference shell 已把这些 child 接到 wrapper；双 actor shell
+进一步把 EXCHANGE child 接到同一 shared VRF service。
 
 ## 10. 当前 GROUP_EXEC frontend RTL 边界 `[RTL事实]`
 
@@ -384,11 +387,34 @@ decoded GROUP_EXEC → cluster exec shell┘       ↓
 span dmem_* ↔ external data-memory logical boundary
 ```
 
-当前 shell 以单个 MEMORY client 使用 service；多 client 接口为未来 EXCHANGE 等
-actor 保留，但 EXCHANGE 尚未接线。GROUP_EXEC 与 MEMORY 各有独立 command/completion
-端口，没有 common class router、统一 error/completion mux 或 program-order
-enforcement。reference test 通过等待 LOAD completion 后提交 GROUP_EXEC、再等待其
-completion 后提交 STORE 来建立顺序；shell 不会从两个入口自行推导数据依赖。
+`vsp_cluster_memory_shell` 以单个 MEMORY client 使用 service。GROUP_EXEC 与
+MEMORY 各有独立 command/completion 端口，没有 common class router、统一
+error/completion mux 或 program-order enforcement。reference test 通过等待 LOAD
+completion 后提交 GROUP_EXEC、再等待其 completion 后提交 STORE 来建立顺序；shell
+不会从两个入口自行推导数据依赖。
+
+`vsp_cluster_actor_shell` 是同时挂载两个非 EXEC actor 的集成 profile：
+
+```text
+decoded GROUP_EXEC → cluster exec shell ─────────────┐
+decoded MEMORY     → vsp_vrf_span_engine  ─ client0 ─┤
+decoded EXCHANGE   → vsp_benes_exchange_engine ─ client1 ─┴→ shared VRF service
+                                                              ↓
+                                                     group VRF state R/W
+```
+
+它把 service 的第二个 client 从预留注释变成被验证的接线：两个 parent 可以同时
+在飞，service 以 RR 交错它们的 VRF child 并各自保持返回归属。`cmd_route_ctrl`
+仍是外部已解析的 route-register 快照，shell 内没有 route table，也不解码紧凑
+route 字段。
+
+两个 shell 是不同的 integration profile，不是新旧替代关系：exchange engine 要求
+二次幂 `GROUP_COUNT` 与 4-byte VRF row，因此 `GROUP_COUNT=6`、8-lane 等参数稳健性
+profile 继续由 `vsp_cluster_memory_shell` 承担。
+
+actor shell 同样没有跨 class program order：并发 MEMORY 与 EXCHANGE 命令必须由
+上层安排到互不重叠的 VRF row，重叠时的顺序是未来 controller 的调度问题，不由
+shell 推导。
 
 owner snapshot 仍由外部输入，GROUP_EXEC resource grant 在此参考壳中固定为全可用；
 动态 owner/resource controller、barrier 与跨 class quiescence 尚未实现。`dmem_*`
@@ -421,9 +447,9 @@ SRAM RTL，也不包含 cache、MMU/TLB/PTW、DMA 或 coherence。当前 117 项
    入口及外部 owner/grant 配置收进有状态 controller；
 3. 保留当前 span→shared VRF service→wrapper 接线，在 `dmem_*` 下游比较并接入
    物理 local SRAM、cache/MMU adapter 或 DMA 边界；
-4. 把已有四端口 `4×36-bit` row-level exchange engine 接到 EXCHANGE class、
-   route-register resolve 和 group wrapper，并用 sequencer 多 pass + local route
-   验证 word 分发和重组；
+4. 四端口 `4×36-bit` row-level exchange engine 已由 `vsp_cluster_actor_shell`
+   接到 group wrapper 的共享 VRF 边界；仍待实现 route-register resolve、EXCHANGE
+   class router，以及用 sequencer 多 pass + local route 验证 word 分发和重组；
 5. 在 span engine 下游接 DMA/地址空间 adapter，再依据实测比较二维地址
    与多 outstanding，不在
    SIMD group 内处理 cache coherence；

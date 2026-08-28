@@ -14,7 +14,8 @@ VSP / SoC 子系统（未来）
     │   └── completion tracker / result collector / reject sink
     ├── predecoder / compact decoder / class router（尚无 RTL）
     ├── VRF span engine（独立参考 RTL 已实现）
-    └── owner/barrier/MEMORY 集成与 sequencer controller（待实现）
+    ├── row-level exchange engine（独立 RTL 已实现，已接入共享 VRF 边界）
+    └── owner/barrier/跨 class 顺序与 sequencer controller（待实现）
 ```
 
 “搜索、凝视、分层、附着、抽象、联合、追踪”属于软件算法。硬件不预设这些语义，只提供能够忠实、高效编纂这些算法的通用原语。
@@ -42,14 +43,14 @@ VSP / SoC 子系统（未来）
   有序 FIFO、round-robin live-head、opaque locked shadow、显式 reject credit
   和 terminal pop；
 - 多 context、多 issue slot 的 owner 检查、原子 group-mask 分发和错误 reject；
-- 单 group 的 decoded EXEC 与 RF state-write ready/valid、tagged child completion、可背压
-  result capture 和状态传输仲裁；
+- 单 group 的 decoded EXEC、RF state-write 与 VRF state-read ready/valid，
+  tagged child completion/data response、可背压 result capture 和状态传输仲裁；
 - 默认 `4 group / 2 alloc slot / 2 context / 4 entry` 的 GROUP_EXEC command
   completion tracker：按 `context+tag` 聚合可乱序/同拍 child completion，
   独立跟踪 expected result mask，并以可背压 RR 输出唯一 command completion；
 - 默认 `4 group / 2 context / 2 slot` 的 `simd_cluster_exec_shell`：完整 decoded
   GROUP_EXEC admission、slot-specific resource grant、原子 tracker commit、每 group
-  单项 ingress、四个 transaction wrapper、state-write child lane、reject completion
+  单项 ingress、四个 transaction wrapper、state-read/write child lane、reject completion
   与 RR result collector；
 - `simd_issue_decode_shell`：每 issue slot 一项的 late-decode holding 边界，保存
   raw/resolved/cached provenance 与 class/response/resource/canonical 输出；当前使用
@@ -57,18 +58,29 @@ VSP / SoC 子系统（未来）
 - 独立 `vsp_vrf_span_engine`：VRF-only，一个 active parent、一个
   outstanding memory beat，按 group 升序在连续 4-byte beat 上执行
   LOAD/STORE，并报告 stop-on-first 的 partial masks/bytes；
+- `vsp_cluster_actor_shell`：MEMORY span actor 与 row-exchange engine 作为
+  `vsp_cluster_vrf_service` 的两个 client 同时在线，共用同一组 group VRF
+  state-read/write 端点；已验证 EXCHANGE 到真实 group VRF row 的置换、
+  inverse-route 恢复、稀疏 source mask 与两 client 并发在飞的返回归属；
 - Verilator lint 与自检仿真。
 
 当前 `simd_cluster_exec_shell` 采用 full-decoded reference profile：入口直接提供
 canonical GROUP_EXEC 控制，内部 queue、dispatcher、per-group ingress、wrapper、
-tracker、reject buffer 和 result collector 已组成可背压事务闭环。可信 state-write
-child lane 可为测试驱动或未来 MEMORY actor 注入 RF 数据；它不是算术指令。
+tracker、reject buffer 和 result collector 已组成可背压事务闭环。可信
+state-read/write child lane 使外部 actor 能传输 VRF row；它们不是算术指令。
 `simd_issue_decode_shell` 已给出晚译码后的稳定 holding 边界，但 compact uword 的
 真实 parser/predecoder、class router 和 encoded 格式尚未实现，也尚未重排到当前
 frontend 的 queue-head 路径。因此 reference shell 不能被称为完整 decoder、
 controller 或 sequencer。
+`vsp_cluster_actor_shell` 让 row-exchange engine 成为共享 VRF service 的第二个
+client，与 MEMORY span actor 共用 group VRF 端点。它证明的是接线与并发返回归属，
+不表示 route table、EXCHANGE class router、跨 class program order 或共享资源仲裁
+已经存在；并发命令不重叠 VRF row 仍由上层保证。exchange engine 要求二次幂
+`GROUP_COUNT` 与 4-byte VRF row，因此非二次幂参数稳健性继续由
+`vsp_cluster_memory_shell` 承担，两者是并列的 integration profile。
+
 `vsp_vrf_span_engine` 已独立实现 MEMORY parent 行为，但尚未接入
-class router、group wrapper、local SRAM 或 DMA，不表示整个存储路径已闭合。
+class router、local SRAM 或 DMA，不表示整个存储路径已闭合。
 它区分 execution context 与 address context，并携带
 `LOCAL/PHYSICAL/TRANSLATED` address-space 类别；这只定义可插入未来
 翻译/路由 adapter 的有序 data-memory 逻辑口，当前没有 MMU、TLB、
