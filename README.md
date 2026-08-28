@@ -13,8 +13,9 @@ VSP / SoC 子系统（未来）
     │   ├── 4 × SIMD4 transaction wrapper
     │   └── completion tracker / result collector / reject sink
     ├── predecoder / compact decoder / class router（尚无 RTL）
-    ├── VRF span engine（独立参考 RTL 已实现）
-    ├── row-level exchange engine（独立 RTL 已实现，已接入共享 VRF 边界）
+    ├── VRF vector memory engine（独立参考 RTL 已实现）
+    ├── VRF arbiter（参考 RTL 已实现）
+    ├── lane gather 网络（组内 crossbar 已实现；跨组 Omega 待实现）
     └── owner/barrier/跨 class 顺序与 sequencer controller（待实现）
 ```
 
@@ -31,7 +32,8 @@ VSP / SoC 子系统（未来）
 - 向量掩码执行；叶执行接口返回 merge 值，状态化 datapath 通过 masked RF write
   保留未激活 lane；
 - 窄结果与宽结果分离，使累加精度独立于 8-bit 窄结果；
-- 参数化组合 Bênes 网络，用于研究任意跨 lane 置换；
+- 参数化组合 Bênes 网络，作为置换网络研究模块保留，不接入当前数据通路
+  （跨组 gather 计划改用支持广播的 Omega 网络）；
 - SIMD group 内的一份直接 crossbar，支持重复索引的 gather、lane broadcast 与 permutation；
 - 可接相邻 SIMD group 边界的双向 slide，用于组成更宽的逻辑执行组；
 - mask-aware 的组合 reduction tree，可求和、最小值、最大值和获胜 lane；
@@ -55,13 +57,11 @@ VSP / SoC 子系统（未来）
 - `simd_issue_decode_shell`：每 issue slot 一项的 late-decode holding 边界，保存
   raw/resolved/cached provenance 与 class/response/resource/canonical 输出；当前使用
   可替换 hook，不定义最终 32-bit/16-bit 编码；
-- 独立 `vsp_vrf_span_engine`：VRF-only，一个 active parent、一个
+- 独立 `vsp_vector_memory_engine`：VRF-only，一个 active parent、一个
   outstanding memory beat，按 group 升序在连续 4-byte beat 上执行
   LOAD/STORE，并报告 stop-on-first 的 partial masks/bytes；
-- `vsp_cluster_actor_shell`：MEMORY span actor 与 row-exchange engine 作为
-  `vsp_cluster_vrf_service` 的两个 client 同时在线，共用同一组 group VRF
-  state-read/write 端点；已验证 EXCHANGE 到真实 group VRF row 的置换、
-  inverse-route 恢复、稀疏 source mask 与两 client 并发在飞的返回归属；
+- `vsp_cluster_vrf_arbiter`：在多个 VRF-only client 与 cluster 的单组 group VRF
+  state-read/write 端点之间做 RR 仲裁，一次保留一个 child owner；
 - Verilator lint 与自检仿真。
 
 当前 `simd_cluster_exec_shell` 采用 full-decoded reference profile：入口直接提供
@@ -72,14 +72,12 @@ state-read/write child lane 使外部 actor 能传输 VRF row；它们不是算�
 真实 parser/predecoder、class router 和 encoded 格式尚未实现，也尚未重排到当前
 frontend 的 queue-head 路径。因此 reference shell 不能被称为完整 decoder、
 controller 或 sequencer。
-`vsp_cluster_actor_shell` 让 row-exchange engine 成为共享 VRF service 的第二个
-client，与 MEMORY span actor 共用 group VRF 端点。它证明的是接线与并发返回归属，
-不表示 route table、EXCHANGE class router、跨 class program order 或共享资源仲裁
-已经存在；并发命令不重叠 VRF row 仍由上层保证。exchange engine 要求二次幂
-`GROUP_COUNT` 与 4-byte VRF row，因此非二次幂参数稳健性继续由
-`vsp_cluster_memory_shell` 承担，两者是并列的 integration profile。
+跨 lane 路由不再是与 MEMORY 并列的独立 command class。语义收束为寄存器形式的
+gather：`DR[lane] = SR[IR[lane]]`，其中索引向量 IR 由 VRF 提供，允许一对一置换
+与广播，不支持 scatter（同一操作内不会出现多通道写同一通道）。它属于 Vector ALU
+内的一个 routing 级，计划由 gather-only Omega 网络实现，尚未落地 RTL。
 
-`vsp_vrf_span_engine` 已独立实现 MEMORY parent 行为，但尚未接入
+`vsp_vector_memory_engine` 已独立实现 MEMORY parent 行为，但尚未接入
 class router、local SRAM 或 DMA，不表示整个存储路径已闭合。
 它区分 execution context 与 address context，并携带
 `LOCAL/PHYSICAL/TRANSLATED` address-space 类别；这只定义可插入未来
@@ -104,7 +102,7 @@ rtl/
 ├── group/          # 寄存器文件、执行级与 group 数据通路
 ├── interconnect/   # group 之上的交换网络实验
 ├── cluster/        # 多 group 所有权、发射与后续集群控制
-├── memory/         # 独立 VSP MEMORY/span engine 参考 RTL
+├── memory/         # 独立 VSP MEMORY/vector memory engine 参考 RTL
 └── files.mk        # 各验证目标唯一、有序的 RTL 文件清单
 sim/                # Verilator 自检 testbench 与行为参考模型
 docs/               # 架构现状、候选设计、Q&A、负载和验证方法

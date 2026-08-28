@@ -83,9 +83,8 @@ GAUSSIAN_TB  := $(abspath sim/gaussian3x3_tb.cpp)
 MUL32_MICRO_TB := sim/mul32_microcode_tb.cpp
 MUL32_MICRO_BIN := $(BUILD_DIR)/mul32_microcode_tb
 
-.PHONY: all lint test test-benes-exchange-engine \
-	test-cluster-exec-tracker-credit test-cluster-vrf-service \
-	test-cluster-memory-shell test-cluster-actor-shell clean
+.PHONY: all lint test test-cluster-exec-tracker-credit \
+	test-cluster-vrf-arbiter test-cluster-memory-shell clean
 
 all: test
 

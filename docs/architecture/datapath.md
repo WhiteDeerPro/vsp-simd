@@ -165,7 +165,7 @@ EXPAND:   VRF-A=[b,d,x,x], MRF=1010 -> result=[0,b,0,d], predicate=1010
 同周期命中同一文件时由配置写优先。这只是叶模块仲裁行为；transaction wrapper
 现在把 cfg 侧提升成带 `context+tag` 的 state-write 子事务，并增加独立 VRF
 state-read 子事务；二者与 EXEC 完全串行接受，禁止已经 accepted 的执行写被静默
-覆盖。`vsp_vrf_span_engine` 已经由 shared VRF service 和 cluster shell 接到这些
+覆盖。`vsp_vector_memory_engine` 已经由 shared VRF arbiter 和 cluster shell 接到这些
 state-read/write endpoint：LOAD 写入 VRF，STORE 直接读取 VRF row。地址推进和
 program-level completion 仍不在 wrapper 内；`dmem_*` 外的物理 local SRAM、
 cache/MMU 或 DMA 也不属于裸 datapath。
@@ -182,7 +182,7 @@ value/index/valid，不写入内部标量寄存器；当前 group 事务边界�
 - 跨整个 VSP 的任意 permutation/gather 网络；
 - 标量寄存器到向量的广播路径（立即数广播已经存在）；
 - 宽 ARF 输入的 reduction；
-- 裸 datapath 内的 load/store、DMA 与二维地址生成；独立 VRF span engine 已经由
+- 裸 datapath 内的 load/store、DMA 与二维地址生成；独立 VRF vector memory engine 已经由
   wrapper/cluster reference path 接到 RF，但不把地址或 memory action 下沉到裸 datapath；
 - 裸 datapath 内部的 ready/valid 和多周期单元；外层 group wrapper 已有事务握手；
 - compact-uword predecoder、canonical expander 与 decoded group holding/path；cluster 层

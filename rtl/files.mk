@@ -32,7 +32,6 @@ RTL_CLUSTER_RESULT_COLLECTOR := rtl/cluster/simd_cluster_result_collector.sv
 RTL_CLUSTER_EXEC_SHELL := rtl/cluster/simd_cluster_exec_shell.sv
 RTL_CLUSTER_VRF_ARBITER := rtl/cluster/vsp_cluster_vrf_arbiter.sv
 RTL_CLUSTER_MEMORY_SHELL := rtl/cluster/vsp_cluster_memory_shell.sv
-RTL_CLUSTER_ACTOR_SHELL := rtl/cluster/vsp_cluster_actor_shell.sv
 RTL_UOP_LEGAL := rtl/cluster/simd_uop_legal.sv
 RTL_VECTOR_MEMORY_ENGINE := rtl/memory/vsp_vector_memory_engine.sv
 
@@ -41,8 +40,6 @@ ELEMENT_RTL := $(RTL_PARTITIONED_ADDSUB) $(RTL_PARTITIONED_SHIFTER) \
 
 SIMD_EXEC_RTL := $(RTL_PKG) $(RTL_LANE) $(ELEMENT_RTL) $(RTL_EXEC)
 BENES_RTL := $(RTL_BENES)
-BENES_EXCHANGE_ENGINE_RTL := $(RTL_VSP_PKG) $(RTL_BENES) \
-		$(RTL_BENES_EXCHANGE_ENGINE)
 ISSUE_DISPATCH_RTL := $(RTL_ISSUE_DISPATCH)
 ISSUE_QUEUE_RTL := $(RTL_ISSUE_QUEUE)
 CLUSTER_ISSUE_FRONTEND_RTL := $(RTL_ISSUE_QUEUE) $(RTL_ISSUE_DISPATCH) \

@@ -24,7 +24,7 @@ Q&A 只承载分析。若以后需要一项长期约束，应另外记录作用�
 
 **当前观察 `[RTL事实]`**：现有 SIMD4 只有外部控制的数据通路，没有取指、分支、
 异常、地址生成或标量寄存器文件。testbench 直接提供展开控制。
-仓库另有图外的 `vsp_vrf_span_engine`，但这不赋予 SIMD4 取指或
+仓库另有图外的 `vsp_vector_memory_engine`，但这不赋予 SIMD4 取指或
 通用 CPU 地址/异常语义。
 
 **工作回答 `[工作假设]`**：当前更适合把它看作由 VSP sequencer 调度的执行 group。
@@ -58,8 +58,8 @@ MUL/MAC、饱和、AVG、ABSDIFF 与 ARF 操作不会因为 mode 改变而自动
 - local route 位于 VRF-A 路径，当前没有宽 ARF crossbar。
 
 **工作回答 `[工作假设]`**：组内需要重排 ARF 内容时，可以先按 byte plane slice
-到 VRF，再使用已有 route。ARF 不经本地 VRF、直接捕获 slice 到外部 exchange
-staging 是一个候选优化，不是当前 RTL 路径。
+到 VRF，再使用已有 route。ARF 不经本地 VRF、直接捕获 slice 到跨组路由 staging
+是一个候选优化，不是当前 RTL 路径。
 
 **重新评估**：若 ARF byte-plane 外发在 trace 中频繁出现，再比较 packetizer、额外
 ARF 读口和先落 VRF 三种代价。
@@ -93,22 +93,21 @@ mean。把长求和写成层层 pairwise average 会改变缩放和舍入位置�
 值得增加，需要比较微操作数、ARF 压力和目标吞吐，而不是仅凭“能够做”或“尚未
 单拍做”判断。
 
-## AQ-006：local route 与跨 group exchange 如何分工？
+## AQ-006：组内与跨组路由如何分工？
 
 **当前观察 `[RTL事实]`**：SIMD4 内直接 4×4 crossbar 支持重复索引，因此同时覆盖
-permutation、gather 和 broadcast。独立 `vsp_benes_exchange_engine` 已按每端口一个
-SIMD4 row 实现一一置换：它快照 external resolved route descriptor，用 mask shadow
-核对 src/dst，全部 capture 后执行 `GROUP_COUNT×36-bit` route，再串行 masked-write。
-它尚未接入 group/cluster 数据通路。
+permutation、gather 和 broadcast。跨组路由目前没有 RTL：原先的 row-level Bênes
+exchange engine 已删除，因为它与所需语义有两处硬冲突——双射不支持广播，且控制位
+无法从运行时索引向量实时派生。
 
-**候选 `[候选]`**：每组内部继续做 byte 重排/广播，上层 Bênes 的一个端口与一个
-SIMD4 group 对齐，每 pass 一一置换一个 `{byte_we[3:0], data[31:0]}` row packet。
-四个 group 的 WORD byte-plane 分发、transpose 和复制是 sequencer 多 pass 加 local
-route 组成的宏操作，不是一次 Bênes route 或可重复索引的网络功能。
+**候选 `[候选]`**：不再区分"组内 crossbar + 组间 row exchange"两套控制路径，而是
+用统一的 lane gather 语义 `DR[lane] = SR[IR[lane]]` 覆盖两者，索引向量来自 VRF。
+候选实现是 multicast Omega 网络：控制位可由索引位模式经组合逻辑直接派生，
+switch 原生支持 broadcast。仅支持 gather，不支持 scatter。
 
-**开放问题 `[开放问题]`**：网络分级、非二次幂 dummy padding、route-register 容量和
-ARF packetizer 都需要真实 exchange trace。当前 engine 只支持不少于两个的二次幂
-group 数；route table、class router 和 cluster 接线尚未实现。
+**开放问题 `[开放问题]`**：网络分级、非二次幂 padding、Omega 残余 blocking 的实际
+发生率和 ARF packetizer 都需要真实 routing trace。Omega datapath、routing logic 与
+Vector ALU 内的接线尚未实现。
 
 ## AQ-007：context、queue 和 issue slot 应怎样增长？
 
@@ -150,15 +149,15 @@ entry 可以留在 FIFO，也可以原子转移到被跟踪的 issue stage。
 ## AQ-009：谁发起内存操作？是否考虑一致性？
 
 **当前观察 `[RTL事实]`**：裸 SIMD4 没有 load/store、地址生成或 cache
-coherence。独立 `vsp_vrf_span_engine` 已实现 VRF LOAD/STORE parent 和
-单飞行有序 `dmem_req/rsp`；`vsp_cluster_memory_shell` 已经由 shared VRF service
+coherence。独立 `vsp_vector_memory_engine` 已实现 VRF LOAD/STORE parent 和
+单飞行有序 `dmem_req/rsp`；`vsp_cluster_memory_shell` 已经由 shared VRF arbiter
 把 span child 接到 cluster VRF state-read/write endpoint。`dmem_*` 后端与
 controller/class ordering 仍外置；`cfg_*` 仍只是初始化/状态传输叶端。
 
 **工作方向 `[候选]`**：地址状态和 DMA/local-memory request 位于 sequencer/controller
 层，采用 decoupled request/response；以显式 ownership 和 buffer 同步开始，比在
 group 内加入一致性更贴合当前 accelerator 形态。
-span engine 区分 execution context 与 opaque address context，并携带
+vector memory engine 区分 execution context 与 opaque address context，并携带
 `LOCAL/PHYSICAL/TRANSLATED` effective address；这为下游 adapter 留出边界，
 不表示 MMU、TLB、PTW 或 cache 已实现。
 

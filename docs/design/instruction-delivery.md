@@ -91,7 +91,6 @@ ISSUE_SLOTS copies of canonical expander
 exact shared-resource arbitration
         │
         ├─ GROUP_EXEC ── atomic group-mask dispatcher ── SIMD4 wrappers
-        ├─ EXCHANGE ──── exchange engine
         ├─ MEMORY ────── DMA/local-memory engine
         └─ CONTROLLER ── barrier/admin state machine
 ```
@@ -126,7 +125,7 @@ sched_meta`。context 由所属逻辑 FIFO 隐含；默认宽度只是 elaborati
 - element mode、mask 选择与写回类别；
 - immediate/shift 的短编码或 extension 引用；
 - route/reduce 子功能或 route preset；
-- barrier/exchange/memory 等控制类操作。
+- barrier/memory 等控制类操作。
 
 由 sequencer 解析后附带的动态 sideband 保存：
 
@@ -153,7 +152,7 @@ predecoder 生成，并在 canonical expansion 时复核关键约束。
 宽度，避免 controller top 人工重复 `32/16/16`；这仍不要求确定最终 ISA。
 
 `group_mask` 可能比一个普通指令字更宽，也可能来自 owner/context 状态，因此没有
-必要强迫它永久占据基础 uword。相邻 boundary data、RF 读数据和 Bênes data 更不
+必要强迫它永久占据基础 uword。相邻 boundary data 和 RF 读数据更不
 应该进入 instruction FIFO；它们属于 operand/staging 通道。
 
 ## 6. Predecode 与调度 `[候选]`
@@ -164,7 +163,7 @@ sideband，predecoder 只验证并使用它；其余 scheduling metadata 由轻�
 派生：
 
 ```text
-dispatch_class   = GROUP_EXEC / EXCHANGE / MEMORY / CONTROLLER
+dispatch_class   = GROUP_EXEC / MEMORY / CONTROLLER
 response_kind    = NONE / STATUS / GROUP_DATA / MEMORY_DATA
 group_state/write_port coarse class
 resource_may_need_mask
@@ -179,7 +178,7 @@ simd_op + element mode
 exact VRF/ARF/MRF row addresses and writeback enables
 expanded immediate and default fields
 route/reduce/mask/export controls
-class-specific GROUP_EXEC / MEMORY / EXCHANGE / CONTROLLER request
+class-specific GROUP_EXEC / MEMORY / CONTROLLER request
 final legality + exact resource set
 ```
 
@@ -259,7 +258,7 @@ entry 直到 engine/error terminal，则必须另加 claim/captured 门控，不
 
 | 通用 CPU decoder 常见职责 | 当前 VSP/SIMD decode 边界 |
 |---|---|
-| 从 PC/IFetch 指令流识别标量 ALU、branch、load/store | 从 sequencer action/uword 识别 `GROUP_EXEC/MEMORY/EXCHANGE/CONTROLLER` class |
+| 从 PC/IFetch 指令流识别标量 ALU、branch、load/store | 从 sequencer action/uword 识别 `GROUP_EXEC/MEMORY/CONTROLLER` class |
 | 产生分支、特权、异常、flush/重启元数据 | 产生 group mask、response kind、exact resource、canonical payload 与 ordered error completion 元数据 |
 | 产生供后续 in-order 或 rename/issue/commit 结构消费的 uop、分支与异常元数据 | 以 `context+tag`、原子 multicast、engine fire 和 result lifetime 描述事务所有权 |
 | 一条 architectural instruction 可展开成一个或多个 uop，再由后续结构选择执行资源 | 一个 issue slot 的 decoded bundle 可原子广播到多个 SIMD4 group；expander 数量随 slot 而不是 group 增长 |
@@ -336,7 +335,7 @@ context 不是 MMU 或 virtual-address 实现证明；当前只将它们传到
 `op_i`/`exec_op_i` 携带的 6-bit `simd_op_e` 只是 canonical
 `GROUP_EXEC` 的 function，不是完整 opcode。应分开三层：
 
-1. major dispatch class：`GROUP_EXEC/MEMORY/EXCHANGE/CONTROLLER`；
+1. major dispatch class：`GROUP_EXEC/MEMORY/CONTROLLER`；
 2. 尚未定义编码的 compact uword；
 3. 已展开 canonical GROUP_EXEC 中的 `simd_op_e` function。
 
@@ -347,8 +346,8 @@ queue 参数的 32-bit payload、16-bit resolved 和 16-bit sched-meta
 
 - 完整 32-bit scalar immediate；
 - 较大的 `target_group_mask`；
-- Bênes raw route control 和大规模 mask；基础字只需保留 route-register/sideband
-  引用，具体位域仍开放；
+- 大规模 mask；跨 lane gather 的索引来自 VRF 中的索引向量，基础字只需保留
+  寄存器号，不携带网络控制位；
 - memory descriptor 引用或短地址操作数；完整 DMA/二维描述符不要求塞进基础字；
 - 多个寄存器域、tag 与 barrier 信息。
 
@@ -382,7 +381,7 @@ dispatch 前的 format/empty-mask/owner error 尚未产生 group 子事务，只
 command-level error completion。
 
 需要区分两种生命周期：barrier/quiesce 等待的是内部 `pending_group_mask`、DMA 和
-exchange inflight 清零，不必等待外部读取已经缓冲的 response；tag 在所有对应
+MEMORY inflight 清零，不必等待外部读取已经缓冲的 response；tag 在所有对应
 result/completion record 被 cluster 内部的可靠 buffer 接管前不能复用。接管后的
 外部 stall 由该 buffer 承担；若未来改变返回层次或引入更大的内部唯一序号，可重新
 定义这一退休边界。
@@ -424,7 +423,7 @@ barrier 语义的实测复杂度。
   result/reject 的 `simd_cluster_exec_shell`；
 - 当前仍没有真实 predecoder/canonical expander、class router、owner
   state、barrier/controller 或 host completion；独立 VRF-only
-  `vsp_vrf_span_engine` 已有 RTL，但未接入该控制路径；
+  `vsp_vector_memory_engine` 已有 RTL，但未接入该控制路径；
 - 最终 instruction width 和字段分配继续延期。
 
 本页的 queue/control-store 交付是 controller 内部 uword 路径，不是

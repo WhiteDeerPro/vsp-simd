@@ -1,12 +1,13 @@
 # 数据准备与 DMA 边界
 
-> 状态：VRF-only `vsp_vrf_span_engine`、row-level
-> `vsp_benes_exchange_engine`、wrapper/cluster 的独立 VRF state-read 路径及
-> `vsp_cluster_vrf_service` 已有参考 RTL。`vsp_cluster_memory_shell` 已把 blocking
-> span actor 接到 GROUP_EXEC cluster，形成 decoded LOAD→GROUP_EXEC→STORE 参考闭环。
+> 状态：VRF-only `vsp_vector_memory_engine`、wrapper/cluster 的独立 VRF
+> state-read 路径及 `vsp_cluster_vrf_arbiter` 已有参考 RTL。
+> `vsp_cluster_memory_shell` 已把 blocking 的 vector memory engine 接到
+> GROUP_EXEC cluster，形成 decoded LOAD→GROUP_EXEC→STORE 参考闭环。
 > class router、跨 class 程序顺序、owner/resource controller、物理 local SRAM、
-> MMU/cache、DMA 与 EXCHANGE 接线仍待实现。本文不规定总线宽度、SRAM 组织、
-> DMA 描述符格式或 Bênes 的物理分级；跨组交换采用 group-aligned row packet 语义。
+> MMU/cache 与 DMA 仍待实现。本文不规定总线宽度、SRAM 组织或 DMA 描述符格式。
+> 跨 lane 路由已从本文剥离：它不再是独立的数据搬运 class，而是 Vector ALU 内的
+> gather 级，见[路由](../architecture/routing.md)。
 
 ## 1. 控制动作与传输数据分离 `[候选]`
 
@@ -40,44 +41,26 @@ sequencer/controller 发起或许可 program-level memory action；memory actor 
 推进、beat 计数和 parent/child completion 状态；SIMD4 只接受已经带数据的叶端
 state-write beat。这样不会因为加入数据供应而让 SIMD4 获得自行取数或地址执行能力。
 
-## 2. 普通填充与交换分开 `[独立 RTL + 集成候选]`
+## 2. 普通填充与跨 lane 路由分开 `[边界]`
 
-连续或条带化的 RF fill 首先考虑 bank select、demux 和分周期写入，不必经过 Bênes。
-Bênes 面向已经进入 staging 的 group 间 row exchange。每个物理端口与一个 SIMD4
-group 对齐，一次携带：
+连续或条带化的 RF fill 首先考虑 bank select、demux 和分周期写入，不经过任何跨
+lane 置换网络。这条路径的职责是把外部数据搬进 VRF，不负责重排。
 
-```text
-{byte_we[3:0], data[31:0]}
-```
+数据进入 VRF 之后的跨 lane 重排属于 Vector ALU 的 gather 级
+（`DR[lane] = SR[IR[lane]]`），不是数据搬运动作：它不访问 memory，也不需要
+parent/child completion 协议。因此本文只保留 memory 侧边界，路由语义、网络
+拓扑选择和 gather 的实现状态统一由[路由](../architecture/routing.md)记录。
 
-mask 与 data 使用同一条一一置换路径；输出 `byte_we` 直接控制目的 VRF row 的
-masked write。inactive group 注入零 `byte_we` packet。当前 engine 要求
-`GROUP_COUNT>=2` 且为二次幂；用 invalid dummy endpoint 包装非二次幂 group 是
-后续候选。Bênes 不提供复制能力。
-
-一条 `EXCHANGE` 只处理一个物理 pass。超过网络一次 row 容量的向量由 sequencer
-拆成多个 pass，并配合 SIMD4 local route 完成 byte 重排或 broadcast。多 pass
-若在同一组寄存器上原地工作，需要 scratch/ping-pong 或 cycle decomposition；
-不能假定前一 pass 的写回不会覆盖后一 pass 的源。
-
-现有 engine 的 canonical command 接收外部已经解析的 route-entry valid/raw
-control，而不是指令立即数，并在 command 接受时快照到飞行事务。交换调度还需
-区分 `src_group_mask`、路由得到的 `dst_group_mask` 和二者之并
-`resource_group_mask`。engine 已用 mask-shadow route 在任何 VRF child 前核对
-source/expected-destination mask；route table、class router 和 cluster 接线仍未实现，
-最终编码保持开放。
-
-engine 首版单飞行：按 group 编号串行读取 source row，等全部 active source capture
-完成后通过 `GROUP_COUNT × 36-bit` Bênes 锁存 routed packet，再按 group 编号串行
-masked-write destination。任一 read/write child 错误 stop-on-first；parent
-completion 显式返回 requested/completed/failed mask 和 partial。
+这条划分的实际效果是：降低内存压力的手段有两条彼此独立的路径。需要跨 lane
+重排时优先用寄存器内 gather，避免 STORE→改地址→LOAD 的往返；只有数据尚未进入
+VRF，或重排跨出单条 gather 的寻址范围时，才退回 memory 路径。
 
 只有要求把 `4M` 个输入 byte 在一个周期任意映射到 `4N` 个目的 lane，才直接推导出
 矩形 `4M × 4N` crossbar。顺序 fill、banked SRAM、若干 ingress lane 和多拍
 packetizer 可以避免把这个最强映射能力当作数据装载的默认成本。复制仍可由 SIMD4
 内部 broadcast 完成；point-to-point 网络不必因此具有复制语义。
 
-当前 span engine 对命令接受前发现的字段组合、effective-address 位宽
+当前 vector memory engine 对命令接受前发现的字段组合、effective-address 位宽
 溢出和对齐错误产生带 tag、
 已提交 0 byte 的错误完成；运行时 memory 或 VRF child 错误采用
 stop-on-first。早先完成的 group 不回滚，completion 显式返回 requested/
@@ -103,9 +86,9 @@ unique input bytes/cycle ~= 32/R_A + 32/R_B
 这个式子只用于标出复用率的重要性，不能替代负载 trace。时钟频率、LS 指令密度
 或“通常能复用十次”目前都不作为设计常量。
 
-## 4. 当前 VRF span engine `[RTL事实]`
+## 4. 当前 VRF vector memory engine `[RTL事实]`
 
-`vsp_vrf_span_engine` 每次只保存一个 active parent，且最多发出一个
+`vsp_vector_memory_engine` 每次只保存一个 active parent，且最多发出一个
 outstanding memory beat。命令为：
 
 ```text
@@ -150,7 +133,7 @@ virtual page 不保证映射到相邻 physical page。
 effective address。translation、permission、access、bus、data-integrity 和
 protocol 错误可区分。
 
-首版 request/response 没有 epoch。span engine、downstream dmem service 与 VRF child endpoint
+首版 request/response 没有 epoch。vector memory engine、downstream dmem service 与 VRF child endpoint
 必须共享事务域 reset，并在 reset 时共同丢弃旧 outstanding response；异步保留旧
 response 后立即启动新命令不属于当前协议。
 
@@ -162,16 +145,17 @@ completion 和 data response。read completion 与 response 可以分别背压�
 与零 mask，不修改 RF。`simd_cluster_exec_shell` 按 group demux state-read/write，
 并分别用 stall-stable RR 汇聚 read completion、read response 与 write completion。
 
-`vsp_cluster_vrf_service` 在多个 parent actor 与上述 cluster endpoint 之间仲裁
+`vsp_cluster_vrf_arbiter` 在多个 parent actor 与上述 cluster endpoint 之间仲裁
 VRF-only read/write child。参考实现一次只允许一个 accepted child 在途；read owner
 保持到 completion 和 response 都被对应 client 接受，write owner 保持到 completion
 被接受。仲裁和 owner capture 解决的是 child 返回归属，不提供 program-level
 class ordering、寄存器依赖或 group ownership 判定。
 
-`vsp_cluster_memory_shell` 当前以一个 MEMORY client 实例化该 service，把 span
-engine 的 LOAD state-write 和 STORE state-read 接到 `simd_cluster_exec_shell`。
-service 的多 client 接口为以后并接 EXCHANGE 留出边界，但当前 shell 没有连接
-EXCHANGE，也没有在 EXEC 与 MEMORY 两个独立 command 入口之间建立统一顺序。
+`vsp_cluster_memory_shell` 当前以一个 MEMORY client 实例化该 arbiter，把 vector
+memory engine 的 LOAD state-write 和 STORE state-read 接到
+`simd_cluster_exec_shell`。arbiter 的多 client 接口为以后并接其他 VRF-only actor
+留出边界，但当前 shell 只有一个 client，也没有在 EXEC 与 MEMORY 两个独立 command
+入口之间建立统一顺序。
 
 ## 5. 首个集成闭环与延期项 `[已实现参考 + 延期项]`
 
@@ -191,8 +175,7 @@ dmem LOAD response
 “顺序”来自 test driver 等待前一 parent completion 后再提交下一 action，并非 shell
 已实现 common class router 或 program-order enforcement。
 
-独立 exchange engine 已有内部 row capture 和路由/写回状态机，但尚未接到
-EXCHANGE class、shared VRF service 或 cluster completion。物理 local SRAM、DMA、
+物理 local SRAM、DMA、
 cache/MMU adapter、packetizer/gearbox 和系统级 ingress/capture FIFO 也未集成；
 `dmem_*` 仍只是 effective-address 逻辑边界。ping-pong、计算/搬运重叠、
 多 outstanding、二维地址和一致性在真实 trace 与 SoC 边界出现后再评估。
