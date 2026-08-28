@@ -544,8 +544,8 @@ VRF/ARF/MRF、不产生 partial multicast；只有 error completion 获得可靠
 
 ```text
 control-store word stream
-        -> stateful bundle assembler                       [待实现]
-        -> bundle framing + major/class predecode          [已有组合参考]
+        -> byte-PC source                                  [已有参考]
+        -> stateful assembler + framing/class predecode    [已有参考]
         -> action-envelope binding + class-specific decode [待实现]
         -> static legality + cached sched metadata         [待实现]
         -> per-context compact queue
@@ -558,7 +558,10 @@ assembler 必须先取得完整 record，EXEC adapter 才能报告 admission val
 以完整 entry 入队并按 context 顺序退休，不能在 enqueue 时越过更老 action。
 
 `vsp_uword_predecoder` 已组合划分一个 bundle 内的完整 record 与未完成尾部；它没有
-ready/valid、stream-end 或跨 bundle storage，因此不替代 assembler。对一条完整
+ready/valid、stream-end 或跨 bundle storage，因此不替代 assembler。
+`vsp_uword_program_frontend` 已提供一个独立的线性 byte-PC/control-store/assembler
+reference，并串行输出完整或 EOF 截断 record；它尚未接本节后续的 envelope、
+class-specific decode 与 queue。对一条完整
 EXEC record，word 0 是 base，word 1（若存在）是 extension，body word 不再按 header
 分类。结构长度由 `vsp_exec_uword_extension_required()` 与 canonical expander 共享。
 

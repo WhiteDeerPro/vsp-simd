@@ -21,8 +21,9 @@ VSP / SoC 子系统（未来）
     ├── VRF vector memory engine（独立参考 RTL 已实现）
     ├── VRF arbiter（参考 RTL 已实现）
     ├── 4-word uword bundle framing / class predecode（独立参考 RTL 已实现）
+    ├── byte-PC program source / control-store model / bundle assembler（独立参考 RTL 已实现）
     ├── lane route（组内 crossbar 已实现；跨组 route 延期）
-    └── bundle assembler、admission metadata、动态 owner/resource 与 sequencer/control store（待实现）
+    └── action adapter、admission metadata、动态 owner/resource 与 loop/redirect（待实现）
 ```
 
 “搜索、凝视、分层、附着、抽象、联合、追踪”属于软件算法。硬件不预设这些语义，只提供能够忠实、高效编纂这些算法的通用原语。
@@ -71,6 +72,9 @@ VSP / SoC 子系统（未来）
 - `vsp_cluster_controller_wrapper`：把 profile-v0 encoded EXEC、decoded MEMORY、
   EXEC cluster 与 vector memory engine 接成一条有序 action 链；EXEC data result
   仍与 command completion 独立返回；
+- 内部 uword 工具与 program frontend reference：把 profile-v0 EXEC、opaque
+  MEMORY/CONTROL 或 raw word 编制成 hex/listing/symbol，写入可替换的 control-store
+  行为模型，从参数化 byte PC 顺序读取，并跨 bundle 组装为单 record ready/valid；
 - 独立 `vsp_vector_memory_engine`：VRF-only，一个 active command、一个
   outstanding memory beat，按 group 升序在连续 4-byte beat 上执行
   LOAD/STORE，并报告 stop-on-first 的 partial masks/bytes；
@@ -85,8 +89,10 @@ state-read/write subrequest lane 使外部 engine 能传输 VRF row；它们不�
 `simd_issue_decode_stage` 已给出晚译码后的稳定 holding 边界，profile-v0 EXEC
 parser/expander 也已在 controller wrapper 的 action 入口接入。当前 class router
 验证的是一个保守的、全局单 active action 路径。`vsp_uword_predecoder` 已能在
-一个 4-word bundle 内划分 mixed uword record 并预判 dispatch class，但没有跨
-bundle 状态、action envelope、class-specific semantic decode 或 queue admission。
+一个 4-word bundle 内划分 mixed uword record 并预判 dispatch class；新的
+`vsp_uword_program_frontend` 又增加了线性 byte PC、control-store 行为模型、跨
+bundle tail 和 EOF 截断处理。它尚未绑定 action envelope、class-specific semantic
+decode 或 queue admission，也不把 stream EOF 当成 `CONTROL.END`。
 admission legality/cached resource metadata 与 queue-head late-decode 重排尚未实现。
 因此该 reference integration 可以验证程序顺序和完成合同，但还不是完整 sequencer，
 也不代表最终吞吐组织。
@@ -120,9 +126,12 @@ rtl/
 ├── group/          # 寄存器文件、执行级与 group 数据通路
 ├── interconnect/   # group 之上的交换网络实验
 ├── cluster/        # 多 group 所有权、发射与后续集群控制
+├── control/        # 内部 uword control store、byte-PC source 与 record assembler
 ├── memory/         # 独立 VSP MEMORY/vector memory engine 参考 RTL
 └── files.mk        # 各验证目标唯一、有序的 RTL 文件清单
 sim/                # Verilator 自检 testbench 与行为参考模型
+tools/              # 内部 uword 编制等开发辅助工具
+examples/uword/     # 工具和 program frontend 使用的短程序
 docs/               # 架构现状、候选设计、Q&A、负载和验证方法
 ```
 
@@ -135,6 +144,15 @@ docs/               # 架构现状、候选设计、Q&A、负载和验证方法
 ```bash
 make lint
 make test
+```
+
+只运行本次新增路径，或查看工具生成的 byte-PC listing：
+
+```bash
+make test-vsp-uword-asm test-vsp-uword-program-frontend
+python3 tools/vsp_uword_asm.py examples/uword/pc_smoke.uasm \
+  -o /tmp/vsp-pc-smoke.hex --base-pc 0x20 \
+  --listing /tmp/vsp-pc-smoke.lst --symbols /tmp/vsp-pc-smoke.json
 ```
 
 默认的可再生 Verilator 产物集中在 `build/`，`make clean` 可将其全部清除。若工作区上传器不读取 `.gitignore`，建议直接在工作区外构建，并用 quiet 模式避免回传冗长的编译命令：

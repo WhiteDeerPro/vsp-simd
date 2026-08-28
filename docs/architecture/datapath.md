@@ -11,8 +11,8 @@ canonical decoded control。
 EXEC reference frontend，它保存 opaque entry，并实现 RR live-head、
 locked shadow 和 dispatch；`simd_cluster_exec` 已把 full-decoded canonical
 control 送入多个 datapath wrapper，并闭合 completion/result。当前仍没有真实
-admission legality/queue-head predecoder；standalone bundle framing/class predecode 已有
-参考 RTL，profile-v0 canonical expander 与 strict class router 已在外层 action
+admission legality/queue-head predecoder；standalone bundle framing/class predecode、
+byte-PC source 和跨 bundle assembler 已有参考 RTL，profile-v0 canonical expander 与 strict class router 已在外层 action
 reference wrapper 接通，datapath/cluster leaf 仍只接收 canonical
 decoded control。边界与候选组织见
 [指令交付](../design/instruction-delivery.md)。

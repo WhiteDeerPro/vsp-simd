@@ -1,0 +1,20 @@
+# Internal uword-stream smoke program.  With --base-pc 0x20, MEMORY starts at
+# byte PC 0x2c: the last word of the first four-word bundle.  Its two opaque
+# body words therefore exercise cross-bundle assembly and deliberately look
+# like other valid headers.
+
+entry:
+    EXEC_ALU_RR op=xor mode=byte va=1 vb=1 vd=1
+    EXEC_ALU_RI op=add mode=byte va=1 vd=2 imm=7
+
+cross_bundle_memory:
+    MEMORY meta=0x15 0x60000000 0xc0000000
+
+    EXEC_ALU_RR op=add mode=byte va=2 vb=3 vd=4
+
+# The immediate base lands at byte PC 0x3c, the last word of the second
+# bundle. Its extension at 0x40 exercises EXEC-specific cross-bundle framing.
+cross_bundle_exec:
+    EXEC_ALU_RI op=shl mode=byte va=4 vd=5 imm=3
+program_end:
+    CONTROL_END

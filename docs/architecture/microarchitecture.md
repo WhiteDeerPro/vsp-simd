@@ -16,8 +16,9 @@ side-effect gate。`simd_cluster_issue_frontend` 位于图外的 cluster 控制
 dispatcher。`simd_cluster_exec` 又在其外加入 per-group ingress、四个 wrapper、
 tracker、reject buffer 和 result collector，形成 full-decoded EXEC 参考闭环。
 profile-v0 canonical expander 与 strict class router 已在更外层的 controller wrapper
-接入；standalone bundle framing/class predecoder 也已实现，admission legality/
-resource metadata 和 queue-head late-decode 集成仍未实现。
+接入；standalone bundle framing/class predecoder、byte-PC source、control-store model
+和跨 bundle assembler 也已实现，admission legality/resource metadata、action adapter
+和 queue-head late-decode 集成仍未实现。
 已经实现的 `simd_group_wrapper` 也位于本叶数据
 通路图外，负责 decoded EXEC、state-write 与 VRF state-read ready/valid、状态访问
 仲裁和独立返回缓存，见
@@ -39,7 +40,8 @@ address-space/address-context 与 fault cause，但 engine 内没有 MMU、TLB�
 PTW 或 cache。端到端 testbench 在该逻辑口外模拟 local memory；它也不是 IFetch
 端口。
 
-当前 SIMD4 没有取指。上级已有 `simd_issue_decode_stage` 作为晚译码 holding
+当前 SIMD4 没有取指。controller reference 中的 byte PC 只顺序读取内部 uword
+control store，不改变这项边界。上级已有 `simd_issue_decode_stage` 作为晚译码 holding
 边界，但其 hook 尚未替换为 admission/queue-head 解析；另一路 controller reference
 已组合解析 profile-v0 EXEC packet。`op_i`/`exec_op_i` 上的
 6-bit `simd_op_e` 只是 canonical EXEC function，不是完整 opcode。

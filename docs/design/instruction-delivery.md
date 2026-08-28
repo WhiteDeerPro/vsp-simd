@@ -1,9 +1,11 @@
 # 队列、微指令与译码器候选设计
 
-> 状态：uword bundle framing/class predecoder、EXEC cluster integration、late-decode
-> holding stage、EXEC-uword profile-v0 canonical expander，以及 strict ordered class
-> router 已有参考 RTL；expander/router 已在 action-stream wrapper 接通。跨 bundle
-> assembler、admission legality/cached metadata 与 queue-head integration 尚未实现。
+> 状态：uword bundle framing/class predecoder、有状态 bundle assembler、顺序 byte-PC
+> program source、EXEC cluster integration、late-decode holding stage、EXEC-uword
+> profile-v0 canonical expander，以及 strict ordered class router 已有参考 RTL；
+> expander/router 已在 action-stream wrapper 接通。program source 尚未接 action
+> envelope/class-specific decoder；admission legality/cached metadata 与 queue-head
+> integration 尚未实现。
 > 本文用于比较实现路径，不拥有
 > 最终外部指令格式或控制器组织的决策权。
 
@@ -42,6 +44,11 @@
 - `vsp_uword_predecoder` 组合扫描一个默认 4-word 的连续 uword bundle，划分完整
   record、预判 `EXEC/MEMORY/CONTROL` class，并把未完成尾 record 作为续接提示输出；
   它不保存跨 bundle 状态，不检查 class 内语义，也不绑定 action envelope。
+- `vsp_uword_control_store`、`vsp_uword_program_source` 与
+  `vsp_uword_bundle_assembler` 已组成一个独立 program frontend reference：从非零
+  byte PC 启动，按至多四个连续 32-bit word 请求，保存跨 bundle tail，并把完整或
+  EOF 截断 record 串行为 stall-stable ready/valid 输出。这个 frontend 不解释
+  `CONTROL.END`，也未接 action controller。
 - `vsp_decoded_action_controller` 已按 `EXEC/MEMORY/CONTROL` 分流一条统一 action
   流，并用统一 completion 保持严格程序顺序；`vsp_cluster_controller_wrapper`
   已把 profile-v0 EXEC expander、decoded MEMORY 和最小 `CONTROL.END` 接到这条路径。
@@ -49,10 +56,11 @@
 
 因此现在可以准确地说：full-decoded reference profile 已能执行和退休 EXEC，
 decode holding 协议、EXEC canonical expansion、跨 class 严格顺序和 `END` 也已验证。
-尚缺的是跨 bundle assembler、admission legality/cached metadata，以及把 expander、
-late-decode stage、class router 和 terminal feedback 接到 queue head。当前 standalone
-bundle predecode 只解决 record 边界与早期 class 分流；action-stream 接法证明控制
-合同可闭环，不等于 hybrid queue 控制链或完整 sequencer 已完成。
+尚缺的是 action-envelope binding、MEMORY/CONTROL semantic decode、
+admission legality/cached metadata，以及把 program frontend、expander、late-decode
+stage、class router 和 terminal feedback 接到 queue head。当前 program frontend
+只解决线性 PC 交付、跨 bundle record framing 与早期 class 分流；action-stream 接法
+证明控制合同可闭环，不等于 hybrid queue 控制链或完整 sequencer 已完成。
 
 ### 1.1 Uword bundle framing 与 class predecode `[RTL事实 + 内部实验]`
 
@@ -82,13 +90,55 @@ word。若后续可靠性或 code-density 证据不接受该权衡，可以版�
 一个 bundle 可同时输出多条归一化 record；未完成的最后一条不输出为完整 record，
 只报告 start/required/present 与已有 word。当前模块是无握手的组合原语：它不知道
 stream end、epoch、PC 或地址，也不把 tail 判成 truncated error。后续 bundle
-assembler 才负责 ready/valid、跨 bundle 补齐、结束/flush/discontinuity 处理和稳定
-输出。
+assembler 边界负责 ready/valid、跨 bundle 补齐、结束/discontinuity 处理和稳定输出；
+当前 `vsp_uword_bundle_assembler` 已实现其中的线性 stream reference，尚无 epoch 或
+redirect/flush。
 
 这些 record 仍缺 `context/tag/group_mask`、静态 legality、scheduling metadata 和
 class-specific canonical payload，不能直接接 `vsp_decoded_action_controller`。此外，
-当前 issue queue 只有一个 admission lane；在 bundle 最多产生四条 record 与现有单
-入队边界之间，还需要 serializer/staging 或显式 multi-enqueue 协议。
+当前 stateful assembler 已把一个 bundle 中的多条 record 串行为单 ready/valid 输出，
+可以匹配 issue queue 的单 admission lane；两者之间仍需 action envelope、静态
+legality/cached metadata 和有序错误合同。
+
+### 1.2 线性 program frontend `[RTL事实 + 里程碑基线]`
+
+当前新增的 reference 路径是：
+
+```text
+internal uword source file
+        -> tools/vsp_uword_asm.py
+        -> one-word-per-line hex image
+        -> behavioral control store
+        -> byte-PC program source
+        -> stateful bundle assembler
+        -> one normalized record ready/valid
+```
+
+program source 接受半开区间 `[start_pc, end_pc)`。两端都必须四字节对齐；空区间
+直接产生 delivery completion，不访问 control store。非空区间每次请求
+`min(BUNDLE_WORDS, (end_pc-current_pc)/4)` 个 word。每个 base、extension 和 opaque
+body 都占一个 32-bit stream word，因此相邻 word 地址恒为 `+4`；bundle 被下游接受
+后，`current_pc` 增加 `4 * bundle_word_count`。PC 宽度、control-store 基址和容量均
+参数化，范围检查比较完整 PC，越界返回 fault，不能用低地址位静默 alias。
+
+control store 是未复位的数据数组和单响应行为模型。它的逻辑 request/response 边界
+与 data-memory `dmem_*` 分开；未来可在该边界外替换物理 SRAM、translation 或
+I-cache-like 供应结构。当前实现不声称已有这些单元。
+
+assembler 最多保存一条三 word 未完成 tail，把下一 bundle 的前缀作为 opaque
+extension/body 补齐，而不重新按 header 分类。完整 record 依序串行输出；最终 tail
+不足时输出一次 `record_truncated`，其中 structural count 与 present count 分开。
+输出背压期间 PC、class、count 与全部 word 保持稳定。`end_pc` 只是 stream 边界；
+即便某个 word 当前编码为 `CONTROL_END`，assembler 也只把它作为 CONTROL record
+交付，停止/退休语义留给后级 decoder/controller。非连续、未对齐或非法 count 的
+bundle 不参与组包；assembler 置 sticky protocol error，并丢弃到该 source stream 的
+最终 bundle，避免错误地址的数据被拼成伪 record。
+
+`tools/vsp_uword_asm.py` 是验证这条内部路径的工程辅助工具，不是外部 ISA
+assembler。它目前能产生 profile-v0 ALU RR/RI、opaque MEMORY/CONTROL、
+`CONTROL_END` 和 raw word，并可输出 byte-PC listing 与 symbol JSON。ALU builder
+拒绝它能静态识别的 profile-v0 mode/reduction/unused-field 非法组合；故意构造非法
+record 时使用 raw word。外部 instruction 宽度和软件 ABI 仍未选择。
 
 ## 2. 区分三种表示 `[分析模型]`
 
@@ -480,11 +530,12 @@ barrier 语义的实测复杂度。
 - 当前 RTL：已有 legality、decoded group wrapper、EXEC frontend、completion
   tracker、decode holding stage，以及闭合 queue/dispatch/ingress/wrapper/
   result/reject 的 `simd_cluster_exec`；
-- 当前已有 standalone bundle framing/class predecoder、strict single-active class
+- 当前已有 standalone bundle framing/class predecoder、byte-PC program source、跨
+  bundle stateful assembler、strict single-active class
   router、ordered error/completion、最小 `CONTROL.END` 和已接入的 VRF-only memory
-  engine；仍没有跨 bundle assembler、admission legality/resource predecode、
-  action-envelope adapter、queue-head integration、动态 owner/resource state、一般化
-  barrier、sequencer control store/PC/loop 或 host completion；
+  engine；仍没有 program-record 到 action-stream 的接线、admission legality/resource
+  predecode、action-envelope adapter、queue-head integration、动态 owner/resource state、
+  一般化 barrier、loop/redirect 或 host completion；当前 control store 只是行为模型；
 - action-stream wrapper 的 EXEC 输入是已收齐的 `base + optional extension` packet；
   `extension_required_diag` 不是跨拍 refill handshake。该 wrapper 的 exact-resource
   metadata 在 global non-overlap profile 中为零，不能作为 resource predecode 已完成
@@ -492,5 +543,6 @@ barrier 语义的实测复杂度。
 - 最终 instruction width 和字段分配继续延期。
 
 本页的 queue/control-store 交付是 controller 内部 uword 路径，不是
-architectural IFetch。未来若需要 IFetch，它是与 `dmem_req/rsp` 分开的
-逻辑请求类和流控边界；当前没有 IFetch、I-cache、MMU 或精确异常重启。
+architectural IFetch。当前 program source 的 byte PC 只定位内部 uword stream；未来若
+需要软件 instruction IFetch，它仍是与 `dmem_req/rsp` 分开的逻辑请求类和流控边界。
+当前没有 architectural IFetch、I-cache、MMU 或精确异常重启。
