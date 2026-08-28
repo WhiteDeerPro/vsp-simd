@@ -1,4 +1,4 @@
-#include "Vsimd_issue_decode_shell.h"
+#include "Vsimd_issue_decode_stage.h"
 #include "verilated.h"
 
 #include <cstdint>
@@ -39,12 +39,12 @@ void expect_eq(const char* field, uint64_t expected, uint64_t actual) {
   if (expected != actual) fail(field, expected, actual);
 }
 
-void eval_low(Vsimd_issue_decode_shell& dut) {
+void eval_low(Vsimd_issue_decode_stage& dut) {
   dut.clk_i = 0;
   dut.eval();
 }
 
-void tick(Vsimd_issue_decode_shell& dut) {
+void tick(Vsimd_issue_decode_stage& dut) {
   dut.clk_i = 0;
   dut.eval();
   dut.clk_i = 1;
@@ -53,7 +53,7 @@ void tick(Vsimd_issue_decode_shell& dut) {
   dut.eval();
 }
 
-void clear_inputs(Vsimd_issue_decode_shell& dut) {
+void clear_inputs(Vsimd_issue_decode_stage& dut) {
   dut.in_valid_i = 0;
   dut.in_raw_word_i = 0;
   dut.in_resolved_i = 0;
@@ -71,7 +71,7 @@ void clear_inputs(Vsimd_issue_decode_shell& dut) {
   dut.out_ready_i = 0;
 }
 
-void drive(Vsimd_issue_decode_shell& dut, const Entry& entry) {
+void drive(Vsimd_issue_decode_stage& dut, const Entry& entry) {
   dut.in_valid_i = 1;
   dut.in_raw_word_i = entry.raw;
   dut.in_resolved_i = entry.resolved;
@@ -88,7 +88,7 @@ void drive(Vsimd_issue_decode_shell& dut, const Entry& entry) {
   dut.hook_error_cause_i = entry.error_cause;
 }
 
-void expect_entry(Vsimd_issue_decode_shell& dut, const Entry& entry) {
+void expect_entry(Vsimd_issue_decode_stage& dut, const Entry& entry) {
   expect_eq("out valid", 1, dut.out_valid_o);
   expect_eq("raw provenance", entry.raw, dut.out_raw_word_o);
   expect_eq("resolved", entry.resolved, dut.out_resolved_o);
@@ -130,7 +130,7 @@ Entry random_entry(std::mt19937& rng) {
 
 int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
-  Vsimd_issue_decode_shell dut;
+  Vsimd_issue_decode_stage dut;
   clear_inputs(dut);
 
   dut.rst_ni = 0;
@@ -151,7 +151,7 @@ int main(int argc, char** argv) {
 
   // Backpressure freezes every decoded field even if both raw and hook inputs
   // change.  An illegal reference record is deliberately included here: the
-  // shell transports decoder decisions but does not reinterpret them.
+  // The stage transports decoder decisions but does not reinterpret them.
   const Entry blocked{0x17c, 0x03, 0x3e, 1, 0x22, 3, 1, 0,
                       0x03, 0x1234, 0x11, 0, 5};
   drive(dut, blocked);
@@ -236,7 +236,7 @@ int main(int argc, char** argv) {
 
   dut.final();
   std::cout << "PASS: " << checks
-            << " issue-decode shell checks across reference adaptation, "
+            << " issue-decode stage checks across reference adaptation, "
                "canonical hold stability, elastic replacement, randomized "
                "backpressure, illegal metadata transport and reset\n";
   return 0;

@@ -1,4 +1,4 @@
-module simd_cluster_exec_shell #(
+module simd_cluster_exec #(
   // The first integration profile is four SIMD4 groups, two ordered
   // contexts and two issue slots.  These are implementation parameters, not
   // encoded instruction fields.
@@ -74,7 +74,7 @@ module simd_cluster_exec_shell #(
   input  logic [(LANES*ELEM_W)-1:0]         cmd_route_upper_i,
   output logic                              cmd_context_error_o,
 
-  // Ownership is maintained by the future controller.  This shell consumes a
+  // Ownership is maintained by the future controller. This integration consumes a
   // stable snapshot and never changes ownership itself.
   input  logic [GROUP_COUNT-1:0]                   group_owner_valid_i,
   input  logic [(GROUP_COUNT*CONTEXT_W)-1:0]       group_owner_i,
@@ -86,7 +86,7 @@ module simd_cluster_exec_shell #(
   output logic [(ISSUE_SLOTS*RESOURCE_W)-1:0]      issue_slot_resource_o,
   output logic [(ISSUE_SLOTS*GROUP_COUNT)-1:0]     issue_slot_group_mask_o,
 
-  // One trusted child state-write lane.  It gives a MEMORY actor or a
+  // One trusted state-write subrequest lane. It gives a vector memory engine or a
   // reference test driver a real way to initialize group RF state without
   // turning data movement into an arithmetic opcode.  The group ID must be in
   // range while valid is asserted.
@@ -109,8 +109,8 @@ module simd_cluster_exec_shell #(
   output logic                              state_cpl_illegal_o,
 
   // One trusted VRF row-read child lane. Completion and data response are
-  // independent tagged channels because a MEMORY actor may consume them in
-  // either order. Both remain outside the GROUP_EXEC tracker and result
+  // independent tagged channels because a vector memory engine may consume them in
+  // either order. Both remain outside the EXEC tracker and result
   // collector. The group ID must be in range while valid is asserted.
   input  logic                              state_read_valid_i,
   output logic                              state_read_ready_o,
@@ -779,7 +779,7 @@ module simd_cluster_exec_shell #(
   end
 
   // Completion-kind demultiplexing keeps MEMORY/state-write children out of
-  // the GROUP_EXEC tracker.  The state path has a stable RR-selected output.
+  // the EXEC tracker.  The state path has a stable RR-selected output.
   always_comb begin
     if (state_cpl_hold_valid_q) begin
       state_cpl_select_valid = 1'b1;
@@ -853,7 +853,7 @@ module simd_cluster_exec_shell #(
   // State-read completion and data are independently arbitrated. Holding the
   // chosen group while its sink is blocked prevents a newly arriving lower
   // group from changing visible metadata or payload. Neither channel feeds
-  // the GROUP_EXEC tracker/result collector below.
+  // the EXEC tracker/result collector below.
   always_comb begin
     if (state_read_cpl_hold_valid_q) begin
       state_read_cpl_select_valid = 1'b1;

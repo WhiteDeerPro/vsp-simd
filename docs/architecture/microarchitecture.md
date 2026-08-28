@@ -13,8 +13,8 @@ Graphviz 源文件为 [`microarchitecture.dot`](microarchitecture.dot)。蓝色�
 本图画单个 SIMD4，包括 group 内已经实现的 `simd_uop_legal` 与统一 illegal
 side-effect gate。`simd_cluster_issue_frontend` 位于图外的 cluster 控制
 边界；它已集成 queue、RR live-head、opaque locked shadow、reject credit 和
-dispatcher。`simd_cluster_exec_shell` 又在其外加入 per-group ingress、四个 wrapper、
-tracker、reject buffer 和 result collector，形成 full-decoded GROUP_EXEC 参考闭环；
+dispatcher。`simd_cluster_exec` 又在其外加入 per-group ingress、四个 wrapper、
+tracker、reject buffer 和 result collector，形成 full-decoded EXEC 参考闭环；
 compact-uword predecoder、真实 canonical expander 和 class router 尚未实现。
 已经实现的 `simd_group_wrapper` 也位于本叶数据
 通路图外，负责 decoded EXEC、state-write 与 VRF state-read ready/valid、状态访问
@@ -22,22 +22,22 @@ compact-uword predecoder、真实 canonical expander 和 class router 尚未实�
 [指令交付](../design/instruction-delivery.md)与
 [开发路线](../design/development-roadmap.md)。
 `simd_group_completion_tracker` 与 `simd_cluster_result_collector` 也位于图外；
-前者聚合 GROUP_EXEC child completion 并保留 expected-result 生命期，后者捕获
-per-group result 并产生 retire pulse，二者已接入 exec shell。
-`vsp_vector_memory_engine` 同样位于图外；它是 VRF-only blocking actor，
-每次处理一个 parent 和一个 outstanding memory beat。LOAD 经 VRF state-write
-child 提交，STORE 收齐 VRF read child 的 completion 与 data response 后再写
-memory。`vsp_cluster_vrf_arbiter` 已把这些 child 接到 cluster wrapper；
-`vsp_cluster_memory_shell` 再把 span actor 与 full-decoded GROUP_EXEC shell 组合成
+前者聚合 EXEC group completion 并保留 expected-result 生命期，后者捕获
+per-group result 并产生 retire pulse，二者已接入 cluster execution integration。
+`vsp_vector_memory_engine` 同样位于图外；它是 VRF-only blocking engine，
+每次处理一个 command 和一个 outstanding memory beat。LOAD 经 VRF state-write
+subrequest 提交，STORE 收齐 VRF read subrequest 的 completion 与 data response 后再写
+memory。`vsp_cluster_vrf_arbiter` 已把这些 subrequest 接到 cluster wrapper；
+`vsp_cluster_memory_wrapper` 再把 vector memory engine 与 full-decoded EXEC integration 组合成
 reference integration。它尚未接 common class router、物理 local SRAM 或 DMA。
 `dmem_req/rsp` 是无 ID 的单飞行有序 data-memory 逻辑口；它携带
 address-space/address-context 与 fault cause，但 engine 内没有 MMU、TLB、
 PTW 或 cache。端到端 testbench 在该逻辑口外模拟 local memory；它也不是 IFetch
 端口。
 
-当前 SIMD4 没有取指和 compact-uword 译码。上级已有 `simd_issue_decode_shell`
+当前 SIMD4 没有取指和 compact-uword 译码。上级已有 `simd_issue_decode_stage`
 作为晚译码 holding 边界，但其 hook 尚未替换为真实编码解析。`op_i`/`exec_op_i` 上的
-6-bit `simd_op_e` 只是 canonical GROUP_EXEC function，不是完整 opcode。
+6-bit `simd_op_e` 只是 canonical EXEC function，不是完整 opcode。
 寄存器地址、立即数、mask、route、reduction 和写回控制均为并行发射信号。
 当前没有已定义的 32/16-bit instruction；queue 的 32/16/16 只是 opaque
 默认宽度。未来 sequencer 可以选择 32-bit 微指令、扩展字或内部控制存储，
@@ -144,16 +144,16 @@ RF read -> optional route / operand mux -> lane execute -> optional reduce
 尚未实现的主要结构包括：
 
 - compact-uword predecoder、canonical expander/class router、已解码 group path、
-  标量寄存器和标量 ALU；GROUP_EXEC frontend 已有独立参考 RTL，
+  标量寄存器和标量 ALU；EXEC frontend 已有独立参考 RTL，
   但其 slot 仍是 opaque shadow；
-- 跨 GROUP_EXEC/MEMORY/CONTROLLER 的 class router、长期资源预留和
-  common completion mux；GROUP_EXEC shell 已集成 wrapper、completion tracker、
+- 跨 EXEC/MEMORY/CONTROL 的 class router、长期资源预留和
+  common completion mux；EXEC integration 已集成 wrapper、completion tracker、
   result collector 与 reject path，但尚未成为完整 VSP controller；
 - pre-dispatch ordered error sink 的跨 class 汇聚、host completion 和
   barrier/controller；
 - 跨 class program-order enforcement，以及物理 local SRAM、DMA、地址空间
   adapter 的集成与可选的多 outstanding、二维地址生成；vector-memory→shared VRF
-  service→wrapper 的 decoded reference wiring 已完成，当前 engine 仅支持 VRF，ARF 需先用
+  arbiter→wrapper 的 decoded reference wiring 已完成，当前 engine 仅支持 VRF，ARF 需先用
   `NSLICE/NCLIP` 转到 VRF 再 STORE；
 - MMU/TLB/PTW/cache/coherence 和 architectural IFetch；未来 IFetch 若存在，
   使用独立于 `dmem_req/rsp` 的逻辑请求类；

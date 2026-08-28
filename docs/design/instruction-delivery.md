@@ -1,12 +1,12 @@
 # 队列、微指令与译码器候选设计
 
-> 状态：GROUP_EXEC exec shell 与 late-decode holding shell 已有参考 RTL；真实
+> 状态：EXEC cluster integration 与 late-decode holding stage 已有参考 RTL；真实
 > predecoder/canonical expander、class router 和 encoded format 尚未实现。本文用于
 > 比较实现路径，不拥有最终指令格式或控制器组织的决策权。
 
 ## 1. 当前真实状态 `[RTL事实]`
 
-现在已有 full-decoded GROUP_EXEC 集群闭环和译码后的状态边界，但还没有实际解析
+现在已有 full-decoded EXEC 集群闭环和译码后的状态边界，但还没有实际解析
 compact uword 位域的译码逻辑：
 
 - `simd_datapath` 直接接收 `op`、寄存器地址、立即数、mask、route、reduction
@@ -25,18 +25,18 @@ compact uword 位域的译码逻辑：
 - `simd_group_wrapper` 已直接接受 canonical decoded EXEC，并以独立 state-write
   子事务提供 VRF/ARF/MRF 数据注入、tagged child completion 和可背压结果；
   这没有增加 encoded-uword parser。
-- `simd_cluster_exec_shell` 已按 `group_issue_slot` 选择完整 canonical bundle，
+- `simd_cluster_exec` 已按 `group_issue_slot` 选择完整 canonical bundle，
   通过每 group 单项 ingress 原子 multicast 到四个 wrapper，并接入 tracker、reject
   buffer 和 result collector；当前 admission 仍由可信上游直接提供展开控制；
-- `simd_issue_decode_shell` 是每 issue slot 一项、无 fall-through 的 late-decode
+- `simd_issue_decode_stage` 是每 issue slot 一项、无 fall-through 的 late-decode
   holding stage：它锁存 raw/resolved/cached provenance，以及 hook 产生的
   class/response/group-mask/exact-resource/canonical-payload/legal/error；背压时所有
   字段稳定。当前 hook 是参考 adapter 接口，不是 encoded parser。
 
 因此现在可以准确地说：full-decoded reference profile 已能执行和退休
-GROUP_EXEC；decode holding 的协议也已验证。尚缺的是从真实 encoded/compact uword
+EXEC；decode holding 的协议也已验证。尚缺的是从真实 encoded/compact uword
 唯一派生 hook 输出的 predecoder/expander，以及把该 late-decode stage 重排到 queue
-head 与 class router 之间。holding shell 本身不等于完成了译码规则。
+head 与 class router 之间。holding stage 本身不等于完成了译码规则。
 
 ## 2. 区分三种表示 `[分析模型]`
 
@@ -54,7 +54,7 @@ SIMD4 group control signals
 
 外部软件指令、sequencer 内部 uword 和最终 decoded bundle 不必具有相同宽度或
 编码。当前 `op_i`/`exec_op_i` 上的 6-bit `simd_op_e` 只是
-canonical GROUP_EXEC bundle 中的 function，不是完整 opcode。
+canonical EXEC bundle 中的 function，不是完整 opcode。
 
 ## 3. 三种 queue 方案 `[候选比较]`
 
@@ -64,7 +64,7 @@ canonical GROUP_EXEC bundle 中的 function，不是完整 opcode。
 | encoded FIFO + late decode | entry 紧凑、控制存储自然 | 调度前看不到完整资源需求；多 head 可能复制译码或形成时序瓶颈 |
 | compact FIFO + cached predecode + head expansion | 存储较小，同时能提前仲裁资源 | 两段译码之间必须保持语义一致，并定义 canonical bundle |
 
-当前 `simd_issue_queue`、frontend 与 decode holding shell 提供第三种 hybrid 可复用
+当前 `simd_issue_queue`、frontend 与 decode holding stage 提供第三种 hybrid 可复用
 的存储、发射和稳定输出协议边界，但不规定不透明字段的 bit layout。它仍需要真实
 predecoder/expander、queue 面积和代表性 trace
 比较；前两种方案没有因此被架构性排除。“无解码队列”不是独立方案：保存
@@ -90,9 +90,9 @@ ISSUE_SLOTS copies of canonical expander
         ▼
 exact shared-resource arbitration
         │
-        ├─ GROUP_EXEC ── atomic group-mask dispatcher ── SIMD4 wrappers
+        ├─ EXEC ── atomic group-mask dispatcher ── SIMD4 wrappers
         ├─ MEMORY ────── DMA/local-memory engine
-        └─ CONTROLLER ── barrier/admin state machine
+        └─ CONTROL ── barrier/admin state machine
 ```
 
 深 FIFO 保存紧凑 uword；展开表示只出现在所选队头的组合 expander 输出，或可选的
@@ -107,10 +107,10 @@ pop。这保证 downstream backpressure 下 payload 稳定，FIFO head 仍是唯
 逻辑 owner。但 shadow 保存的是 opaque payload/resolved/sched_meta，不是已由
 本仓库 expander 生成的 canonical decoded bundle。
 
-第一版 `simd_cluster_exec_shell` 已用 full-decoded queue profile 闭合
+第一版 `simd_cluster_exec` 已用 full-decoded queue profile 闭合
 `group_issue_slot` bundle mux、group ingress、wrapper、tracker 和 result/reject
 返回。尚缺的是把真实 predecoder/canonical expander 与 class router 放到选中队头
-和该 canonical cluster 边界之间；当前 exec shell 不负责 encoded format。
+和该 canonical cluster 边界之间；当前 cluster execution integration 不负责 encoded format。
 
 ## 5. Queue entry 应保存什么 `[RTL边界 + 候选语义]`
 
@@ -163,7 +163,7 @@ sideband，predecoder 只验证并使用它；其余 scheduling metadata 由轻�
 派生：
 
 ```text
-dispatch_class   = GROUP_EXEC / MEMORY / CONTROLLER
+dispatch_class   = EXEC / MEMORY / CONTROL
 response_kind    = NONE / STATUS / GROUP_DATA / MEMORY_DATA
 group_state/write_port coarse class
 resource_may_need_mask
@@ -178,7 +178,7 @@ simd_op + element mode
 exact VRF/ARF/MRF row addresses and writeback enables
 expanded immediate and default fields
 route/reduce/mask/export controls
-class-specific GROUP_EXEC / MEMORY / CONTROLLER request
+class-specific EXEC / MEMORY / CONTROL request
 final legality + exact resource set
 ```
 
@@ -190,7 +190,7 @@ row 地址和 latency class 都留在晚译码；若以后不同 RF 文件并发
 而不是把整份 decoded bundle 塞回深 FIFO。
 
 `response_kind` 是返回形态，不应与目的执行引擎混成一个 class。例如 reduction
-仍是 `GROUP_EXEC`，只是产生 `GROUP_DATA`；barrier/admin 通常走 `CONTROLLER`，不要求
+仍是 `EXEC`，只是产生 `GROUP_DATA`；barrier/admin 通常走 `CONTROL`，不要求
 非零 group mask。完成精确资源译码后必须按 `dispatch_class` 分流，不能把所有
 canonical uop 都交给 group-mask dispatcher，否则合法的 controller-local 命令会被
 空 mask 规则误判。
@@ -219,7 +219,7 @@ terminal reject 与 queue pop 绑定，错误返回无空间时保持 slot 和�
 `simd_issue_queue.head_ready_i[queue]` 的具体含义就是最终 dequeue/ownership
 release，不是“队头已被 live-select”或 shadow slot 已复制。已实现的
 locked-shadow 在 slot claim 时保持它为零，并通过 `queue_claimed`
-防止同一队首被两个 slot 重复领取；只在 GROUP_EXEC accept 或有
+防止同一队首被两个 slot 重复领取；只在 EXEC accept 或有
 credit 的 reject 时同时清 slot 并拉高该 queue 的 `head_ready_i`。full queue
 会据此允许同拍 pop+push，所以 speculative ready 会直接造成过早释放，
 而不仅是性能差异。
@@ -244,7 +244,7 @@ credit 的 reject 时同时清 slot 并拉高该 queue 的 `head_ready_i`。full
    frontend 的 opaque shadow 已实现稳定与 claim/pop 契约，但不证明
    canonical expansion 已完成。
 
-`simd_issue_decode_shell` 已实现第 4 项所需的一项 elastic holding：没有组合
+`simd_issue_decode_stage` 已实现第 4 项所需的一项 elastic holding：没有组合
 fall-through，支持同拍 retire/refill，并在 stall 时保持 raw provenance、class、
 resource、canonical payload 与错误字段全部稳定。当前 `hook_*` 由 reference driver
 产生；未来 compact decoder 在其前方或内部派生同一组字段即可。该模块的
@@ -258,7 +258,7 @@ entry 直到 engine/error terminal，则必须另加 claim/captured 门控，不
 
 | 通用 CPU decoder 常见职责 | 当前 VSP/SIMD decode 边界 |
 |---|---|
-| 从 PC/IFetch 指令流识别标量 ALU、branch、load/store | 从 sequencer action/uword 识别 `GROUP_EXEC/MEMORY/CONTROLLER` class |
+| 从 PC/IFetch 指令流识别标量 ALU、branch、load/store | 从 sequencer action/uword 识别 `EXEC/MEMORY/CONTROL` class |
 | 产生分支、特权、异常、flush/重启元数据 | 产生 group mask、response kind、exact resource、canonical payload 与 ordered error completion 元数据 |
 | 产生供后续 in-order 或 rename/issue/commit 结构消费的 uop、分支与异常元数据 | 以 `context+tag`、原子 multicast、engine fire 和 result lifetime 描述事务所有权 |
 | 一条 architectural instruction 可展开成一个或多个 uop，再由后续结构选择执行资源 | 一个 issue slot 的 decoded bundle 可原子广播到多个 SIMD4 group；expander 数量随 slot 而不是 group 增长 |
@@ -270,7 +270,7 @@ controller 边界，不会自动落入每个 group decoder。
 
 当前 reference frontend 把 opaque slot 直接接到 group dispatcher，并由该
 dispatcher 的 accept/reject 触发 queue pop；所以它只适用于入口已经完成最终
-GROUP_EXEC 分类与调度合法性检查的配置。以后接入 selected-head late expander 时，
+EXEC 分类与调度合法性检查的配置。以后接入 selected-head late expander 时，
 不能简单把 expander 串在现有 `group_issue_slot` 之后，因为那时 terminal 决策已经
 发生。届时需要把边界重排为：
 
@@ -333,11 +333,11 @@ context 不是 MMU 或 virtual-address 实现证明；当前只将它们传到
 
 当前没有已定义的 32-bit 或 16-bit instruction。内部信号
 `op_i`/`exec_op_i` 携带的 6-bit `simd_op_e` 只是 canonical
-`GROUP_EXEC` 的 function，不是完整 opcode。应分开三层：
+`EXEC` 的 function，不是完整 opcode。应分开三层：
 
-1. major dispatch class：`GROUP_EXEC/MEMORY/CONTROLLER`；
+1. major dispatch class：`EXEC/MEMORY/CONTROL`；
 2. 尚未定义编码的 compact uword；
-3. 已展开 canonical GROUP_EXEC 中的 `simd_op_e` function。
+3. 已展开 canonical EXEC 中的 `simd_op_e` function。
 
 queue 参数的 32-bit payload、16-bit resolved 和 16-bit sched-meta
 只是 opaque 默认宽度，不是格式合同。一个常用本地 ALU uword 也许可以压进
@@ -361,7 +361,7 @@ queue 参数的 32-bit payload、16-bit resolved 和 16-bit sched-meta
 `4 group / 2 alloc slot / 2 context / 4 entry`。一条 queue entry 只有一个
 command tag。若 `target_group_mask` 含 `k` 个 group，
 dispatcher 原子 fire 后生成 `k` 个内部 group 子事务；每个子返回携带相同的
-`context_id + tag` 和各自的 `group_id`。`simd_cluster_exec_shell` 已在 dispatch 原子
+`context_id + tag` 和各自的 `group_id`。`simd_cluster_exec` 已在 dispatch 原子
 accept 的同拍提交 tracker entry：`alloc_valid/ready` 只表示候选和
 credit，只有与同拍 group issue fire 对应的 `alloc_commit` 写表。保存：
 
@@ -389,7 +389,7 @@ completion 容量核算也不能只按“一条 queue entry 一格”处理：mu
 `popcount(mask)` 个 group result slot，另加可选的 command status。
 当前 tracker 满表会对 allocation 背压；live context+tag 也是普通 allocation
 dependency，而不是 protocol fault。unknown/wrong/duplicate/mismatch 返回被消费并
-置 sticky protocol error。tracker 已与 frontend/wrappers 组成 exec shell，result
+置 sticky protocol error。tracker 已与 frontend/wrappers 组成 cluster execution integration，result
 collector 在捕获 wrapper response 时产生 retire pulse，并用自己的输出寄存器承接
 后续外部背压。
 `has_result` 与 allocation mask 不一致时，tracker 依 child 实际回报修正
@@ -406,21 +406,21 @@ barrier 语义的实测复杂度。
   硬件派生的 cached `sched_meta`；
 - issue slot 前：完整展开成 decoded canonical bundle；
 - 当前每个 issue slot：已有 FIFO head 的 opaque locked shadow，以及独立
-  `simd_issue_decode_shell` 所验证的 decoded holding 结构；尚需真实 canonical
+  `simd_issue_decode_stage` 所验证的 decoded holding 结构；尚需真实 canonical
   expander 把 raw/resolved/cached entry 唯一变成 hook 输出；
 - 接入 late expander 时：先把当前 frontend 的 terminal/pop 从内部 group dispatch
   解耦，改由 expander 后的目标 engine 或 ordered error sink 回传；
 - expander 后：按 `dispatch_class` 分流，group dispatcher 只接收确实需要 group 的
   指令；
-- entry ownership：接入时保持一种一致模型。可以在 decode-shell input fire 时把
+- entry ownership：接入时保持一种一致模型。可以在 decode-stage input fire 时把
   所有权转入 holding，同时继续阻止同 context 越过该 entry；也可以让 FIFO 保持
   owner 到目标路径 terminal，但必须用 captured/claim 状态禁止重复捕获同一 head。
-  当前 frontend 的 opaque shadow 属于后一种，独立 decode shell 的 ready/valid 端口
+  当前 frontend 的 opaque shadow 属于后一种，独立 decode stage 的 ready/valid 端口
   属于前一种，二者尚未直接串接；
 - `simd_datapath`：继续只看展开控制，不加入取指或编码解析；
-- 当前 RTL：已有 legality、decoded group wrapper、GROUP_EXEC frontend、completion
-  tracker、decode holding shell，以及闭合 queue/dispatch/ingress/wrapper/
-  result/reject 的 `simd_cluster_exec_shell`；
+- 当前 RTL：已有 legality、decoded group wrapper、EXEC frontend、completion
+  tracker、decode holding stage，以及闭合 queue/dispatch/ingress/wrapper/
+  result/reject 的 `simd_cluster_exec`；
 - 当前仍没有真实 predecoder/canonical expander、class router、owner
   state、barrier/controller 或 host completion；独立 VRF-only
   `vsp_vector_memory_engine` 已有 RTL，但未接入该控制路径；

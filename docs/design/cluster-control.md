@@ -1,6 +1,6 @@
 # SIMD4 集群控制工作稿
 
-本页并列记录已实现的 GROUP_EXEC frontend/dispatcher/exec-shell 行为、事务正确性
+本页并列记录已实现的 EXEC frontend/dispatcher/cluster integration 行为、事务正确性
 条件和后续 controller 候选。
 它不是一份整体生效的最终规格；各节状态分别标注。
 
@@ -139,7 +139,7 @@ credit 决定，且不会产生 group fire。
 因此现有 `cfg_*` 写优先行为不能在 cluster 中静默吞掉一条已经接受的执行写；
 外层控制器必须在接受前把这种冲突转换成 backpressure。
 
-## 6. 跨组操作 `[语义已收束，RTL 待实现]`
+## 6. 跨组操作 `[候选语义，RTL 待实现]`
 
 普通逐元素操作只占用目的 group。涉及边界或跨组路由时还需要声明更大的资源集合：
 
@@ -148,8 +148,8 @@ credit 决定，且不会产生 group fire。
 - 跨组 gather 是 cluster 操作，源和目的 group 的并集在该事务期间被占用；
 - 跨组路由采用独立阶段和显式写回，不无条件串入普通 ALU 组合路径。
 
-跨组路由不再是与 MEMORY 并列的独立 command class，也不再以 row packet 为颗粒。
-语义收束为寄存器形式的 lane gather：
+跨组路由不再候选为与 MEMORY 并列的独立 command class，也不再预设以 row packet
+为颗粒。当前用寄存器形式的 lane gather 描述候选语义：
 
 ```text
 DR[lane] = SR[IR[lane]]
@@ -232,7 +232,7 @@ context_id + tag + error_status + requested_group_mask
 
 已实现的 `simd_group_completion_tracker` 默认为
 `4 group / 2 alloc slot / 2 context / 4 entry`。multicast 在 dispatch 边界
-原子接受时，`simd_cluster_exec_shell` 同拍提交 `context+tag`、accepted group mask 和
+原子接受时，`simd_cluster_exec` 同拍提交 `context+tag`、accepted group mask 和
 expected result mask。`alloc_valid/ready` 只是候选与 credit；只有
 `alloc_commit` 写 entry，且 commit 必须对应同拍 group issue fire，避免
 tracker 单独分配。slot-specific `alloc_ready` 已通过 dispatcher 的 resource gate
@@ -258,10 +258,10 @@ pending mask 清零，不等待外部读取已缓冲 response。tag 在 collecto
 若以后采用 subtag、generation ID 或不同的结果聚合接口，这一模型可以替换。
 
 单 group wrapper 只返回 `context+tag`；tracker 的 child lane 代表物理
-`group_id`。exec shell 已处理 GROUP_EXEC child、pre-dispatch reject 和 group result，
-并已提供独立的 VRF state-read/write child 边界，但 exec shell 本身仍不处理
+`group_id`。cluster execution integration 已处理 EXEC child、pre-dispatch reject 和 group result，
+并已提供独立的 VRF state-read/write child 边界，但 cluster execution integration 本身仍不处理
 host completion、MEMORY parent、owner state 或 barrier。当前 decoded MEMORY
-reference integration 位于其外层的 `vsp_cluster_memory_shell`。
+reference integration 位于其外层的 `vsp_cluster_memory_wrapper`。
 
 ## 9. 当前 group wrapper RTL 边界 `[RTL事实]`
 
@@ -278,18 +278,18 @@ reference integration 位于其外层的 `vsp_cluster_memory_shell`。
 - VRF 用 `PASS_A` 无本地写回导出，ARF 当前用多次 `NSLICE` 组合导出；
 - invalid context/RF file/address、非法 EXEC 和非法窄导出形状均消费请求、零副作用并返回错误。
 
-当前 wrapper RTL 实现的是 VRF-only actor 可使用的单行 VRF state-read/write
+当前 wrapper RTL 实现的是 VRF-only engine 可使用的单行 VRF state-read/write
 child endpoint，而不是 program-level `RF_FILL`。它不属于 `simd_op_e`；metadata
 与 write data 在叶端作为一个原子 beat 接受，data 不进入指令队列。
 `vsp_vector_memory_engine` 能把一个 VRF-only LOAD/STORE parent 分解为多个 child beat；
-当前 MEMORY reference shell 已把这些 child 接到 wrapper。
+当前 MEMORY reference integration 已把这些 child 接到 wrapper。
 
-## 10. 当前 GROUP_EXEC frontend RTL 边界 `[RTL事实]`
+## 10. 当前 EXEC frontend RTL 边界 `[RTL事实]`
 
 `simd_cluster_issue_frontend` 默认参考 profile 为 `4 group / 2 queue / 2
 slot`：
 
-- 仅接收已解析、已由可信上游验证的 GROUP_EXEC payload、resolved
+- 仅接收已解析、已由可信上游验证的 EXEC payload、resolved
   sideband 和 scheduling metadata；
 - 集成 `simd_issue_queue`、round-robin live-head 选择、每 slot opaque
   locked shadow、显式 reject credit、terminal pop 和 `simd_issue_dispatch`；
@@ -299,17 +299,17 @@ slot`：
 - opaque storage 不代表 raw/hybrid/full-decoded adapter 已实现，也不赋予
   payload representation-neutral 的执行语义。
 
-它单独仍不是 cluster shell 或 controller。`simd_cluster_exec_shell` 在其外选择
+它单独仍不是 cluster integration 或 controller。`simd_cluster_exec` 在其外选择
 canonical bundle、原子写入 per-group ingress、实例化 group wrappers，并接入 tracker、
 reject buffer 与 result collector；`group_issue_slot_o` 是该 bundle mux 的稳定索引。
-owner state、真实 decoder/class router 和 barrier 仍在 shell 之外。
+owner state、真实 decoder/class router 和 barrier 仍在该 integration 之外。
 
-## 11. GROUP_EXEC exec shell RTL 边界 `[RTL事实]`
+## 11. EXEC cluster integration RTL 边界 `[RTL事实]`
 
-`simd_cluster_exec_shell` 的首个参考 profile 为 `4 group / 2 context / 2 slot`：
+`simd_cluster_exec` 的首个参考 profile 为 `4 group / 2 context / 2 slot`：
 
 ```text
-full-decoded GROUP_EXEC admission
+full-decoded EXEC admission
           ↓
 queue / RR slot / atomic dispatcher
           ↓ accept + tracker alloc_commit
@@ -332,19 +332,19 @@ per-group 1-entry EXEC ingress
   让 multicast 只在部分 group fire；
 - result obligation 由共享 `simd_exec_requires_result` 同时供 wrapper 与 tracker
   使用，避免两处形状判断漂移；
-- 可信、带 group ID 的 VRF state-read 与 state-write child lane允许外部 actor 接入
-  真实 RF data path；这些返回与 GROUP_EXEC tracker 精确分流；
+- 可信、带 group ID 的 VRF state-read 与 state-write subrequest lane 允许外部 engine 接入
+  真实 RF data path；这些返回与 EXEC tracker 精确分流；
 - 多 group 的 state-write completion、state-read completion 和 state-read data
   response 分别由 RR 选择；一旦输出在背压下可见，所选 group 会锁定到握手完成，
   metadata/data 不会在 `valid && !ready` 时跳变；
-- 当前 canonical bundle 在 shell 入口已完全展开，内部私有 packed layout 不是
+- 当前 canonical bundle 在 integration 入口已完全展开，内部私有 packed layout 不是
   encoded instruction format；
 - `context_exec_quiescent` 只表示 tracker 中的 EXEC child 已清空，不包含仍在 queue
   中的命令、state/reject 返回或未来 MEMORY inflight；真正 barrier quiescence 由
   controller 汇总后另行定义。
 
 它还没有 class router、动态 owner table、barrier、MEMORY parent、跨组 gather、
-跨 group boundary staging 或 host/OS completion。因此此模块只称 exec shell，
+跨 group boundary staging 或 host/OS completion。因此此模块只称 cluster execution integration，
 不称 VSP controller。
 
 ## 12. 当前 decoded MEMORY integration `[RTL事实 + 里程碑基线]`
@@ -355,32 +355,32 @@ read transaction 保持 client owner，直到 completion 与 data response 都�
 write transaction 保持到 completion。这个 owner 只是返回路由状态，不是 group
 ownership、scoreboard 或 program-order 状态。
 
-`vsp_cluster_memory_shell` 组合：
+`vsp_cluster_memory_wrapper` 组合：
 
 ```text
 decoded MEMORY → vsp_vector_memory_engine ─┐
                                       ├→ shared VRF arbiter
-decoded GROUP_EXEC → cluster exec shell┘       ↓
+decoded EXEC → cluster execution integration ─────┘       ↓
                                       group VRF state-read/write
 
 dmem_* ↔ external data-memory logical boundary
 ```
 
-`vsp_cluster_memory_shell` 以单个 MEMORY client 使用该 arbiter。GROUP_EXEC 与
+`vsp_cluster_memory_wrapper` 以单个 MEMORY client 使用该 arbiter。EXEC 与
 MEMORY 各有独立 command/completion 端口，没有 common class router、统一
 error/completion mux 或 program-order enforcement。reference test 通过等待 LOAD
-completion 后提交 GROUP_EXEC、再等待其 completion 后提交 STORE 来建立顺序；shell
+completion 后提交 EXEC、再等待其 completion 后提交 STORE 来建立顺序；wrapper
 不会从两个入口自行推导数据依赖。
 
 arbiter 的 `CLIENT_COUNT` 仍是参数，多 client 仲裁已由其单元测试覆盖，为以后并接
-其他 VRF-only actor 留出边界；当前 cluster 集成只挂一个 client。跨组 gather 不使用
-这条边界：它是 Vector ALU 内的一级，不作为独立 parent actor 竞争 group VRF 端点。
+其他 VRF-only engine 留出边界；当前 cluster 集成只挂一个 client。跨组 gather 不使用
+这条边界：它是 Vector ALU 内的一级，不作为独立 client 竞争 group VRF 端点。
 
-owner snapshot 仍由外部输入，GROUP_EXEC resource grant 在此参考壳中固定为全可用；
+owner snapshot 仍由外部输入，EXEC resource grant 在此 reference integration 中固定为全可用；
 动态 owner/resource controller、barrier 与跨 class quiescence 尚未实现。`dmem_*`
 是 effective-address 逻辑边界；testbench 的 local-memory model 不等于物理 local
 SRAM RTL，也不包含 cache、MMU/TLB/PTW、DMA 或 coherence。当前 117 项端到端检查
-只支持“decoded LOAD→GROUP_EXEC→STORE 接线可工作”的声明，不定义最终 ISA。
+只支持“decoded LOAD→EXEC→STORE 接线可工作”的声明，不定义最终 ISA。
 
 ## 13. 当前 dispatcher RTL 边界 `[RTL事实]`
 
@@ -399,7 +399,7 @@ SRAM RTL，也不包含 cache、MMU/TLB/PTW、DMA 或 coherence。当前 117 项
 
 ## 14. 后续实验顺序 `[计划]`
 
-1. 在已有 decode holding shell 的 `hook_*` 位置实现 compact-uword predecode 与
+1. 在已有 decode holding stage 的 `hook_*` 位置实现 compact-uword predecode 与
    canonical expander，并把当前 full-decoded admission 重排到 selected-head late
    decode/class-router 边界；terminal/pop 由最终 engine fire 或 error sink 回传；
 2. 增加 common class router、program-order/error/completion 汇聚、owner state、

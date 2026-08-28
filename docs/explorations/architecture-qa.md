@@ -126,14 +126,14 @@ queue、两 slot。
 ## AQ-008：队列保存编码指令还是解码后控制？
 
 **当前观察 `[RTL事实]`**：现在已有保存不透明
-`payload/resolved/sched_meta/tag/group_mask` 的 GROUP_EXEC frontend；它已有
-RR 队头选择和受阻后稳定的 opaque holding slot。`simd_cluster_exec_shell` 已用
-full-decoded profile 接到 group wrappers，`simd_issue_decode_shell` 也已验证晚译码
+`payload/resolved/sched_meta/tag/group_mask` 的 EXEC frontend；它已有
+RR 队头选择和受阻后稳定的 opaque holding slot。`simd_cluster_exec` 已用
+full-decoded profile 接到 group wrappers，`simd_issue_decode_stage` 也已验证晚译码
 holding 协议；但还没有真实 predecoder/canonical expander 或 class router。
 datapath 仍只暴露展开控制边界，holding hook 不证明 encoded parser 已实现。
 当前 32-bit payload、16-bit resolved 和 16-bit sched-meta 只是 opaque
 默认宽度，不是已定义的 instruction format。术语上应分开 major
-dispatch class、未定义的 compact uword，以及 canonical GROUP_EXEC 中的
+dispatch class、未定义的 compact uword，以及 canonical EXEC 中的
 6-bit `simd_op_e` function；`op_i`/`exec_op_i` 不是完整 opcode。
 
 **当前建议 `[候选]`**：per-context FIFO 保存 compact uword、resolved sideband
@@ -150,8 +150,8 @@ entry 可以留在 FIFO，也可以原子转移到被跟踪的 issue stage。
 
 **当前观察 `[RTL事实]`**：裸 SIMD4 没有 load/store、地址生成或 cache
 coherence。独立 `vsp_vector_memory_engine` 已实现 VRF LOAD/STORE parent 和
-单飞行有序 `dmem_req/rsp`；`vsp_cluster_memory_shell` 已经由 shared VRF arbiter
-把 span child 接到 cluster VRF state-read/write endpoint。`dmem_*` 后端与
+单飞行有序 `dmem_req/rsp`；`vsp_cluster_memory_wrapper` 已经由 shared VRF arbiter
+把 memory engine 的 VRF subrequest 接到 cluster VRF state-read/write endpoint。`dmem_*` 后端与
 controller/class ordering 仍外置；`cfg_*` 仍只是初始化/状态传输叶端。
 
 **工作方向 `[候选]`**：地址状态和 DMA/local-memory request 位于 sequencer/controller
@@ -175,10 +175,10 @@ data-memory 分开的逻辑口，不因两者可能共享后端 PTW 就并成一
 transaction ready/valid、tagged child completion 和可背压 result buffer，但多 group
 `simd_group_completion_tracker` 已独立实现乱序/同拍 child 聚合、无数据
 command completion 和 expected-result 生命期。frontend、per-group ingress、
-wrappers、tracker 与 RR result collector 已组成 `simd_cluster_exec_shell`；内部算术
+wrappers、tracker 与 RR result collector 已组成 `simd_cluster_exec`；内部算术
 流水与物理 RF bank 仍未实现。
 
-**工作顺序 `[里程碑基线]`**：transaction wrapper 和 GROUP_EXEC cluster 已闭合
+**工作顺序 `[里程碑基线]`**：transaction wrapper 和 EXEC cluster 已闭合
 “一次接受、一次完成、返回可背压”的参考行为；接下来在数据供应闭环后用综合和 trace 选择
 内部流水。RF bank conflict 属物理化
 问题；逻辑 2R/1W 行为模型不保证能直接高效映射成 SRAM。

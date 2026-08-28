@@ -1,4 +1,4 @@
-#include "Vvsp_cluster_memory_shell.h"
+#include "Vvsp_cluster_memory_wrapper.h"
 #include "verilated.h"
 
 #include <array>
@@ -59,7 +59,7 @@ struct LocalMemory {
   uint64_t loads = 0;
   uint64_t stores = 0;
 
-  void drive(Vvsp_cluster_memory_shell& dut) {
+  void drive(Vvsp_cluster_memory_wrapper& dut) {
     // Refuse one out of every three request cycles. This is sufficient to
     // exercise sustained valid/ready behavior without introducing another
     // outstanding transaction into the blocking reference memory.
@@ -69,7 +69,7 @@ struct LocalMemory {
     dut.dmem_rsp_fault_cause_i = response_fault;
   }
 
-  void step(Vvsp_cluster_memory_shell& dut) {
+  void step(Vvsp_cluster_memory_wrapper& dut) {
     drive(dut);
     dut.clk_i = 0;
     dut.eval();
@@ -125,7 +125,7 @@ struct LocalMemory {
   }
 };
 
-void clear_exec_command(Vvsp_cluster_memory_shell& dut) {
+void clear_exec_command(Vvsp_cluster_memory_wrapper& dut) {
   dut.exec_cmd_valid_i = 0;
   dut.exec_cmd_context_i = 0;
   dut.exec_cmd_tag_i = 0;
@@ -159,7 +159,7 @@ void clear_exec_command(Vvsp_cluster_memory_shell& dut) {
   dut.exec_cmd_route_upper_i = 0;
 }
 
-void clear_memory_command(Vvsp_cluster_memory_shell& dut) {
+void clear_memory_command(Vvsp_cluster_memory_wrapper& dut) {
   dut.mem_cmd_valid_i = 0;
   dut.mem_cmd_op_i = kMemLoad;
   dut.mem_cmd_exec_context_i = 0;
@@ -173,7 +173,7 @@ void clear_memory_command(Vvsp_cluster_memory_shell& dut) {
   dut.mem_cmd_span_bytes_i = 0;
 }
 
-void clear_inputs(Vvsp_cluster_memory_shell& dut) {
+void clear_inputs(Vvsp_cluster_memory_wrapper& dut) {
   clear_exec_command(dut);
   clear_memory_command(dut);
   dut.group_owner_valid_i = 0;
@@ -188,7 +188,7 @@ void clear_inputs(Vvsp_cluster_memory_shell& dut) {
   dut.dmem_rsp_fault_cause_i = kFaultNone;
 }
 
-void issue_memory(Vvsp_cluster_memory_shell& dut, LocalMemory& memory,
+void issue_memory(Vvsp_cluster_memory_wrapper& dut, LocalMemory& memory,
                   uint8_t op, uint8_t tag, uint32_t base, uint8_t group_mask,
                   uint8_t row, uint8_t span_bytes) {
   clear_memory_command(dut);
@@ -219,7 +219,7 @@ void issue_memory(Vvsp_cluster_memory_shell& dut, LocalMemory& memory,
   std::exit(1);
 }
 
-void issue_add_immediate(Vvsp_cluster_memory_shell& dut,
+void issue_add_immediate(Vvsp_cluster_memory_wrapper& dut,
                          LocalMemory& memory, uint8_t tag, uint8_t src_row,
                          uint8_t dst_row, uint8_t immediate) {
   clear_exec_command(dut);
@@ -248,11 +248,11 @@ void issue_add_immediate(Vvsp_cluster_memory_shell& dut,
     }
     memory.step(dut);
   }
-  std::cerr << "timeout issuing GROUP_EXEC command\n";
+  std::cerr << "timeout issuing EXEC command\n";
   std::exit(1);
 }
 
-void consume_memory_completion(Vvsp_cluster_memory_shell& dut,
+void consume_memory_completion(Vvsp_cluster_memory_wrapper& dut,
                                LocalMemory& memory, uint8_t op, uint8_t tag,
                                uint8_t group_mask, uint8_t bytes) {
   for (int timeout = 0; timeout < 1000; ++timeout) {
@@ -304,7 +304,7 @@ void consume_memory_completion(Vvsp_cluster_memory_shell& dut,
   std::exit(1);
 }
 
-void consume_exec_completion(Vvsp_cluster_memory_shell& dut,
+void consume_exec_completion(Vvsp_cluster_memory_wrapper& dut,
                              LocalMemory& memory, uint8_t tag) {
   for (int timeout = 0; timeout < 1000; ++timeout) {
     memory.drive(dut);
@@ -343,7 +343,7 @@ void consume_exec_completion(Vvsp_cluster_memory_shell& dut,
     dut.exec_cpl_ready_i = 0;
     return;
   }
-  std::cerr << "timeout waiting for GROUP_EXEC completion\n";
+  std::cerr << "timeout waiting for EXEC completion\n";
   std::exit(1);
 }
 
@@ -351,7 +351,7 @@ void consume_exec_completion(Vvsp_cluster_memory_shell& dut,
 
 int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
-  Vvsp_cluster_memory_shell dut;
+  Vvsp_cluster_memory_wrapper dut;
   LocalMemory memory;
 
   clear_inputs(dut);
@@ -403,7 +403,7 @@ int main(int argc, char** argv) {
   expect_eq("combined protocol clean", 0, dut.protocol_error_o);
 
   dut.final();
-  std::cout << "PASS: VSP cluster MEMORY shell " << checks
-            << " checks across LOAD -> GROUP_EXEC -> STORE and backpressure\n";
+  std::cout << "PASS: VSP cluster MEMORY wrapper " << checks
+            << " checks across LOAD -> EXEC -> STORE and backpressure\n";
   return 0;
 }

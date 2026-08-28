@@ -10,8 +10,8 @@ workloads/      代表性负载映射
 verification/   如何解释和维护验证证据
 ```
 
-建议先读架构范围和当前数据通路，再看问题集。这样能区分“现在是什么”“下一步
-想试什么”和“仍在问什么”。
+建议先读[统一术语表](architecture/terminology.md)、架构范围和当前数据通路，再看
+问题集。这样能区分“现在是什么”“下一步想试什么”和“仍在问什么”。
 
 ## 状态标签
 
@@ -34,6 +34,7 @@ Q&A 代替这类记录。
 
 | 文档 | 主要性质 | 内容 |
 |---|---|---|
+| [统一术语表](architecture/terminology.md) | 当前命名约定 | RVV 对齐边界、物理拓扑、dispatch class、协议与 RTL 命名 |
 | [架构范围工作稿](architecture/overview.md) | 范围快照 + RTL 事实 + 开放问题 | VSP/SIMD4 边界、数据形状和当前能力 |
 | [数据通路](architecture/datapath.md) | RTL 事实 | VRF/ARF/MRF、并行控制、mask、立即数与提交 |
 | [微架构图](architecture/microarchitecture.md) | RTL 事实 | 单个 SIMD4 的读取、执行、合法性和写回 |
@@ -53,10 +54,10 @@ Graphviz 源与生成图和说明文档放在一起：
 
 | 文档 | 状态 | 内容 |
 |---|---|---|
-| [集群控制工作稿](design/cluster-control.md) | GROUP_EXEC/MEMORY decoded reference RTL 事实 + 候选 controller | frontend、ingress、group wrapper、VRF child 仲裁、completion/result、owner 与 multicast |
+| [集群控制工作稿](design/cluster-control.md) | EXEC/MEMORY decoded reference RTL 事实 + 候选 controller | frontend、ingress、group wrapper、VRF subrequest 仲裁、completion/result、owner 与 multicast |
 | [队列与译码候选](design/instruction-delivery.md) | decode holding 已实现，真实译码/展开待实现 | queue、live-head、locked shadow、predecode、expander 与 CPU decoder 差异 |
 | [数据准备与 DMA 边界](design/data-movement.md) | decoded VRF LOAD/STORE cluster 闭环已实现，物理 memory 集成待办 | MEMORY LOAD/STORE、shared VRF arbiter、data-memory 逻辑口、local SRAM 与 DMA |
-| [集群实验路线](design/development-roadmap.md) | GROUP_EXEC shell、decode holding、vector memory engine/VRF arbiter、decoded memory shell 已实现 + 控制集成计划 | wrapper、cluster、controller、跨组 gather、DMA |
+| [集群实验路线](design/development-roadmap.md) | EXEC integration、decode holding、vector memory engine/VRF arbiter、decoded memory wrapper 已实现 + 控制集成计划 | wrapper、cluster、controller、跨组 gather、DMA |
 
 这里的 decoder 属于 sequencer 到执行 group 之间的内部控制层，不意味着 SIMD4
 获得取指、分支或异常能力。
@@ -77,8 +78,8 @@ Graphviz 源与生成图和说明文档放在一起：
 | [验证 harness 与路径漂移](verification/harness.md) | 方法工作稿 | 测试分类、非声明范围、准入、替换与退役 |
 
 SAD、动态 ALU、local route、Bênes、compact、MRF、reduction、
-issue/decode frontend、dispatcher、cluster exec shell、result collector、completion
-tracker、VRF vector memory engine、cluster VRF arbiter、decoded memory shell 与 legality 的
+issue/decode frontend、dispatcher、cluster execution integration、result collector、completion
+tracker、VRF vector memory engine、cluster VRF arbiter、decoded memory wrapper 与 legality 的
 具体覆盖仍由 `sim/` 中的自检 testbench 记录。
 
 ## 5. 证据关系与维护

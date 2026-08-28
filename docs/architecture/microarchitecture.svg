@@ -217,7 +217,7 @@
 <g id="node5" class="node">
 <title>vrf</title>
 <path fill="#eaf5ff" stroke="#51606f" d="M707,-220C707,-220 580,-220 580,-220 574,-220 568,-214 568,-208 568,-208 568,-184 568,-184 568,-178 574,-172 580,-172 580,-172 707,-172 707,-172 713,-172 719,-178 719,-184 719,-184 719,-208 719,-208 719,-214 713,-220 707,-220"/>
-<text text-anchor="middle" x="643.5" y="-205.2" font-family="DejaVu Sans" font-size="11.00">VRF&#45;N</text>
+<text text-anchor="middle" x="643.5" y="-205.2" font-family="DejaVu Sans" font-size="11.00">VRF</text>
 <text text-anchor="middle" x="643.5" y="-193.2" font-family="DejaVu Sans" font-size="11.00">16 rows x LANES x 8 bit</text>
 <text text-anchor="middle" x="643.5" y="-181.2" font-family="DejaVu Sans" font-size="11.00">2 read / 1 masked write</text>
 </g>

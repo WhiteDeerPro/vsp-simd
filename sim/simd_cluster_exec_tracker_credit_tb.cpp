@@ -1,4 +1,4 @@
-#include "Vsimd_cluster_exec_shell.h"
+#include "Vsimd_cluster_exec.h"
 #include "verilated.h"
 
 #include <cstdint>
@@ -29,12 +29,12 @@ void expect_eq(const std::string& what, uint64_t expected,
   if (expected != actual) fail(what, expected, actual);
 }
 
-void eval_low(Vsimd_cluster_exec_shell& dut) {
+void eval_low(Vsimd_cluster_exec& dut) {
   dut.clk_i = 0;
   dut.eval();
 }
 
-void tick(Vsimd_cluster_exec_shell& dut) {
+void tick(Vsimd_cluster_exec& dut) {
   dut.clk_i = 0;
   dut.eval();
   dut.clk_i = 1;
@@ -43,7 +43,7 @@ void tick(Vsimd_cluster_exec_shell& dut) {
   dut.eval();
 }
 
-void clear_command(Vsimd_cluster_exec_shell& dut) {
+void clear_command(Vsimd_cluster_exec& dut) {
   dut.cmd_valid_i = 0;
   dut.cmd_context_i = 0;
   dut.cmd_tag_i = 0;
@@ -77,7 +77,7 @@ void clear_command(Vsimd_cluster_exec_shell& dut) {
   dut.cmd_route_upper_i = 0;
 }
 
-void clear_inputs(Vsimd_cluster_exec_shell& dut) {
+void clear_inputs(Vsimd_cluster_exec& dut) {
   clear_command(dut);
   dut.group_owner_valid_i = 0;
   dut.group_owner_i = 0;
@@ -104,7 +104,7 @@ void clear_inputs(Vsimd_cluster_exec_shell& dut) {
   dut.protocol_error_clear_i = 0;
 }
 
-void enqueue(Vsimd_cluster_exec_shell& dut, uint8_t context, uint8_t tag,
+void enqueue(Vsimd_cluster_exec& dut, uint8_t context, uint8_t tag,
              uint8_t group_mask, uint8_t resource, uint8_t destination) {
   clear_command(dut);
   dut.cmd_valid_i = 1;
@@ -132,7 +132,7 @@ void enqueue(Vsimd_cluster_exec_shell& dut, uint8_t context, uint8_t tag,
   std::exit(1);
 }
 
-void wait_for_both_slots(Vsimd_cluster_exec_shell& dut) {
+void wait_for_both_slots(Vsimd_cluster_exec& dut) {
   for (int timeout = 0; timeout < 20; ++timeout) {
     eval_low(dut);
     if (dut.issue_slot_valid_o == 0x3) return;
@@ -143,7 +143,7 @@ void wait_for_both_slots(Vsimd_cluster_exec_shell& dut) {
   fail("both issue slots become resident", 0x3, dut.issue_slot_valid_o);
 }
 
-void wait_for_completion(Vsimd_cluster_exec_shell& dut, uint8_t context,
+void wait_for_completion(Vsimd_cluster_exec& dut, uint8_t context,
                          uint8_t tag, uint8_t group_mask) {
   for (int timeout = 0; timeout < 40; ++timeout) {
     eval_low(dut);
@@ -172,7 +172,7 @@ void wait_for_completion(Vsimd_cluster_exec_shell& dut, uint8_t context,
 
 int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
-  Vsimd_cluster_exec_shell dut;
+  Vsimd_cluster_exec dut;
   clear_inputs(dut);
 
   dut.rst_ni = 0;
@@ -257,7 +257,7 @@ int main(int argc, char** argv) {
   expect_eq("no result record", 0, dut.result_valid_o);
 
   dut.final();
-  std::cout << "PASS simd_cluster_exec_shell_tracker_credit " << checks
+  std::cout << "PASS simd_cluster_exec_tracker_credit " << checks
             << " checks\n";
   return 0;
 }

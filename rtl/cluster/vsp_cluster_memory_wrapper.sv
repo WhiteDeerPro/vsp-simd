@@ -1,9 +1,9 @@
-module vsp_cluster_memory_shell #(
-  // This is a deliberately small integration profile: decoded GROUP_EXEC
+module vsp_cluster_memory_wrapper #(
+  // This is a deliberately small integration profile: decoded EXEC
   // traffic and one blocking vector memory engine share the group VRF
   // boundary.
   // Instruction decode, program ordering, ownership changes, translation and
-  // a physical memory implementation remain outside this shell.
+  // a physical memory implementation remain outside this wrapper.
   parameter int GROUP_COUNT       = 4,
   parameter int ISSUE_SLOTS       = 2,
   parameter int QUEUE_DEPTH       = 4,
@@ -38,7 +38,7 @@ module vsp_cluster_memory_shell #(
   input  logic clk_i,
   input  logic rst_ni,
 
-  // Decoded GROUP_EXEC boundary. The shell intentionally does not define a
+  // Decoded EXEC boundary. The wrapper intentionally does not define a
   // compact instruction layout; a later sequencer/decoder terminates here.
   input  logic                              exec_cmd_valid_i,
   output logic                              exec_cmd_ready_o,
@@ -74,7 +74,7 @@ module vsp_cluster_memory_shell #(
   input  logic [(LANES*ELEM_W)-1:0]         exec_cmd_route_upper_i,
   output logic                              exec_cmd_context_error_o,
 
-  // Ownership is supplied as a stable snapshot. This shell does not assign
+  // Ownership is supplied as a stable snapshot. This wrapper does not assign
   // or revoke groups and therefore does not act as the owner controller.
   input  logic [GROUP_COUNT-1:0]              group_owner_valid_i,
   input  logic [(GROUP_COUNT*CONTEXT_W)-1:0]  group_owner_i,
@@ -179,7 +179,7 @@ module vsp_cluster_memory_shell #(
   logic [(LANES*ACC_W)-1:0] state_write_data_wide;
   /* verilator lint_off UNUSED */
   // Span-selected group IDs are constructed from an in-range group mask. The
-  // shell diagnostics remain wired so a later multi-client top may expose or
+  // wrapper diagnostics remain wired so a later multi-client top may expose or
   // latch them without changing the child endpoint.
   logic state_write_group_error;
   logic state_write_cpl_valid;
@@ -214,7 +214,7 @@ module vsp_cluster_memory_shell #(
   logic [LANES-1:0] state_read_rsp_mask;
 
   // Single MEMORY client on the reusable VRF arbiter. Keeping the client
-  // contract explicit lets a further actor become a second client in a later
+  // contract explicit lets another engine become a second client in a later
   // top without changing the vector memory engine or group state endpoints.
   logic [0:0] vrf_client_read_valid;
   logic [0:0] vrf_client_read_ready;
@@ -279,7 +279,7 @@ module vsp_cluster_memory_shell #(
     state_write_data_wide[0 +: VRF_ROW_W] = state_write_data;
   end
 
-  simd_cluster_exec_shell #(
+  simd_cluster_exec #(
     .GROUP_COUNT(GROUP_COUNT),
     .ISSUE_SLOTS(ISSUE_SLOTS),
     .QUEUE_DEPTH(QUEUE_DEPTH),
@@ -301,7 +301,7 @@ module vsp_cluster_memory_shell #(
     .INDEX_W(INDEX_W),
     .OFFSET_W(OFFSET_W),
     .RF_ADDR_W(RF_ADDR_W)
-  ) u_exec_shell (
+  ) u_cluster_exec (
     .clk_i(clk_i),
     .rst_ni(rst_ni),
     .cmd_valid_i(exec_cmd_valid_i),
@@ -601,9 +601,9 @@ module vsp_cluster_memory_shell #(
 
   initial begin
     if (ELEM_W != 8)
-      $error("memory-shell VRF row transport requires 8-bit base lanes");
+      $error("memory-wrapper VRF row transport requires 8-bit base lanes");
     if (LANES < 1 || GROUP_COUNT < 1 || ISSUE_SLOTS < 1)
-      $error("memory-shell capacities must be positive");
+      $error("memory-wrapper capacities must be positive");
     if (ACC_W < ELEM_W)
       $error("ACC_W must be at least ELEM_W");
   end

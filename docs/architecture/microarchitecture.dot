@@ -65,7 +65,7 @@ digraph vsp_simd_microarchitecture {
     style=rounded;
 
     vrf [
-      label="VRF-N\n16 rows x LANES x 8 bit\n2 read / 1 masked write",
+      label="VRF\n16 rows x LANES x 8 bit\n2 read / 1 masked write",
       fillcolor="#eaf5ff"
     ];
     arf [

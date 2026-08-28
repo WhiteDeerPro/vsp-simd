@@ -16,7 +16,7 @@ module simd_group_completion_tracker #(
   input  logic rst_ni,
 
   // alloc_valid_i presents stable candidate metadata independently of ready.
-  // The shell includes alloc_ready_o in final resource arbitration, then
+  // The cluster integration includes alloc_ready_o in final resource arbitration, then
   // pulses alloc_commit_i exactly when that same command atomically fires to
   // its groups. Splitting eligibility from commit prevents tracker-only issue.
   input  logic [ALLOC_SLOTS-1:0]                     alloc_valid_i,
@@ -32,7 +32,7 @@ module simd_group_completion_tracker #(
   output logic [ALLOC_SLOTS-1:0]                     alloc_commit_error_o,
 
   // One completion lane is physically associated with each group, so the
-  // lane number is the child group_id. Only GROUP_EXEC child completions are
+  // lane number is the child group_id. Only EXEC child completions are
   // routed here; state-write/MEMORY children use their own parent tracker.
   input  logic [GROUP_COUNT-1:0]                     child_cpl_valid_i,
   output logic [GROUP_COUNT-1:0]                     child_cpl_ready_o,
@@ -373,7 +373,7 @@ module simd_group_completion_tracker #(
   end
 
   always_comb begin
-    // A live context+tag is an ordinary allocation dependency: the shell
+    // A live context+tag is an ordinary allocation dependency: the integration
     // backpressures that slot until the prior result lifetime ends.  It is not
     // a malformed transaction and therefore does not set the protocol sticky.
     protocol_fault = (|alloc_error_o) || (|alloc_commit_error_o) ||

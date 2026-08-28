@@ -24,7 +24,7 @@ module vsp_vector_memory_engine #(
 
   // One canonical VSP MEMORY parent action. exec_context identifies the
   // sequencer/owner and is deliberately independent of addr_context, which is
-  // an opaque handle for a future translation service. The engine only forms
+  // an opaque handle for a future translation adapter. The engine only forms
   // and advances effective addresses; it does not translate them.
   input  logic                              cmd_valid_i,
   output logic                              cmd_ready_o,

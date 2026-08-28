@@ -2,8 +2,8 @@
 
 > 状态：VRF-only `vsp_vector_memory_engine`、wrapper/cluster 的独立 VRF
 > state-read 路径及 `vsp_cluster_vrf_arbiter` 已有参考 RTL。
-> `vsp_cluster_memory_shell` 已把 blocking 的 vector memory engine 接到
-> GROUP_EXEC cluster，形成 decoded LOAD→GROUP_EXEC→STORE 参考闭环。
+> `vsp_cluster_memory_wrapper` 已把 blocking 的 vector memory engine 接到
+> EXEC cluster，形成 decoded LOAD→EXEC→STORE 参考闭环。
 > class router、跨 class 程序顺序、owner/resource controller、物理 local SRAM、
 > MMU/cache 与 DMA 仍待实现。本文不规定总线宽度、SRAM 组织或 DMA 描述符格式。
 > 跨 lane 路由已从本文剥离：它不再是独立的数据搬运 class，而是 Vector ALU 内的
@@ -30,15 +30,15 @@ burst FIFO / width gearbox
         ▼
 banked local SRAM or scratchpad
         ▼
-memory actor + packetizer
+vector memory engine + packetizer
         ▼
 per-group ingress / capture staging
         ▼
 SIMD4 state-write / export endpoint
 ```
 
-sequencer/controller 发起或许可 program-level memory action；memory actor 保存地址
-推进、beat 计数和 parent/child completion 状态；SIMD4 只接受已经带数据的叶端
+sequencer/controller 发起或许可 program-level memory action；vector memory engine 保存
+地址推进、beat 计数和 command/subrequest completion 状态；SIMD4 只接受已经带数据的叶端
 state-write beat。这样不会因为加入数据供应而让 SIMD4 获得自行取数或地址执行能力。
 
 ## 2. 普通填充与跨 lane 路由分开 `[边界]`
@@ -133,7 +133,7 @@ virtual page 不保证映射到相邻 physical page。
 effective address。translation、permission、access、bus、data-integrity 和
 protocol 错误可区分。
 
-首版 request/response 没有 epoch。vector memory engine、downstream dmem service 与 VRF child endpoint
+首版 request/response 没有 epoch。vector memory engine、downstream dmem endpoint 与 VRF subrequest endpoint
 必须共享事务域 reset，并在 reset 时共同丢弃旧 outstanding response；异步保留旧
 response 后立即启动新命令不属于当前协议。
 
@@ -142,19 +142,19 @@ response 后立即启动新命令不属于当前协议。
 `simd_group_wrapper` 除 state-write 外，已有独立的 VRF state-read request、
 completion 和 data response。read completion 与 response 可以分别背压；wrapper
 在接受 read 时同时保留两条返回的容量，非法 context/row 返回 illegal、零 data
-与零 mask，不修改 RF。`simd_cluster_exec_shell` 按 group demux state-read/write，
+与零 mask，不修改 RF。`simd_cluster_exec` 按 group demux state-read/write，
 并分别用 stall-stable RR 汇聚 read completion、read response 与 write completion。
 
-`vsp_cluster_vrf_arbiter` 在多个 parent actor 与上述 cluster endpoint 之间仲裁
-VRF-only read/write child。参考实现一次只允许一个 accepted child 在途；read owner
+`vsp_cluster_vrf_arbiter` 在多个 client 与上述 cluster endpoint 之间仲裁
+VRF-only read/write subrequest。参考实现一次只允许一个 accepted subrequest 在途；read owner
 保持到 completion 和 response 都被对应 client 接受，write owner 保持到 completion
 被接受。仲裁和 owner capture 解决的是 child 返回归属，不提供 program-level
 class ordering、寄存器依赖或 group ownership 判定。
 
-`vsp_cluster_memory_shell` 当前以一个 MEMORY client 实例化该 arbiter，把 vector
+`vsp_cluster_memory_wrapper` 当前以一个 MEMORY client 实例化该 arbiter，把 vector
 memory engine 的 LOAD state-write 和 STORE state-read 接到
-`simd_cluster_exec_shell`。arbiter 的多 client 接口为以后并接其他 VRF-only actor
-留出边界，但当前 shell 只有一个 client，也没有在 EXEC 与 MEMORY 两个独立 command
+`simd_cluster_exec`。arbiter 的多 client 接口为以后并接其他 VRF-only engine
+留出边界，但当前 wrapper 只有一个 client，也没有在 EXEC 与 MEMORY 两个独立 command
 入口之间建立统一顺序。
 
 ## 5. 首个集成闭环与延期项 `[已实现参考 + 延期项]`
@@ -164,15 +164,15 @@ memory engine 的 LOAD state-write 和 STORE state-read 接到
 ```text
 dmem LOAD response
   -> 若干 VRF state-write child beat
-  -> decoded GROUP_EXEC
+  -> decoded EXEC
   -> 若干 VRF state-read child beat
   -> dmem STORE request/ack
 ```
 
-`vsp_cluster_memory_shell` 已完成上述 decoded reference wiring；自检 testbench 用
-边界外 local-memory model 顺序驱动 LOAD、ADD-immediate GROUP_EXEC 和 STORE，
+`vsp_cluster_memory_wrapper` 已完成上述 decoded reference wiring；自检 testbench 用
+边界外 local-memory model 顺序驱动 LOAD、ADD-immediate EXEC 和 STORE，
 117 项检查覆盖四组数据变换、请求背压、完成状态与 protocol-error 清洁。这里的
-“顺序”来自 test driver 等待前一 parent completion 后再提交下一 action，并非 shell
+“顺序”来自 test driver 等待前一 command completion 后再提交下一 action，并非 wrapper
 已实现 common class router 或 program-order enforcement。
 
 物理 local SRAM、DMA、

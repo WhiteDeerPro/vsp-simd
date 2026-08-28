@@ -1,4 +1,4 @@
-# 外部控制的数据通路壳 `[RTL事实]`
+# 外部控制的数据通路 `[RTL事实]`
 
 当前不考虑独立 SIMD 处理器。`simd_datapath` 没有标量寄存器、取指、译码、分支
 和异常系统，直接接收寄存器地址、操作码、写回选择、mask 地址和 reduction 等
@@ -7,8 +7,8 @@ canonical decoded control。
 当前接口不是 32-bit 指令字。执行操作码为 6 bit，其余寄存器地址、立即数、
 写回和路由控制以并行信号提供。未来可以在 sequencer 内部用 32-bit 或其他宽度
 编码常用微操作，再译成这些信号；当前里程碑尚未选择该编码。上层已有
-GROUP_EXEC reference frontend，它保存 opaque entry，并实现 RR live-head、
-locked shadow 和 dispatch；`simd_cluster_exec_shell` 已把 full-decoded canonical
+EXEC reference frontend，它保存 opaque entry，并实现 RR live-head、
+locked shadow 和 dispatch；`simd_cluster_exec` 已把 full-decoded canonical
 control 送入多个 datapath wrapper，并闭合 completion/result。当前仍没有真实
 predecoder、compact canonical expander 或 class router，边界与候选组织见
 [指令交付](../design/instruction-delivery.md)。
@@ -16,7 +16,7 @@ predecoder、compact canonical expander 或 class router，边界与候选组织
 ## 状态文件
 
 ```text
-VRF-N：16 × (LANES × ELEM_W)，2 个组合读端口，1 个 masked 写端口
+VRF：16 × (LANES × ELEM_W)，2 个组合读端口，1 个 masked 写端口
 ARF：   8 × (LANES × ACC_W)，1 个组合读端口，1 个 masked 写端口
 MRF：   4 × LANES bit，2 个组合读端口，1 个 masked 写端口
 ```
@@ -165,7 +165,7 @@ EXPAND:   VRF-A=[b,d,x,x], MRF=1010 -> result=[0,b,0,d], predicate=1010
 同周期命中同一文件时由配置写优先。这只是叶模块仲裁行为；transaction wrapper
 现在把 cfg 侧提升成带 `context+tag` 的 state-write 子事务，并增加独立 VRF
 state-read 子事务；二者与 EXEC 完全串行接受，禁止已经 accepted 的执行写被静默
-覆盖。`vsp_vector_memory_engine` 已经由 shared VRF arbiter 和 cluster shell 接到这些
+覆盖。`vsp_vector_memory_engine` 已经由 shared VRF arbiter 和 cluster integration 接到这些
 state-read/write endpoint：LOAD 写入 VRF，STORE 直接读取 VRF row。地址推进和
 program-level completion 仍不在 wrapper 内；`dmem_*` 外的物理 local SRAM、
 cache/MMU 或 DMA 也不属于裸 datapath。
@@ -186,5 +186,5 @@ value/index/valid，不写入内部标量寄存器；当前 group 事务边界�
   wrapper/cluster reference path 接到 RF，但不把地址或 memory action 下沉到裸 datapath；
 - 裸 datapath 内部的 ready/valid 和多周期单元；外层 group wrapper 已有事务握手；
 - compact-uword predecoder、canonical expander 与 decoded group holding/path；cluster 层
-  已有 queue、RR live-head 和 opaque locked shadow 组成的 GROUP_EXEC frontend；
+  已有 queue、RR live-head 和 opaque locked shadow 组成的 EXEC frontend；
 - bank conflict、旁路及物理 SRAM 映射。

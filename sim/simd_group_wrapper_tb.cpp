@@ -505,7 +505,7 @@ int main(int argc, char** argv) {
   pop_both(dut);
 
   // State-read snapshots a raw VRF row through the shared source-A port. Its
-  // completion and payload are independent from GROUP_EXEC and from each
+  // completion and payload are independent from EXEC and from each
   // other: consume the payload first while holding the completion stable.
   drive_state_read(dut, 1, 0x26, 0, 0x5);
   accept_state_read(dut);

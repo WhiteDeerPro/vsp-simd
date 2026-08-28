@@ -28,7 +28,9 @@ out[lane] = in[index[lane]]
 - 索引可以重复：gather/multicast；
 - 所有索引相同：broadcast。
 
-多个输出读取同一输入不存在目的冲突。多个输入试图写同一个目的则属于 reduction、scatter 或仲裁问题，不由该网络定义。
+多个输出读取同一输入不存在 architectural write conflict。多个输入试图写同一个
+目的属于 reduction、scatter 或仲裁语义，不由这个 output-selects-input 接口定义；
+这与多级网络内部两条合法路径争用同一 link 的 internal path conflict 是两回事。
 
 当前 SIMD4 RTL 采用直接 4×4 crossbar。接口保留任意重复索引，因此组内已经支持
 广播；普通 Bênes 网络只保证一一置换，无法直接表达这一点。扩大并行度时的候选
@@ -84,20 +86,23 @@ mask：
 crossbar 共享选择网络，也可以根据时序结果分拍执行；这一选择仍然开放。
 跨 group 的 packet 拼接、余数保留和网络流控仍属于上级 VSP 互连问题。
 
-## 跨组 lane gather `[语义已收束，RTL 待实现]`
+## 跨组 lane gather `[候选语义，RTL 待实现]`
 
-跨组路由不再是与 MEMORY 并列的独立 command class，也不再以 SIMD4 row 为端口
-颗粒。它收束为一条寄存器形式的 gather 指令，属于 Vector ALU 内的一个 routing
-级：
+跨组路由不再候选为与 MEMORY 并列的独立 command class，也不再预设以 SIMD4 row
+为端口颗粒。当前用一个 register-gather action 描述目标语义；它不是已经编码的
+指令，候选位置是 Vector ALU 内的一个 routing 级：
 
 ```text
 ROUTE SR, IR, DR
 DR[lane] = SR[IR[lane]]
 ```
 
-`SR` 是源向量寄存器，`IR` 是索引向量寄存器，`DR` 是目的。索引由 VRF 提供，
-不是指令立即数，因此索引可以是运行时计算结果。一个 lane 是 8-bit，索引本身占
-一个 lane，所以单条 gather 的寻址范围上界是 256 lane。
+`SR`、`IR` 和 `DR` 是逻辑源、索引和目的视图；它们如何 stripe 到各 SIMD group 的
+group-local VRF row 尚未定义。索引候选由 VRF 提供，因此可以是运行时计算结果。
+8-bit index 能编码 0..255，但一个具体网络只有 `N` 个 source lane，实际合法范围至多
+是 `0..min(255,N-1)`；当前 16-lane 候选只能访问 0..15。跨组 out-of-range 是返回零
+还是形成错误仍是开放项：RVV `vrgather` 返回零，而当前 local `simd_crossbar` 的
+非法索引路径报告 `illegal_o`，两者不能静默等同。
 
 ### 语义边界：只做 gather
 
@@ -109,21 +114,21 @@ DR[lane] = SR[IR[lane]]
 
 many-to-one 的写冲突只可能跨操作发生（后一条 gather 覆盖前一条的目的），硬件
 不需要在单次操作内做冲突消解。因此不需要 conflict-detection CAM、写归约网络或
-串行化重排缓冲。scatter 若确有需要，走标量串行 STORE 或 MEMORY 的 indexed
-访问，不进入本网络。
+串行化重排缓冲。当前不支持 scatter；以后可以比较 sequencer 分解的顺序 STORE，
+或独立 indexed-memory unit，但这两条 fallback 目前都没有 RTL。
 
-### 为什么不用 Bênes
+### 当前为什么不选择 Bênes
 
-Bênes 网络面积随 `N log N` 增长，且是 rearrangeable non-blocking，看似合适，但
-与上面的语义有两处硬冲突：
+Bênes 是 rearrangeable non-blocking permutation network，动态 route-setting 在硬件
+上可以实现；当前不选择它是成本与目标语义的权衡，而不是拓扑上“不可实现”：
 
-1. **Bênes 是双射**，不支持广播。要得到 `W1 W1 X X`，必须先置换出
-   `X W1 X X` 再合并回源寄存器，一次广播被拆成多步；
-2. **控制位无法从索引向量直接求解**。Bênes 的路由需要一个 O(N log N) 的串行
-   求解算法，把运行时 `IR` 实时拆解成各级 switch 控制在硬件上不可行。静态
-   pattern（编译期已知）可以预先算好，但动态索引会卡住。
+1. 基础 2×2 Bênes 表达一一置换，不原生复制输入。广播需要额外复制路径、多个 pass
+   或外围合并；
+2. 动态 permutation 需要 route-setting logic。其工作量和控制状态随 `N log N`
+   增长，在本项目的运行时 byte-lane gather 目标下尚无证据值得支付这部分面积和延迟。
 
-这两点使 Bênes 只适合编译期固定的置换，无法承载上面定义的动态 gather。
+静态 pattern 可以预先求控制，动态实现也并非被排除；当前只是不把已验证的裸 Bênes
+研究模块接入执行数据通路。
 
 ### 候选实现：gather-only Omega 网络
 
@@ -131,16 +136,20 @@ Bênes 网络面积随 `N log N` 增长，且是 rearrangeable non-blocking，�
 
 - `N` 端口需 `log2(N)` 级，每级 `N/2` 个 2×2 switch；16 lane 为 4 级 32 个
   switch，每 switch 8-bit 数据；
-- switch 支持四种模式：straight、cross、broadcast-in0、broadcast-in1，故
-  广播一步完成；
-- **控制位可由索引向量直接派生**：在第 `i` 级，switch 方向取决于目的地址的
-  第 `i` 位，是简单的位模式映射而非求解，可用组合逻辑实现；
-- Omega 是 blocking 网络，但在"仅 gather、允许广播、无 many-to-one"的约束下，
-  传统 blocking 的主要来源（多输入争同一输出）恰好落入 broadcast 模式，冲突
-  概率大幅降低。残余冲突由硬件给出 conflict flag，交由软件多 pass。
+- 候选 switch 支持 straight、cross 和从一个输入向两个输出复制；N-way broadcast
+  需要在多个 stage 继续展开，但在路径兼容时可于一次 network traversal 完成；
+- destination/index bit 可以参与逐级方向选择，但完整控制方案尚未确定。需要比较
+  反向 request network、从完整 IR 组合生成 multicast tree 等实现，不能仅凭索引位
+  宣称 routing logic 已闭合；
+- Omega 是 blocking 网络，即使 external source/destination 合法，仍可能发生 internal
+  path conflict。失败/提交协议尚未选择：可以 all-or-nothing，并返回足以让 sequencer
+  预拆无冲突子集的 conflict witness；也可以 partial accept，但必须返回 per-destination
+  accepted/completed mask，并保证未接受 lane 不写回。单一 conflict flag 不足以让原
+  request 重试后取得进展；实际冲突率也必须由 routing trace 测量。
 
-面积介于 Bênes 与全 crossbar 之间，级数少于同规模 Bênes，且不再需要区分组内
-crossbar 与组间网络两套控制路径。
+纯 2×2 拓扑的 Omega 级数少于同规模 Bênes；加入 multicast、冲突判断、staging 和
+流水后的面积/时序排序尚未综合，不能据 switch count 直接断言。统一组内与组间控制
+仍是候选收益，不是当前 RTL 事实。
 
 FFT/小波是这里的主要负载依据：它们的 butterfly 在 stride 跨过 group 边界时
 （如 16 lane 下 stride=4）需要跨组交换，若只有组内 crossbar，每个这样的 stage
@@ -156,5 +165,7 @@ FFT/小波是这里的主要负载依据：它们的 butterfly 在 stride 跨过
 
 当前 `ROUTE_OP_BROADCAST` 是 lane-to-lanes broadcast。展开后的 scalar immediate
 已经能送到单个 SIMD4；cluster 中相同 uop/常数的物理交付应使用分层控制扇出，
-不经过全局 N×N data crossbar。跨组的置换与广播由候选 Omega 网络在一次 gather
-中完成，组内复制由目的 SIMD4 的 local broadcast 完成。
+不经过全局 N×N data crossbar。某个索引模式能被候选 Omega 网络路由时，跨组置换
+或广播可由一次 gather 完成；发生 blocking 时，只有在上述 all-or-nothing 拆分或
+partial-accept 协议之一确定后才能安全多 pass。组内复制仍可由目的 SIMD4 的 local
+broadcast 完成。

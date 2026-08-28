@@ -57,10 +57,10 @@ module simd_group_wrapper #(
   input  logic [(LANES*ELEM_W)-1:0]        exec_route_lower_i,
   input  logic [(LANES*ELEM_W)-1:0]        exec_route_upper_i,
 
-  // One atomic register-file row write child request.  A future MEMORY actor
-  // supplies both routing metadata and state_write_data_i on this endpoint;
-  // program-level RF_FILL is a parent action that may expand into several of
-  // these beats.  This request is not a SIMD arithmetic opcode or an encoded
+  // One atomic register-file row write subrequest. A future vector memory
+  // engine supplies both routing metadata and state_write_data_i on this
+  // endpoint; program-level RF_FILL is a command that may expand into several
+  // of these beats. This request is not a SIMD arithmetic opcode or an encoded
   // ISA field, and its data does not live in the instruction queue.
   input  logic                              state_write_valid_i,
   output logic                              state_write_ready_o,
@@ -71,11 +71,11 @@ module simd_group_wrapper #(
   input  logic [LANES-1:0]                  state_write_mask_i,
   input  logic [(LANES*ACC_W)-1:0]          state_write_data_i,
 
-  // One atomic VRF row read child request. It shares the existing VRF source-A
+  // One atomic VRF row read subrequest. It shares the existing VRF source-A
   // read port with EXEC, so request arbitration admits at most one of EXEC,
   // state-write, or state-read per cycle. Every accepted request produces one
   // completion and one data response, in either sink-observed order, including
-  // on error. These channels are deliberately separate from GROUP_EXEC's
+  // on error. These channels are deliberately separate from EXEC's
   // completion/result channels and therefore never enter its tracker.
   input  logic                              state_read_valid_i,
   output logic                              state_read_ready_o,
@@ -98,7 +98,7 @@ module simd_group_wrapper #(
   output logic [(LANES*ELEM_W)-1:0]         state_read_rsp_data_o,
   output logic [LANES-1:0]                  state_read_rsp_mask_o,
 
-  // Every accepted group child request produces exactly one child
+  // Every accepted group subrequest produces exactly one group
   // completion.  This is not a program-level RF_FILL completion.  The
   // optional EXEC result travels independently so normal completions do not
   // carry the widest datapath payload.

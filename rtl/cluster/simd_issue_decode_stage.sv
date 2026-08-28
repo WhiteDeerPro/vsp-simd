@@ -1,4 +1,4 @@
-module simd_issue_decode_shell #(
+module simd_issue_decode_stage #(
   parameter int RAW_WORD_W          = 32,
   parameter int RESOLVED_W          = 16,
   parameter int CACHED_META_W       = 16,
@@ -16,7 +16,7 @@ module simd_issue_decode_shell #(
   input  logic rst_ni,
 
   // One selected, ordered queue entry. raw_word/resolved/cached_meta remain
-  // opaque here: this shell deliberately does not assign an ISA bit layout.
+  // opaque here: this stage deliberately does not assign an ISA bit layout.
   input  logic                           in_valid_i,
   output logic                           in_ready_o,
   input  logic [RAW_WORD_W-1:0]          in_raw_word_i,
@@ -147,7 +147,7 @@ module simd_issue_decode_shell #(
         RESPONSE_KIND_W < 1 || GROUP_COUNT < 1 || RESOURCE_W < 1 ||
         CANONICAL_PAYLOAD_W < 1 || DECODE_META_W < 1 ||
         ERROR_CAUSE_W < 1) begin
-      $error("decode-shell field widths must be positive");
+      $error("decode-stage field widths must be positive");
     end
   end
 endmodule

@@ -18,7 +18,7 @@ module simd_cluster_issue_frontend #(
   input  logic rst_ni,
 
   // One admission lane selects either ordered queue. payload_i is deliberately
-  // opaque, but the entry must already be classified as GROUP_EXEC and its
+  // opaque, but the entry must already be classified as EXEC and its
   // group mask/ownership metadata must be trustworthy. Opaque storage alone
   // does not implement raw, hybrid or full-decoded instruction adapters.
   input  logic                         enq_valid_i,
@@ -38,7 +38,7 @@ module simd_cluster_issue_frontend #(
   input  logic [(GROUP_COUNT*QUEUE_W)-1:0]          group_owner_i,
   input  logic [GROUP_COUNT-1:0]                    group_ready_i,
 
-  // Per-slot credits for resources shared above the groups. A cluster shell
+  // Per-slot credits for resources shared above the groups. A cluster integration
   // may connect completion-tracker alloc_ready here so allocation, queue pop
   // and atomic multicast all commit in the same cycle. Tie high when no such
   // resource gate is required.
@@ -67,7 +67,7 @@ module simd_cluster_issue_frontend #(
   output logic [ISSUE_SLOTS-1:0]                    backpressured_o,
   output logic [ISSUE_SLOTS-1:0]                    conflict_o,
 
-  // A cluster shell may use group_issue_slot_o to select the corresponding
+  // A cluster integration may use group_issue_slot_o to select the corresponding
   // stable payload. This module neither expands nor validates that payload.
   output logic [GROUP_COUNT-1:0]                    group_issue_valid_o,
   output logic [(GROUP_COUNT*SLOT_W)-1:0]           group_issue_slot_o,

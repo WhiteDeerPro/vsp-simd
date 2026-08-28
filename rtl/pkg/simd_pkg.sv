@@ -3,7 +3,7 @@ package simd_pkg;
 
   // Kind of a child transaction accepted by one group wrapper. This is
   // canonical internal metadata, not an encoded ISA field or the controller
-  // dispatch class (GROUP_EXEC/MEMORY/CONTROLLER). A future
+  // dispatch class (EXEC/MEMORY/CONTROL). A future
   // sequencer may derive it from a compact action word without exposing that
   // encoding at the SIMD4 boundary.
   localparam int SIMD_GROUP_REQ_KIND_W = 1;
@@ -307,7 +307,7 @@ package simd_pkg;
     endcase
   endfunction
 
-  // Canonical GROUP_EXEC transactions return a separate result record only
+  // Canonical EXEC transactions return a separate result record only
   // when the caller explicitly exports the narrow value, requests a
   // reduction, or executes a compact operation whose count is observable.
   // Keep this predicate shared by the group endpoint and the cluster tracker

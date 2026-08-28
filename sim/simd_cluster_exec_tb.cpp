@@ -1,4 +1,4 @@
-#include "Vsimd_cluster_exec_shell.h"
+#include "Vsimd_cluster_exec.h"
 #include "verilated.h"
 
 #include <array>
@@ -29,12 +29,12 @@ void expect_eq(const std::string& what, uint64_t expected,
   if (expected != actual) fail(what, expected, actual);
 }
 
-void eval_low(Vsimd_cluster_exec_shell& dut) {
+void eval_low(Vsimd_cluster_exec& dut) {
   dut.clk_i = 0;
   dut.eval();
 }
 
-void tick(Vsimd_cluster_exec_shell& dut) {
+void tick(Vsimd_cluster_exec& dut) {
   dut.clk_i = 0;
   dut.eval();
   dut.clk_i = 1;
@@ -43,7 +43,7 @@ void tick(Vsimd_cluster_exec_shell& dut) {
   dut.eval();
 }
 
-void clear_command(Vsimd_cluster_exec_shell& dut) {
+void clear_command(Vsimd_cluster_exec& dut) {
   dut.cmd_valid_i = 0;
   dut.cmd_context_i = 0;
   dut.cmd_tag_i = 0;
@@ -77,7 +77,7 @@ void clear_command(Vsimd_cluster_exec_shell& dut) {
   dut.cmd_route_upper_i = 0;
 }
 
-void clear_state_write(Vsimd_cluster_exec_shell& dut) {
+void clear_state_write(Vsimd_cluster_exec& dut) {
   dut.state_write_valid_i = 0;
   dut.state_write_group_i = 0;
   dut.state_write_context_i = 0;
@@ -88,7 +88,7 @@ void clear_state_write(Vsimd_cluster_exec_shell& dut) {
   for (int word = 0; word < 4; ++word) dut.state_write_data_i[word] = 0;
 }
 
-void clear_state_read(Vsimd_cluster_exec_shell& dut) {
+void clear_state_read(Vsimd_cluster_exec& dut) {
   dut.state_read_valid_i = 0;
   dut.state_read_group_i = 0;
   dut.state_read_context_i = 0;
@@ -97,7 +97,7 @@ void clear_state_read(Vsimd_cluster_exec_shell& dut) {
   dut.state_read_mask_i = 0;
 }
 
-void clear_inputs(Vsimd_cluster_exec_shell& dut) {
+void clear_inputs(Vsimd_cluster_exec& dut) {
   clear_command(dut);
   clear_state_write(dut);
   clear_state_read(dut);
@@ -112,11 +112,11 @@ void clear_inputs(Vsimd_cluster_exec_shell& dut) {
   dut.protocol_error_clear_i = 0;
 }
 
-void wait_cycles(Vsimd_cluster_exec_shell& dut, int cycles) {
+void wait_cycles(Vsimd_cluster_exec& dut, int cycles) {
   for (int cycle = 0; cycle < cycles; ++cycle) tick(dut);
 }
 
-void enqueue(Vsimd_cluster_exec_shell& dut, uint8_t context, uint8_t tag,
+void enqueue(Vsimd_cluster_exec& dut, uint8_t context, uint8_t tag,
              uint8_t group_mask, uint8_t op, uint8_t src_a,
              uint8_t src_b, uint8_t dst, bool write_vrf,
              bool export_narrow = false, uint8_t exact_resource = 0) {
@@ -147,7 +147,7 @@ void enqueue(Vsimd_cluster_exec_shell& dut, uint8_t context, uint8_t tag,
   std::exit(1);
 }
 
-void issue_vrf_write(Vsimd_cluster_exec_shell& dut, uint8_t group,
+void issue_vrf_write(Vsimd_cluster_exec& dut, uint8_t group,
                      uint8_t row, uint32_t data, uint8_t tag) {
   clear_state_write(dut);
   dut.state_write_valid_i = 1;
@@ -176,7 +176,7 @@ void issue_vrf_write(Vsimd_cluster_exec_shell& dut, uint8_t group,
   }
 }
 
-void issue_vrf_read(Vsimd_cluster_exec_shell& dut, uint8_t group,
+void issue_vrf_read(Vsimd_cluster_exec& dut, uint8_t group,
                     uint8_t row, uint8_t mask, uint8_t tag,
                     uint8_t context = 0) {
   clear_state_read(dut);
@@ -202,7 +202,7 @@ void issue_vrf_read(Vsimd_cluster_exec_shell& dut, uint8_t group,
   std::exit(1);
 }
 
-void write_vrf(Vsimd_cluster_exec_shell& dut, uint8_t group,
+void write_vrf(Vsimd_cluster_exec& dut, uint8_t group,
                uint8_t row, uint32_t data, uint8_t tag) {
   issue_vrf_write(dut, group, row, data, tag);
 
@@ -235,7 +235,7 @@ struct Completion {
   bool owner_mismatch;
 };
 
-Completion consume_completion(Vsimd_cluster_exec_shell& dut) {
+Completion consume_completion(Vsimd_cluster_exec& dut) {
   for (int timeout = 0; timeout < 300; ++timeout) {
     eval_low(dut);
     if (dut.cpl_valid_o) {
@@ -282,7 +282,7 @@ struct Result {
   uint8_t mask;
 };
 
-Result consume_result(Vsimd_cluster_exec_shell& dut) {
+Result consume_result(Vsimd_cluster_exec& dut) {
   for (int timeout = 0; timeout < 300; ++timeout) {
     eval_low(dut);
     if (dut.result_valid_o) {
@@ -306,7 +306,7 @@ Result consume_result(Vsimd_cluster_exec_shell& dut) {
   std::exit(1);
 }
 
-void wait_cluster_empty(Vsimd_cluster_exec_shell& dut) {
+void wait_cluster_empty(Vsimd_cluster_exec& dut) {
   for (int timeout = 0; timeout < 300; ++timeout) {
     eval_low(dut);
     if (dut.tracker_occupancy_o == 0 &&
@@ -323,7 +323,7 @@ void wait_cluster_empty(Vsimd_cluster_exec_shell& dut) {
 
 int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
-  Vsimd_cluster_exec_shell dut;
+  Vsimd_cluster_exec dut;
   clear_inputs(dut);
 
   dut.rst_ni = 0;
@@ -383,7 +383,7 @@ int main(int argc, char** argv) {
   // completion and response selectors must each hold group2 while blocked,
   // even after group1 arrives. Then retire the response first to prove the
   // two cluster return channels can advance in different orders without
-  // entering GROUP_EXEC accounting.
+  // entering EXEC accounting.
   expect_eq("tracker empty before state reads", 0,
             dut.tracker_occupancy_o);
   issue_vrf_read(dut, 2, 0, 0x5, 0xb2, 1);
@@ -600,6 +600,6 @@ int main(int argc, char** argv) {
   expect_eq("final tracker empty", 0, dut.tracker_occupancy_o);
   expect_eq("final ingress empty", 0, dut.group_ingress_valid_o);
 
-  std::cout << "PASS simd_cluster_exec_shell " << checks << " checks\n";
+  std::cout << "PASS simd_cluster_exec " << checks << " checks\n";
   return 0;
 }

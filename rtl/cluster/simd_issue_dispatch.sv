@@ -5,7 +5,7 @@ module simd_issue_dispatch #(
   parameter int SLOT_W = (ISSUE_SLOTS <= 2) ? 1 : $clog2(ISSUE_SLOTS),
   parameter int CONTEXT_W = (CONTEXT_COUNT <= 2) ? 1 : $clog2(CONTEXT_COUNT)
 ) (
-  // Every slot has already been classified and validated as GROUP_EXEC by its
+  // Every slot has already been classified and validated as EXEC by its
   // upstream contract. This module routes only identity and target groups; the
   // wider operation bundle remains outside so dispatch does not freeze a
   // microinstruction format or claim that a decoder exists here.
@@ -14,7 +14,7 @@ module simd_issue_dispatch #(
   input  logic [(ISSUE_SLOTS*CONTEXT_W)-1:0]     issue_context_i,
   input  logic [(ISSUE_SLOTS*GROUP_COUNT)-1:0]   issue_group_mask_i,
   // Slot-specific shared resources cannot be represented by the one
-  // group_ready vector. The enclosing shell uses this gate for completion
+  // group_ready vector. The enclosing integration uses this gate for completion
   // tracker allocation, result credits and other resources that must be
   // granted atomically with every requested group. Driving all ones preserves
   // the original group-only dispatch behavior.
