@@ -109,7 +109,7 @@ module simd_cluster_exec_shell #(
   output logic                              state_cpl_illegal_o,
 
   // One trusted VRF row-read child lane. Completion and data response are
-  // independent tagged channels because MEMORY/EXCHANGE may consume them in
+  // independent tagged channels because a MEMORY actor may consume them in
   // either order. Both remain outside the GROUP_EXEC tracker and result
   // collector. The group ID must be in range while valid is asserted.
   input  logic                              state_read_valid_i,

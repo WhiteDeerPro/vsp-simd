@@ -1,6 +1,7 @@
 module vsp_cluster_memory_shell #(
   // This is a deliberately small integration profile: decoded GROUP_EXEC
-  // traffic and one blocking MEMORY span actor share the group VRF boundary.
+  // traffic and one blocking vector memory engine share the group VRF
+  // boundary.
   // Instruction decode, program ordering, ownership changes, translation and
   // a physical memory implementation remain outside this shell.
   parameter int GROUP_COUNT       = 4,
@@ -105,7 +106,7 @@ module vsp_cluster_memory_shell #(
   output logic                              exec_result_has_count_o,
   output logic [OFFSET_W-1:0]               exec_result_count_o,
 
-  // Blocking MEMORY span command. Selected groups are visited in ascending
+  // Blocking MEMORY command. Selected groups are visited in ascending
   // group order, one memory beat and one VRF child transaction at a time.
   input  logic                              mem_cmd_valid_i,
   output logic                              mem_cmd_ready_o,
@@ -155,7 +156,7 @@ module vsp_cluster_memory_shell #(
                                                dmem_rsp_fault_cause_i,
 
   output logic                              mem_busy_o,
-  output logic                              vrf_service_busy_o,
+  output logic                              vrf_arbiter_busy_o,
   input  logic                              protocol_error_clear_i,
   output logic                              exec_protocol_error_o,
   output logic                              mem_protocol_error_o,
@@ -212,9 +213,9 @@ module vsp_cluster_memory_shell #(
   logic [VRF_ROW_W-1:0] state_read_rsp_data;
   logic [LANES-1:0] state_read_rsp_mask;
 
-  // Single MEMORY client on the reusable VRF service. Keeping the client
-  // contract explicit lets EXCHANGE become a second client in a later top
-  // without changing the span engine or group state endpoints.
+  // Single MEMORY client on the reusable VRF arbiter. Keeping the client
+  // contract explicit lets a further actor become a second client in a later
+  // top without changing the vector memory engine or group state endpoints.
   logic [0:0] vrf_client_read_valid;
   logic [0:0] vrf_client_read_ready;
   logic [CONTEXT_W-1:0] vrf_client_read_context;
@@ -266,8 +267,8 @@ module vsp_cluster_memory_shell #(
   logic [((TRACKER_ENTRIES <= 1) ? 1 :
           $clog2(TRACKER_ENTRIES + 1))-1:0] exec_tracker_occupancy_unused;
   logic [CONTEXT_COUNT-1:0] exec_context_quiescent_unused;
-  logic vrf_service_active_client_unused;
-  logic vrf_service_active_read_unused;
+  logic vrf_arbiter_active_client_unused;
+  logic vrf_arbiter_active_read_unused;
   /* verilator lint_on UNUSED */
 
   assign issue_slot_grant = {ISSUE_SLOTS{1'b1}};
@@ -429,7 +430,7 @@ module vsp_cluster_memory_shell #(
     .VRF_ROW_ADDR_W(VRF_ADDR_W),
     .EXEC_CONTEXT_ID_W(CONTEXT_W),
     .SPAN_BYTES_W(SPAN_BYTES_W)
-  ) u_span_engine (
+  ) u_vector_memory_engine (
     .clk_i(clk_i),
     .rst_ni(rst_ni),
     .cmd_valid_i(mem_cmd_valid_i),
@@ -520,7 +521,7 @@ module vsp_cluster_memory_shell #(
     .GROUP_ID_W(GROUP_ID_W),
     .VRF_ROW_ADDR_W(VRF_ADDR_W),
     .CONTEXT_W(CONTEXT_W)
-  ) u_vrf_service (
+  ) u_vrf_arbiter (
     .clk_i(clk_i),
     .rst_ni(rst_ni),
     .client_read_valid_i(vrf_client_read_valid),
@@ -593,9 +594,9 @@ module vsp_cluster_memory_shell #(
     .cluster_write_cpl_tag_i(state_write_cpl_tag),
     .cluster_write_cpl_group_i(state_write_cpl_group),
     .cluster_write_cpl_error_i(state_write_cpl_illegal),
-    .busy_o(vrf_service_busy_o),
-    .active_client_o(vrf_service_active_client_unused),
-    .active_read_o(vrf_service_active_read_unused)
+    .busy_o(vrf_arbiter_busy_o),
+    .active_client_o(vrf_arbiter_active_client_unused),
+    .active_read_o(vrf_arbiter_active_read_unused)
   );
 
   initial begin

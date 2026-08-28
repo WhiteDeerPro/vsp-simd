@@ -9,7 +9,8 @@ package vsp_pkg;
     VSP_MEM_OP_STORE = 1'b1
   } vsp_mem_op_e;
 
-  // The span engine carries an effective address plus its address-space kind.
+  // The vector memory engine carries an effective address plus its
+  // address-space kind.
   // LOCAL and PHYSICAL bypass address translation in the future downstream
   // adapter; TRANSLATED selects a translation context. The engine itself does
   // not contain an MMU, TLB, PTW, cache, or address-space router.
@@ -62,18 +63,4 @@ package vsp_pkg;
     VSP_MEM_CPL_VRF_ERROR    = 3'h4
   } vsp_mem_cpl_status_e;
 
-  // Program-level completion for one row-level Bênes exchange pass.  Route
-  // descriptor failures are separate from malformed row/context fields so a
-  // controller can distinguish a bad route-register entry from a bad action.
-  // PROTOCOL_ERROR also raises the engine's sticky diagnostic output.
-  localparam int VSP_EXCHANGE_CPL_STATUS_W = 3;
-
-  typedef enum logic [VSP_EXCHANGE_CPL_STATUS_W-1:0] {
-    VSP_EXCHANGE_CPL_OK              = 3'h0,
-    VSP_EXCHANGE_CPL_BAD_REQUEST     = 3'h1,
-    VSP_EXCHANGE_CPL_BAD_ROUTE       = 3'h2,
-    VSP_EXCHANGE_CPL_VRF_READ_ERROR  = 3'h3,
-    VSP_EXCHANGE_CPL_VRF_WRITE_ERROR = 3'h4,
-    VSP_EXCHANGE_CPL_PROTOCOL_ERROR  = 3'h5
-  } vsp_exchange_cpl_status_e;
 endpackage

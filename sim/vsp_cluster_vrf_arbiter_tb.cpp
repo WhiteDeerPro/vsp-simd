@@ -256,7 +256,7 @@ int main(int argc, char** argv) {
   client0_read_with_response_first(dut);
   client0_write_then_client1_read(dut);
   reset_discards_outstanding(dut);
-  std::cout << "PASS: VSP cluster VRF service " << checks
+  std::cout << "PASS: VSP cluster VRF arbiter " << checks
             << " checks across arbitration, ownership, independent read "
                "returns, write errors, backpressure, and reset\n";
   return 0;

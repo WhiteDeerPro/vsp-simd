@@ -3,7 +3,7 @@ package simd_pkg;
 
   // Kind of a child transaction accepted by one group wrapper. This is
   // canonical internal metadata, not an encoded ISA field or the controller
-  // dispatch class (GROUP_EXEC/EXCHANGE/MEMORY/CONTROLLER). A future
+  // dispatch class (GROUP_EXEC/MEMORY/CONTROLLER). A future
   // sequencer may derive it from a compact action word without exposing that
   // encoding at the SIMD4 boundary.
   localparam int SIMD_GROUP_REQ_KIND_W = 1;

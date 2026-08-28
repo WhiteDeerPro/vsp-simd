@@ -20,8 +20,8 @@ module vsp_cluster_vrf_arbiter #(
   input  logic clk_i,
   input  logic rst_ni,
 
-  // Each client presents the same VRF-only child contract used by the span
-  // and row-exchange actors.  Packed fields are indexed by client number.
+  // Each client presents the same VRF-only child contract used by the vector
+  // memory engine.  Packed fields are indexed by client number.
   input  logic [CLIENT_COUNT-1:0]                 client_read_valid_i,
   output logic [CLIENT_COUNT-1:0]                 client_read_ready_o,
   input  logic [(CLIENT_COUNT*CONTEXT_W)-1:0]     client_read_context_i,
@@ -336,7 +336,7 @@ module vsp_cluster_vrf_arbiter #(
   initial begin
     if (CLIENT_COUNT < 1 || GROUP_COUNT < 1 || VRF_ROW_BYTES < 1 ||
         VRF_ROWS < 1 || EXEC_CONTEXT_COUNT < 1 || TAG_W < 1) begin
-      $error("VRF service parameters must be positive");
+      $error("VRF arbiter parameters must be positive");
     end
     if (CLIENT_W != ((CLIENT_COUNT <= 2) ? 1 : $clog2(CLIENT_COUNT))) begin
       $error("CLIENT_W must match CLIENT_COUNT");

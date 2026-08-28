@@ -376,7 +376,7 @@ int main(int argc, char** argv) {
   issue_memory(dut, memory, kMemLoad, 0x31, kLoadBase, 0xf, 2, 16);
   consume_memory_completion(dut, memory, kMemLoad, 0x31, 0xf, 16);
   expect_eq("LOAD issued four SRAM reads", 4, memory.loads);
-  expect_eq("VRF service idle after LOAD", 0, dut.vrf_service_busy_o);
+  expect_eq("VRF arbiter idle after LOAD", 0, dut.vrf_arbiter_busy_o);
 
   issue_add_immediate(dut, memory, 0x42, 2, 3, 3);
   consume_exec_completion(dut, memory, 0x42);
@@ -397,7 +397,7 @@ int main(int argc, char** argv) {
   }
 
   expect_eq("memory engine idle", 0, dut.mem_busy_o);
-  expect_eq("VRF service idle", 0, dut.vrf_service_busy_o);
+  expect_eq("VRF arbiter idle", 0, dut.vrf_arbiter_busy_o);
   expect_eq("EXEC protocol clean", 0, dut.exec_protocol_error_o);
   expect_eq("MEMORY protocol clean", 0, dut.mem_protocol_error_o);
   expect_eq("combined protocol clean", 0, dut.protocol_error_o);

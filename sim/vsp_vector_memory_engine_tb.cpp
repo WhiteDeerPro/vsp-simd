@@ -906,7 +906,7 @@ int main(int argc, char** argv) {
 
   dut.final();
   std::cout << "PASS: " << checks
-            << " VRF span engine checks across address-space metadata, "
+            << " vector memory engine checks across address-space metadata, "
                "ordered single-flight access, structured faults, sparse spans, "
                "backpressure, and reset\n";
   return 0;
