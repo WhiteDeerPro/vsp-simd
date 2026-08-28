@@ -416,7 +416,7 @@ module vsp_cluster_memory_shell #(
     .protocol_error_o(exec_protocol_error_o)
   );
 
-  vsp_vrf_span_engine #(
+  vsp_vector_memory_engine #(
     .GROUP_COUNT(GROUP_COUNT),
     .VRF_ROW_BYTES(LANES),
     .VRF_ROWS(VREGS),
@@ -509,7 +509,7 @@ module vsp_cluster_memory_shell #(
     .protocol_error_o(mem_protocol_error_o)
   );
 
-  vsp_cluster_vrf_service #(
+  vsp_cluster_vrf_arbiter #(
     .CLIENT_COUNT(1),
     .GROUP_COUNT(GROUP_COUNT),
     .VRF_ROW_BYTES(LANES),

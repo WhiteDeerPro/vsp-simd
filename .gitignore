@@ -2,3 +2,7 @@
 /tags
 *.vcd
 *.fst
+
+# 本地 Claude Code 配置，含 API 凭据，不入版本库
+/.claude/settings.json
+/.claude/settings.local.json

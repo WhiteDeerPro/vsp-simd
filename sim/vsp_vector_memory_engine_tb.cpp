@@ -1,4 +1,4 @@
-#include "Vvsp_vrf_span_engine.h"
+#include "Vvsp_vector_memory_engine.h"
 #include "verilated.h"
 
 #include <array>
@@ -72,7 +72,7 @@ uint32_t vrf_word(unsigned context, unsigned tag, unsigned group) {
          (group * 0x01010101u);
 }
 
-void tick(Vvsp_vrf_span_engine& dut) {
+void tick(Vvsp_vector_memory_engine& dut) {
   dut.clk_i = 0;
   dut.eval();
   dut.clk_i = 1;
@@ -81,7 +81,7 @@ void tick(Vvsp_vrf_span_engine& dut) {
   dut.eval();
 }
 
-void clear_inputs(Vvsp_vrf_span_engine& dut) {
+void clear_inputs(Vvsp_vector_memory_engine& dut) {
   dut.cmd_valid_i = 0;
   dut.cmd_op_i = kOpLoad;
   dut.cmd_exec_context_i = 0;
@@ -182,7 +182,7 @@ std::vector<unsigned> selected_groups(unsigned mask) {
   return groups;
 }
 
-void drive_command(Vvsp_vrf_span_engine& dut, const Command& command) {
+void drive_command(Vvsp_vector_memory_engine& dut, const Command& command) {
   dut.cmd_valid_i = 1;
   dut.cmd_op_i = command.store ? kOpStore : kOpLoad;
   dut.cmd_exec_context_i = command.exec_context;
@@ -196,7 +196,7 @@ void drive_command(Vvsp_vrf_span_engine& dut, const Command& command) {
   dut.cmd_span_bytes_i = command.span;
 }
 
-RunResult run_command(Vvsp_vrf_span_engine& dut, const Command& command,
+RunResult run_command(Vvsp_vector_memory_engine& dut, const Command& command,
                       const RunOptions& options, uint32_t& rng) {
   RunResult result;
   const std::vector<unsigned> groups = selected_groups(command.group_mask);
@@ -533,7 +533,7 @@ void check_mapping(const Command& command, const RunResult& result) {
   }
 }
 
-void check_single_flight_ordering(Vvsp_vrf_span_engine& dut) {
+void check_single_flight_ordering(Vvsp_vector_memory_engine& dut) {
   const Command first{false, 0, 0x60, 0x6800, 0, 0x1, 2, 4,
                       kAddrSpaceTranslated, 0x11};
   const Command second{false, 1, 0x61, 0x6c00, 0, 0x2, 3, 4,
@@ -656,7 +656,7 @@ void check_single_flight_ordering(Vvsp_vrf_span_engine& dut) {
 
 int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
-  Vvsp_vrf_span_engine dut;
+  Vvsp_vector_memory_engine dut;
   clear_inputs(dut);
   uint32_t rng = 0x6d219af3u;
 

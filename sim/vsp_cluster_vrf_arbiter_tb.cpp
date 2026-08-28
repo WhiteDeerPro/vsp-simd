@@ -1,4 +1,4 @@
-#include "Vvsp_cluster_vrf_service.h"
+#include "Vvsp_cluster_vrf_arbiter.h"
 #include "verilated.h"
 
 #include <cstdint>
@@ -22,7 +22,7 @@ void expect_eq(const std::string& label, uint64_t expected,
   if (expected != actual) fail(label, expected, actual);
 }
 
-void clear_inputs(Vvsp_cluster_vrf_service& dut) {
+void clear_inputs(Vvsp_cluster_vrf_arbiter& dut) {
   dut.client_read_valid_i = 0;
   dut.client_read_context_i = 0;
   dut.client_read_tag_i = 0;
@@ -63,7 +63,7 @@ void clear_inputs(Vvsp_cluster_vrf_service& dut) {
   dut.cluster_write_cpl_error_i = 0;
 }
 
-void tick(Vvsp_cluster_vrf_service& dut) {
+void tick(Vvsp_cluster_vrf_arbiter& dut) {
   dut.clk_i = 0;
   dut.eval();
   dut.clk_i = 1;
@@ -72,7 +72,7 @@ void tick(Vvsp_cluster_vrf_service& dut) {
   dut.eval();
 }
 
-void reset(Vvsp_cluster_vrf_service& dut) {
+void reset(Vvsp_cluster_vrf_arbiter& dut) {
   clear_inputs(dut);
   dut.rst_ni = 0;
   tick(dut);
@@ -83,7 +83,7 @@ void reset(Vvsp_cluster_vrf_service& dut) {
   expect_eq("reset no write", 0, dut.cluster_write_valid_o);
 }
 
-void client0_read_with_response_first(Vvsp_cluster_vrf_service& dut) {
+void client0_read_with_response_first(Vvsp_cluster_vrf_arbiter& dut) {
   // Client 0 read is request lane 0 and therefore wins from reset. A client 1
   // write waits without observing ready.
   dut.client_read_valid_i = 0x1;
@@ -154,7 +154,7 @@ void client0_read_with_response_first(Vvsp_cluster_vrf_service& dut) {
   expect_eq("read retires after both returns", 0, dut.busy_o);
 }
 
-void client0_write_then_client1_read(Vvsp_cluster_vrf_service& dut) {
+void client0_write_then_client1_read(Vvsp_cluster_vrf_arbiter& dut) {
   // RR advanced to lane 1, so client 0 write wins over client 1 read.
   dut.client_write_valid_i = 0x1;
   dut.client_write_context_i = 0;
@@ -229,7 +229,7 @@ void client0_write_then_client1_read(Vvsp_cluster_vrf_service& dut) {
   expect_eq("client1 read retires", 0, dut.busy_o);
 }
 
-void reset_discards_outstanding(Vvsp_cluster_vrf_service& dut) {
+void reset_discards_outstanding(Vvsp_cluster_vrf_arbiter& dut) {
   dut.client_write_valid_i = 1;
   dut.cluster_write_ready_i = 1;
   dut.eval();
@@ -251,7 +251,7 @@ void reset_discards_outstanding(Vvsp_cluster_vrf_service& dut) {
 
 int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
-  Vvsp_cluster_vrf_service dut;
+  Vvsp_cluster_vrf_arbiter dut;
   reset(dut);
   client0_read_with_response_first(dut);
   client0_write_then_client1_read(dut);

@@ -35,13 +35,6 @@ address-space/address-context 与 fault cause，但 engine 内没有 MMU、TLB�
 PTW 或 cache。端到端 testbench 在该逻辑口外模拟 local memory；它也不是 IFetch
 端口。
 
-`vsp_benes_exchange_engine` 也位于图外。它把一个 SIMD4 group 对齐为一个
-`{byte_we[3:0], data[31:0]}` Bênes 端口；一条 command 只完成一个 row pass。
-engine 先捕获全部 source row，再做严格一一置换并逐目的 masked-write，因此单条
-pass 可安全原地交换。它接收外部已解析并在握手时快照的 route descriptor；
-route table、EXCHANGE class router、VRF child bridge 和 cluster completion 汇聚尚未
-接通。超出一个 pass 的向量由 sequencer 拆分，复制不进入 Bênes switch 语义。
-
 当前 SIMD4 没有取指和 compact-uword 译码。上级已有 `simd_issue_decode_shell`
 作为晚译码 holding 边界，但其 hook 尚未替换为真实编码解析。`op_i`/`exec_op_i` 上的
 6-bit `simd_op_e` 只是 canonical GROUP_EXEC function，不是完整 opcode。
@@ -162,8 +155,6 @@ RF read -> optional route / operand mux -> lane execute -> optional reduce
   adapter 的集成与可选的多 outstanding、二维地址生成；span→shared VRF
   service→wrapper 的 decoded reference wiring 已完成，当前 engine 仅支持 VRF，ARF 需先用
   `NSLICE/NCLIP` 转到 VRF 再 STORE；
-- row-exchange engine 与 route table、VRF read/state-write child bridge、共享 Bênes
-  资源仲裁及 cluster quiescence 的集成；
 - MMU/TLB/PTW/cache/coherence 和 architectural IFetch；未来 IFetch 若存在，
   使用独立于 `dmem_req/rsp` 的逻辑请求类；
 - ARF+ARF、宽 ARF route 和宽 reduction；

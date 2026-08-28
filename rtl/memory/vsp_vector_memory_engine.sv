@@ -1,4 +1,4 @@
-module vsp_vrf_span_engine #(
+module vsp_vector_memory_engine #(
   // One physical VRF row is VRF_ROW_BYTES bytes. The first implementation profile
   // uses four 8-bit lanes, so one selected group contributes one 32-bit beat.
   parameter int GROUP_COUNT       = 4,

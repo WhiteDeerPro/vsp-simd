@@ -1,6 +1,6 @@
-module vsp_cluster_vrf_service #(
-  // The first integration profile has one MEMORY and one EXCHANGE client.
-  // The service deliberately permits only one accepted VRF child transaction
+module vsp_cluster_vrf_arbiter #(
+  // The first integration profile has one MEMORY client.
+  // The arbiter deliberately permits only one accepted VRF child transaction
   // at a time; program-level overlap and ordering belong to the controller.
   parameter int CLIENT_COUNT       = 2,
   parameter int GROUP_COUNT        = 4,
