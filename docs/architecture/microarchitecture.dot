@@ -36,7 +36,7 @@ digraph vsp_simd_microarchitecture {
     style="rounded,dashed";
 
     sequencer [
-      label="External sequencer / decoded test driver\n(issue queue outside leaf; no compact decoder RTL)",
+      label="External sequencer / controller\n(profile-v0 action reference exists; queue-head path not drawn)",
       fillcolor="#fff4d6",
       color="#bd8b13"
     ];

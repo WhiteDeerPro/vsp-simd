@@ -4,8 +4,10 @@
 > state-read 路径及 `vsp_cluster_vrf_arbiter` 已有参考 RTL。
 > `vsp_cluster_memory_wrapper` 已把 blocking 的 vector memory engine 接到
 > EXEC cluster，形成 decoded LOAD→EXEC→STORE 参考闭环。
-> class router、跨 class 程序顺序、owner/resource controller、物理 local SRAM、
-> MMU/cache 与 DMA 仍待实现。本文不规定总线宽度、SRAM 组织或 DMA 描述符格式。
+> 其外的 `vsp_cluster_controller_wrapper` 已增加 strict class router 和跨 class
+> 程序顺序：MEMORY descriptor 仍为 decoded，EXEC 使用 profile-v0 packet。
+> 动态 owner/resource controller、物理 local SRAM、MMU/cache 与 DMA 仍待实现。
+> 本文不规定总线宽度、SRAM 组织或 DMA 描述符格式。
 > 跨 lane 路由已从本文剥离：它不再是独立的数据搬运 class，而是 Vector ALU 内的
 > gather 级，见[路由](../architecture/routing.md)。
 
@@ -157,6 +159,12 @@ memory engine 的 LOAD state-write 和 STORE state-read 接到
 留出边界，但当前 wrapper 只有一个 client，也没有在 EXEC 与 MEMORY 两个独立 command
 入口之间建立统一顺序。
 
+`vsp_cluster_controller_wrapper` 保留上述两个叶端入口，在更外层只暴露一个 ordered
+action lane。它在 MEMORY 发往 engine 前执行 common context/owner precheck，把
+memory fault/partial detail 保存进统一可背压 completion，并禁止年轻 EXEC 或
+CONTROL 越过尚未退休的 MEMORY。owner snapshot 当前由外部提供，至少从 action
+accept 保持到 child completion；这不是动态 owner table。
+
 ## 5. 首个集成闭环与延期项 `[已实现参考 + 延期项]`
 
 首个闭环可以保持 blocking：
@@ -174,6 +182,12 @@ dmem LOAD response
 117 项检查覆盖四组数据变换、请求背压、完成状态与 protocol-error 清洁。这里的
 “顺序”来自 test driver 等待前一 command completion 后再提交下一 action，并非 wrapper
 已实现 common class router 或 program-order enforcement。
+
+更外层 controller testbench 持续提供 `decoded LOAD → profile-v0 encoded EXEC →
+decoded STORE → END` action stream，不由 driver 等待并选择下一 class；strict
+controller 自动建立顺序，并验证统一 completion 背压、MEMORY owner precheck、
+fault/partial detail 与 END。该 closure 仍是 blocking single-active reference，
+不表示 queue-head sequencer、物理 SRAM 或 DMA 已完成。
 
 物理 local SRAM、DMA、
 cache/MMU adapter、packetizer/gearbox 和系统级 ingress/capture FIFO 也未集成；

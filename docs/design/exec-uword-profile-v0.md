@@ -4,7 +4,8 @@
 > `32-bit base + optional 32-bit extension` 编码，用于把当前非 route 的
 > canonical EXEC 控制压缩后交给 sequencer、控制存储和 issue queue。
 > 它不定义外部软件 ISA，不声明 RVV 二进制兼容，也不改变
-> `simd_op_e` 在 SIMD4 边界上的 canonical function 角色。
+> `simd_op_e` 在 SIMD4 边界上的 canonical function 角色。reference action wrapper
+> 已使用本 profile；admission/queue-head 集成仍在后续。
 
 ## 1. 目标与适用范围
 
@@ -468,9 +469,10 @@ resource 不属于编码。predecoder/expander 至少根据 format 与 modifier 
 
 exact resource 必须由硬件派生；sequencer 不另带一份可与 uword 冲突的资源声明。
 bank、latency 和物理端口冲突以后可以扩充 sched metadata，而不改变 profile v0 的
-operation 语义。当前 standalone `vsp_exec_uword_expander` 已在内部识别实际 RF 读写
-以检查地址，但还没有输出 `cmd_exact_resource` 的 bit 定义；该 metadata 属于下一步
-predecoder/class-router integration，不应暂时用一组无定义的 resource bit 代替。
+operation 语义。`vsp_exec_uword_expander` 已在内部识别实际 RF 读写以检查地址，并已
+接到 strict action-stream reference wrapper。该 wrapper 因为全局不重叠执行而把
+`cmd_exact_resource` 显式置零；这只绕过当前不需要的并发仲裁，不等同于已经定义
+resource bits。metadata 仍属于 admission/queue-head predecoder 工作项。
 
 ## 6. Illegal 与 reserved 规则
 
@@ -552,6 +554,10 @@ collector 必须先取得完整 base/extension packet 才能报告 admission val
 store 若需要跨拍取得第二个 word，必须在 collector 内等待，不能把半条 packet 的
 `base_valid_i` 提前送给 expander。
 
+`vsp_cluster_controller_wrapper` 也沿用这项合同：完整 base 与可选 extension 必须在
+`action_valid_i` 前关联好。`action_exec_extension_required_diag_o` 只用于观察当前
+packet 的格式需求，不能作为“先提交 base、下一拍再补 extension”的 refill 请求。
+
 当前 `simd_issue_queue` 的 `UWORD_W`、`RESOLVED_W` 和 `SCHED_META_W` 都是 opaque
 参数；`simd_issue_decode_stage` 的 hook 也还不是本 profile 的 parser。接入时可以先
 建立独立 encoder/expander 与 round-trip test，再决定 queue 是直接保存 65-bit
@@ -578,8 +584,8 @@ extension kind。
 
 MEMORY 已有独立的 canonical decoded request，包括 LOAD/STORE、address space、
 address context、effective address、group mask、VRF row 和 span。它不使用本 EXEC
-layout。CONTROL 的 barrier/admin command 语义仍在 controller 工作项中，也不占用
-本文保留的 format。
+layout。CONTROL 也不占用本文 format；当前 reference controller 只实现全局
+`END`，一般化 barrier/admin、owner handoff 与 per-context control state 仍是后续工作。
 
 ### 外部 instruction 与工具链
 

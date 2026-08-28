@@ -157,6 +157,14 @@ module vsp_cluster_memory_wrapper #(
 
   output logic                              mem_busy_o,
   output logic                              vrf_arbiter_busy_o,
+  // EXEC observability for a controller-level END.  Child quiescence only
+  // reports group execution completions; tracker_empty additionally proves
+  // that every result obligation has reached the result collector.  Queue and
+  // tracker emptiness therefore form the stronger global drain predicate.
+  output logic [CONTEXT_COUNT-1:0]
+                                               exec_context_children_quiescent_o,
+  output logic                              exec_queue_empty_o,
+  output logic                              exec_tracker_empty_o,
   input  logic                              protocol_error_clear_i,
   output logic                              exec_protocol_error_o,
   output logic                              mem_protocol_error_o,
@@ -261,15 +269,18 @@ module vsp_cluster_memory_wrapper #(
   logic [ISSUE_SLOTS-1:0] exec_issue_reject_unused;
   logic [GROUP_COUNT-1:0] exec_group_ingress_valid_unused;
   logic [GROUP_COUNT-1:0] exec_group_fire_unused;
-  logic [(CONTEXT_COUNT*((QUEUE_DEPTH <= 1) ? 1 :
-                         $clog2(QUEUE_DEPTH + 1)))-1:0]
-      exec_queue_occupancy_unused;
-  logic [((TRACKER_ENTRIES <= 1) ? 1 :
-          $clog2(TRACKER_ENTRIES + 1))-1:0] exec_tracker_occupancy_unused;
-  logic [CONTEXT_COUNT-1:0] exec_context_quiescent_unused;
   logic vrf_arbiter_active_client_unused;
   logic vrf_arbiter_active_read_unused;
   /* verilator lint_on UNUSED */
+
+  logic [(CONTEXT_COUNT*((QUEUE_DEPTH <= 1) ? 1 :
+                         $clog2(QUEUE_DEPTH + 1)))-1:0]
+      exec_queue_occupancy;
+  logic [((TRACKER_ENTRIES <= 1) ? 1 :
+          $clog2(TRACKER_ENTRIES + 1))-1:0] exec_tracker_occupancy;
+
+  assign exec_queue_empty_o = !(|exec_queue_occupancy);
+  assign exec_tracker_empty_o = !(|exec_tracker_occupancy);
 
   assign issue_slot_grant = {ISSUE_SLOTS{1'b1}};
   assign protocol_error_o = exec_protocol_error_o || mem_protocol_error_o;
@@ -410,9 +421,9 @@ module vsp_cluster_memory_wrapper #(
     .issue_reject_o(exec_issue_reject_unused),
     .group_ingress_valid_o(exec_group_ingress_valid_unused),
     .group_exec_fire_o(exec_group_fire_unused),
-    .queue_occupancy_o(exec_queue_occupancy_unused),
-    .tracker_occupancy_o(exec_tracker_occupancy_unused),
-    .context_exec_quiescent_o(exec_context_quiescent_unused),
+    .queue_occupancy_o(exec_queue_occupancy),
+    .tracker_occupancy_o(exec_tracker_occupancy),
+    .context_exec_quiescent_o(exec_context_children_quiescent_o),
     .protocol_error_clear_i(protocol_error_clear_i),
     .protocol_error_o(exec_protocol_error_o)
   );

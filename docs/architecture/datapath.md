@@ -5,12 +5,15 @@
 canonical decoded control。
 
 当前接口不是 32-bit 指令字。执行操作码为 6 bit，其余寄存器地址、立即数、
-写回和路由控制以并行信号提供。未来可以在 sequencer 内部用 32-bit 或其他宽度
-编码常用微操作，再译成这些信号；当前里程碑尚未选择该编码。上层已有
+写回和路由控制以并行信号提供。外层 reference controller 已用 profile-v0 的
+`32-bit base + optional 32-bit extension` 编码常用 EXEC，再展开成这些信号；尚未
+选择的是最终 queue/control-store 与外部 instruction encoding。上层已有
 EXEC reference frontend，它保存 opaque entry，并实现 RR live-head、
 locked shadow 和 dispatch；`simd_cluster_exec` 已把 full-decoded canonical
 control 送入多个 datapath wrapper，并闭合 completion/result。当前仍没有真实
-predecoder、compact canonical expander 或 class router，边界与候选组织见
+admission/queue-head predecoder；profile-v0 canonical expander 与 strict class router
+已在外层 action reference wrapper 接通，datapath/cluster leaf 仍只接收 canonical
+decoded control。边界与候选组织见
 [指令交付](../design/instruction-delivery.md)。
 
 ## 状态文件

@@ -5,6 +5,7 @@
 
 RTL_PKG := rtl/pkg/simd_pkg.sv
 RTL_VSP_PKG := rtl/pkg/vsp_pkg.sv
+RTL_VSP_ACTION_PKG := rtl/pkg/vsp_action_pkg.sv
 RTL_VSP_EXEC_UWORD_PKG := rtl/pkg/vsp_exec_uword_pkg.sv
 
 RTL_LANE := rtl/units/simd_lane.sv
@@ -30,10 +31,14 @@ RTL_CLUSTER_ISSUE_FRONTEND := rtl/cluster/simd_cluster_issue_frontend.sv
 RTL_GROUP_COMPLETION_TRACKER := rtl/cluster/simd_group_completion_tracker.sv
 RTL_ISSUE_DECODE_STAGE := rtl/cluster/simd_issue_decode_stage.sv
 RTL_VSP_EXEC_UWORD_EXPANDER := rtl/cluster/vsp_exec_uword_expander.sv
+RTL_VSP_DECODED_ACTION_CONTROLLER := \
+		rtl/cluster/vsp_decoded_action_controller.sv
 RTL_CLUSTER_RESULT_COLLECTOR := rtl/cluster/simd_cluster_result_collector.sv
 RTL_CLUSTER_EXEC := rtl/cluster/simd_cluster_exec.sv
 RTL_CLUSTER_VRF_ARBITER := rtl/cluster/vsp_cluster_vrf_arbiter.sv
 RTL_CLUSTER_MEMORY_WRAPPER := rtl/cluster/vsp_cluster_memory_wrapper.sv
+RTL_CLUSTER_CONTROLLER_WRAPPER := \
+		rtl/cluster/vsp_cluster_controller_wrapper.sv
 RTL_UOP_LEGAL := rtl/cluster/simd_uop_legal.sv
 RTL_VECTOR_MEMORY_ENGINE := rtl/memory/vsp_vector_memory_engine.sv
 
@@ -50,6 +55,8 @@ GROUP_COMPLETION_TRACKER_RTL := $(RTL_GROUP_COMPLETION_TRACKER)
 ISSUE_DECODE_STAGE_RTL := $(RTL_ISSUE_DECODE_STAGE)
 VSP_EXEC_UWORD_EXPANDER_RTL := $(RTL_PKG) $(RTL_VSP_EXEC_UWORD_PKG) \
 		$(RTL_UOP_LEGAL) $(RTL_VSP_EXEC_UWORD_EXPANDER)
+VSP_DECODED_ACTION_CONTROLLER_RTL := $(RTL_VSP_ACTION_PKG) \
+		$(RTL_VSP_DECODED_ACTION_CONTROLLER)
 CLUSTER_RESULT_COLLECTOR_RTL := $(RTL_CLUSTER_RESULT_COLLECTOR)
 CLUSTER_VRF_ARBITER_RTL := $(RTL_CLUSTER_VRF_ARBITER)
 UOP_LEGAL_RTL := $(RTL_PKG) $(RTL_UOP_LEGAL)
@@ -71,3 +78,8 @@ CLUSTER_EXEC_RTL := $(GROUP_WRAPPER_RTL) $(RTL_ISSUE_QUEUE) \
 CLUSTER_MEMORY_WRAPPER_RTL := $(CLUSTER_EXEC_RTL) $(RTL_VSP_PKG) \
 		$(RTL_CLUSTER_VRF_ARBITER) $(RTL_VECTOR_MEMORY_ENGINE) \
 		$(RTL_CLUSTER_MEMORY_WRAPPER)
+CLUSTER_CONTROLLER_WRAPPER_RTL := $(CLUSTER_MEMORY_WRAPPER_RTL) \
+		$(RTL_VSP_ACTION_PKG) $(RTL_VSP_EXEC_UWORD_PKG) \
+		$(RTL_VSP_EXEC_UWORD_EXPANDER) \
+		$(RTL_VSP_DECODED_ACTION_CONTROLLER) \
+		$(RTL_CLUSTER_CONTROLLER_WRAPPER)

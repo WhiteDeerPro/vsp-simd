@@ -21,16 +21,19 @@ SIMD4 不实现取指、分支或异常系统。queue/uword decoder 属于上级
 ingress、四个 transaction wrapper、completion tracker、reject buffer 和 result
 collector 组成可运行的 full-decoded 参考闭环。`simd_issue_decode_stage` 已提供
 每 issue slot 一项、可背压的 late-decode holding 边界，但其 decode hook 仍由参考
-driver 提供；predecoder、真实 compact-uword parser 和 class router 尚未实现，见
+driver 提供；profile-v0 compact EXEC parser/expander 已实现，admission predecoder
+与 queue-head 接入尚未实现，见
 [指令交付](../design/instruction-delivery.md)。
 `vsp_cluster_memory_wrapper` 已把 VRF-only blocking `vsp_vector_memory_engine` 经共享
 VRF arbiter 接到 wrapper/cluster state-read/write endpoint，形成 decoded
 LOAD→EXEC→STORE 参考闭环。它传递 effective address、address-space kind
 和 address context，但 `dmem_*` 仍是逻辑边界；仓库中没有物理 local SRAM、
-MMU、TLB、PTW、cache 或 DMA。该 wrapper 的 EXEC/MEMORY command 入口彼此
-独立，没有 common class router 或 program-order enforcement。当前也没有
-architectural IFetch；controller 内部 uword/control-store 交付与未来 IFetch 是
-不同边界。
+MMU、TLB、PTW、cache 或 DMA。它保留彼此独立的 decoded EXEC/MEMORY 入口，供
+叶级集成测试使用。其外新增的 `vsp_cluster_controller_wrapper` 接收一个有序 action
+流：profile-v0 encoded EXEC 在入口展开，decoded MEMORY 分派到 memory engine，
+`CONTROL.END` 在内部执行队列、tracker、memory engine 与 VRF arbiter 静止后完成。
+当前也没有 architectural IFetch；controller 内部 uword/control-store 交付与未来
+IFetch 是不同边界。
 
 ### 命名边界 `[当前约定]`
 
@@ -115,8 +118,9 @@ canonical bundle 见[数据通路](datapath.md)与
 - 是否值得为当前 byte-only 的饱和、平均、绝对差、绝对值、乘法和宽 ARF
   操作另行增加宽元素变体；当前控制契约不把它们解释为 HALF/WORD；
 - 寄存器文件端口、流水级数、发射宽度和旁路；
-- 已有 decoded blocking VRF-only LOAD/STORE 闭环之上的 common class ordering、
-  多 outstanding、二维地址、物理局部 SRAM、DMA、地址空间/翻译 adapter 与系统集成；
+- 当前 strict single-active common class ordering 之上的 per-context concurrency、
+  resource-aware scheduling、多 outstanding、二维地址、物理局部 SRAM、DMA、
+  地址空间/翻译 adapter 与系统集成；
 - 跨 SIMD group 的任意 shuffle、gather/scatter，以及跨组压缩流拼接；
 - 稀疏 mask 的存储方式及其调度成本；
 - 是否增加其他定点舍入模式、异常和统计状态；
@@ -138,13 +142,14 @@ operation 三层。当前既没有 32-bit 也没有 16-bit instruction；queue
 4. byte-convolution 参考模型验证 low-32 多 byte 乘法分解。
 
 transaction wrapper、EXEC cluster execution integration、decode holding stage、VRF-only
-vector memory engine、shared VRF arbiter 与 decoded cluster memory wrapper 已完成参考实现；
-cluster 默认为四组、两 context、两 slot，但还不是有状态 controller。testbench
-已在 `dmem_*` 外用 local-memory model 验证 LOAD→EXEC→STORE；这不表示
-local SRAM RTL 或最终 MEMORY ISA 已完成。当前工作计划继续实现真实
-predecode/canonical expansion、common class router、跨 class program order、
-owner/resource/barrier 状态，并根据结果决定跨组 gather、物理 memory hierarchy、
-DMA 与进一步 lane feature 的顺序。见
+vector memory engine、shared VRF arbiter、decoded cluster memory wrapper 与 strict ordered
+action controller 已完成参考实现。testbench 已在 `dmem_*` 外用 local-memory model
+验证 decoded LOAD → profile-v0 encoded EXEC → decoded STORE → `CONTROL.END`，包括
+完成背压、owner/decode error、EXEC child reject、result staging 和 memory fault；
+这不表示 local SRAM RTL、最终 MEMORY ISA 或完整 sequencer 已完成。当前工作
+计划继续实现 admission predecode/queue-head integration、动态 owner/resource 状态和
+control-store/PC/loop 交付，再根据结果决定物理 memory hierarchy、DMA、跨组交换与
+进一步 lane feature 的顺序。见
 [实验路线](../design/development-roadmap.md)。
 
 数据带宽不能只用一个“每周期向量数”概括；逻辑产生、存储写入、网络交付、唯一

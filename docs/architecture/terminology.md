@@ -63,11 +63,14 @@ vector operation、element 和 register，不暴露不必要的物理分组。
 
 | 首选名称 | 当前含义 |
 |---|---|
-| action | sequencer 交付的一项工作；跨 dispatch class 的顺序接受和退休仍是待实现的 controller 责任 |
+| action | sequencer 交付的一项工作；当前 reference controller 对一个输入流执行严格的跨 dispatch class 接受与退休顺序 |
 | dispatch class | **internal action dispatch category**；只决定 action 进入哪个执行路径，不属于编程模型 |
 | `EXEC` | 进入 SIMD group execution path 的 dispatch class，可包含 ALU、route、reduction 等操作 |
 | `MEMORY` | 进入 vector memory engine 的 dispatch class |
-| `CONTROL` | 计划进入 barrier/admin/controller path 的 dispatch class；当前尚无对应 RTL |
+| `CONTROL` | 进入 controller-local path 的 dispatch class；当前 reference RTL 只实现等待内部强静止条件后完成的 `END` |
+| `END` | ordered action stream 的结束动作；等待当前 integration 的内部 queue/tracker/memory/arbiter 静止，不清 RF、不转移 owner，也不直接检查外部 result 口是否为空；有限 staging 满时，外部背压仍可间接延迟结束 |
+| action completion | action 的统一有序退休记录；`valid` 时保留原 class/context/tag/requested-group-mask 与 status，原 envelope 非法时 class/context 也保留该非法值供相关和诊断；class-specific engine detail 在 controller-local error 时为零 |
+| `program_done` | 成功 `END` completion 被接收时的单拍脉冲；表示结束记录退休，不自动证明此前每个 action 成功，也不等同于 host interrupt |
 | sequencer/control word (`uword`) | 候选的紧凑内部控制存储格式；不是已定义的 16/32-bit ISA instruction |
 | EXEC uword profile v0 | 当前用于实验的 `32-bit base + optional immediate extension` 内部 EXEC 表示；不包含 action envelope、MEMORY/CONTROL 或外部 ISA 承诺 |
 | micro-op (`uop`) | 已译码或部分译码、可供调度和执行消费的内部操作 |
@@ -91,6 +94,11 @@ vector operation、element 和 register，不暴露不必要的物理分组。
 | `*_arbiter` | 竞争请求选择和返回归属保持 |
 | `*_stage` | 流水或 elastic holding stage |
 | `*_wrapper` | 组合既有模块并暴露参考集成边界；不表示完整 VSP |
+
+`strict ordered action controller` 指当前一次只保留一个 active action 的参考实现。
+这是行为基线，不等同于最终 sequencer、每 context PC/loop 状态或并发吞吐规格。
+`vsp_action_pkg` 中的 class/status 数值只是内部控制语义，不是 instruction、trap 或
+host ABI 编码。
 
 新名称不再使用 `Actor`、`Service` 或 `Shell`：硬件功能体写 engine/unit，接口使用方写
 client，选择逻辑写 arbiter，集成边界写 wrapper，保存级写 stage。历史提交中的旧名称

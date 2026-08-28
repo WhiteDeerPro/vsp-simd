@@ -129,9 +129,10 @@ queue、两 slot。
 `payload/resolved/sched_meta/tag/group_mask` 的 EXEC frontend；它已有
 RR 队头选择和受阻后稳定的 opaque holding slot。`simd_cluster_exec` 已用
 full-decoded profile 接到 group wrappers，`simd_issue_decode_stage` 也已验证晚译码
-holding 协议；standalone `vsp_exec_uword_expander` 已能解析内部 profile v0，但还
-没有 admission predecoder、class router 或 queue-head integration。datapath 仍只暴露
-展开控制边界，独立 expander 尚未替换 holding hook。当前 32-bit payload、16-bit
+holding 协议；`vsp_exec_uword_expander` 已能解析内部 profile v0，但还没有
+admission predecoder 或 queue-head integration。另一个 action-stream reference 已把
+该 expander 接到 strict class router，但尚未替换 FIFO head/holding hook；datapath
+仍只暴露展开控制边界。当前 32-bit payload、16-bit
 resolved 和 16-bit sched-meta 只是 opaque
 默认宽度，不是已定义的 instruction format。术语上应分开 major
 dispatch class、版本化的内部 compact uword profile，以及 canonical EXEC 中的
@@ -152,8 +153,10 @@ entry 可以留在 FIFO，也可以原子转移到被跟踪的 issue stage。
 **当前观察 `[RTL事实]`**：裸 SIMD4 没有 load/store、地址生成或 cache
 coherence。独立 `vsp_vector_memory_engine` 已实现 VRF LOAD/STORE parent 和
 单飞行有序 `dmem_req/rsp`；`vsp_cluster_memory_wrapper` 已经由 shared VRF arbiter
-把 memory engine 的 VRF subrequest 接到 cluster VRF state-read/write endpoint。`dmem_*` 后端与
-controller/class ordering 仍外置；`cfg_*` 仍只是初始化/状态传输叶端。
+把 memory engine 的 VRF subrequest 接到 cluster VRF state-read/write endpoint。
+`dmem_*` 后端仍外置；更外层 `vsp_cluster_controller_wrapper` 已提供 single-active
+class ordering 和统一 completion，但动态 owner/resource state 与 queue-head
+sequencer 仍未实现。`cfg_*` 仍只是初始化/状态传输叶端。
 
 **工作方向 `[候选]`**：地址状态和 DMA/local-memory request 位于 sequencer/controller
 层，采用 decoupled request/response；以显式 ownership 和 buffer 同步开始，比在

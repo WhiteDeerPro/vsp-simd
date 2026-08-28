@@ -261,8 +261,9 @@ pending mask 清零，不等待外部读取已缓冲 response。tag 在 collecto
 单 group wrapper 只返回 `context+tag`；tracker 的 child lane 代表物理
 `group_id`。cluster execution integration 已处理 EXEC child、pre-dispatch reject 和 group result，
 并已提供独立的 VRF state-read/write child 边界，但 cluster execution integration 本身仍不处理
-host completion、MEMORY parent、owner state 或 barrier。当前 decoded MEMORY
-reference integration 位于其外层的 `vsp_cluster_memory_wrapper`。
+host completion、MEMORY parent、owner state 或 barrier。decoded MEMORY reference
+integration 位于其外层的 `vsp_cluster_memory_wrapper`；再外层的
+`vsp_cluster_controller_wrapper` 提供 strict ordered action 路径。
 
 ## 9. 当前 group wrapper RTL 边界 `[RTL事实]`
 
@@ -303,7 +304,8 @@ slot`：
 它单独仍不是 cluster integration 或 controller。`simd_cluster_exec` 在其外选择
 canonical bundle、原子写入 per-group ingress、实例化 group wrappers，并接入 tracker、
 reject buffer 与 result collector；`group_issue_slot_o` 是该 bundle mux 的稳定索引。
-owner state、真实 decoder/class router 和 barrier 仍在该 integration 之外。
+owner state、encoded EXEC decoder/class router 和 barrier 仍在该 integration 之外，
+由更外层 reference controller 提供其中的 profile-v0 展开、strict routing 与 `END`。
 
 ## 11. EXEC cluster integration RTL 边界 `[RTL事实]`
 
@@ -341,12 +343,14 @@ per-group 1-entry EXEC ingress
 - 当前 canonical bundle 在 integration 入口已完全展开，内部私有 packed layout 不是
   encoded instruction format；
 - `context_exec_quiescent` 只表示 tracker 中的 EXEC child 已清空，不包含仍在 queue
-  中的命令、state/reject 返回或未来 MEMORY inflight；真正 barrier quiescence 由
-  controller 汇总后另行定义。
+  中的命令、尚未被 collector 接管的 result obligation 或 MEMORY inflight；controller
+  的当前全局 `END` 改用 `queue_empty && tracker_empty && !mem_busy && !arbiter_busy`
+  作为更强的静止条件。
 
 它还没有 class router、动态 owner table、barrier、MEMORY parent、跨组 gather、
-跨 group boundary staging 或 host/OS completion。因此此模块只称 cluster execution integration，
-不称 VSP controller。
+跨 group boundary staging 或 host/OS completion。因此此模块只称 cluster execution integration；
+这些能力中的 strict class routing 和最小 `END` 位于外层 reference controller，
+不会反向改变本模块边界。
 
 ## 12. 当前 decoded MEMORY integration `[RTL事实 + 里程碑基线]`
 
@@ -378,10 +382,55 @@ arbiter 的 `CLIENT_COUNT` 仍是参数，多 client 仲裁已由其单元测试
 这条边界：它是 Vector ALU 内的一级，不作为独立 client 竞争 group VRF 端点。
 
 owner snapshot 仍由外部输入，EXEC resource grant 在此 reference integration 中固定为全可用；
-动态 owner/resource controller、barrier 与跨 class quiescence 尚未实现。`dmem_*`
+动态 owner/resource controller 尚未实现。`dmem_*`
 是 effective-address 逻辑边界；testbench 的 local-memory model 不等于物理 local
 SRAM RTL，也不包含 cache、MMU/TLB/PTW、DMA 或 coherence。当前 117 项端到端检查
 只支持“decoded LOAD→EXEC→STORE 接线可工作”的声明，不定义最终 ISA。
+
+### 12.1 Strict ordered action controller `[RTL事实 + 参考 profile]`
+
+`vsp_decoded_action_controller` 接受一条统一 action 流，并按
+`EXEC/MEMORY/CONTROL` class 选择 child engine。`vsp_cluster_controller_wrapper`
+在它前方组合 profile-v0 EXEC expander，在它后方连接上述 EXEC/MEMORY integration：
+
+```text
+ordered action stream
+       │
+       ├─ EXEC packet → profile-v0 expander → EXEC cluster
+       ├─ MEMORY descriptor ────────────────→ memory engine
+       └─ CONTROL.END → wait strong quiescence
+                                  │
+                                  └→ unified ordered completion
+```
+
+首个 profile 的行为边界是：
+
+- 全局一次只保存一个 active action；目标 child command fire 后，必须观察其 child
+  completion，并等待统一 completion 被上游接收，才接受下一 action；
+- class、context、control-op、owner 或 EXEC decode 错误不进入 child engine，直接形成
+  带原 `context+tag+requested_group_mask` 的 ordered completion；单项错误不会在
+  硬件中自动取消后续流。controller-local error 的 class-specific engine detail
+  规范为零，以 common status 与 requested mask 为准；decode cause 只在 status 为
+  `DECODE_ERROR` 时有效，未由上游/profile decoder细分的 envelope error 可以返回零 cause；
+- EXEC/MEMORY child completion 身份必须匹配 active `context+tag`；unexpected 或
+  mismatch completion 被消费并置 sticky protocol error，mismatch 的 active action
+  以 protocol-error status 退休；
+- EXEC data result 与 command completion 独立。`END` 等待 tracker 清空，因此所有
+  result obligation 已被内部 collector 接管，但不直接检查外部 result 口是否为空；
+  若有限 collector 已满，外部背压会间接阻止剩余 obligation 被接管，`END` 仍会等待；
+- `program_done` 只在成功的 `END` completion 握手时脉冲一次；completion 被背压时
+  payload 保持，不能重复产生 done。它表示 END 已退休，不累计此前 action error，
+  也不会因 sticky protocol error 自动改成失败；上层若需要 kernel-success 语义，
+  必须同时维护 action status 或检查 protocol diagnostics；
+- owner table 当前仍是稳定的外部 snapshot；resource metadata 在 strict non-overlap
+  profile 中显式为零，不能据此推导并发 resource scheduler 已完成。snapshot 至少从
+  action accept 保持到对应 child completion；以后可由 controller-local owner table
+  代替该输入合同。
+
+generic action controller 接受 child completion 与 command handshake 同拍返回，也接受
+更晚的寄存返回；当前接入的 EXEC 与 MEMORY engine 使用后者。该 profile 用于先验证
+跨 class 顺序、错误与结束语义，不限制后续改为 per-context active action 或多
+engine 并发。
 
 ## 13. 当前 dispatcher RTL 边界 `[RTL事实]`
 
@@ -400,13 +449,13 @@ SRAM RTL，也不包含 cache、MMU/TLB/PTW、DMA 或 coherence。当前 117 项
 
 ## 14. 后续实验顺序 `[计划]`
 
-1. 以已有 standalone EXEC profile-v0 expander 为 canonical 解析基线，实现
+1. 以已有 EXEC profile-v0 expander 为 canonical 解析基线，实现
    compact-uword admission predecode，并把当前 full-decoded admission 重排到
    selected-head late decode/class-router 边界；terminal/pop 由最终 engine fire 或
    error sink 回传；
-2. 增加 common class router、program-order/error/completion 汇聚、owner state、
-   barrier/quiescent 和 resource-aware scheduling，把当前两个 decoded command
-   入口及外部 owner/grant 配置收进有状态 controller；
+2. 在当前 strict class router/program-order/error-completion 基线上增加动态 owner
+   state、context-scoped barrier/quiescent、resource-aware scheduling 与多 active
+   action；把外部 owner/grant 配置逐步收进有状态 controller；
 3. 保留当前 vector-memory→shared VRF arbiter→wrapper 接线，在 `dmem_*` 下游比较并接入
    物理 local SRAM、cache/MMU adapter 或 DMA 边界；
 4. 跨组 route 暂不进入当前实现序列；出现负载依据后，以独立 16×16 byte crossbar

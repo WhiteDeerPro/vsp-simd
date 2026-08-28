@@ -33,9 +33,9 @@
   buffered reject completion、state-read/write child lane 与 RR result collector；
 - 每 issue slot 一项的 decode holding stage：raw/resolved/cached provenance 与
   canonical class/resource/payload 输出在背压下保持稳定；
-- standalone `vsp_exec_uword_expander`：解析内部 profile v0 的 32-bit base 与可选
-  immediate extension，覆盖当前全部非 route EXEC function，并对非法 word 进行
-  无副作用 canonicalization；尚未接入 queue/head holding；
+- `vsp_exec_uword_expander`：解析内部 profile v0 的 32-bit base 与可选 immediate
+  extension，覆盖当前全部非 route EXEC function，并对非法 word 进行无副作用
+  canonicalization；已接入 strict controller action 入口，尚未接入 queue/head holding；
 - 独立 VRF-only `vsp_vector_memory_engine`：single active parent/single
   outstanding memory beat、稀疏 group-mask 连续 beat 映射、LOAD/STORE 子事务与
   stop-on-first partial completion；
@@ -43,12 +43,16 @@
   `vsp_cluster_vrf_arbiter` 的多 client read/write 仲裁和返回归属保持；
 - `vsp_cluster_memory_wrapper` decoded reference integration：vector memory engine 经 shared
   VRF arbiter 接入四组 cluster，端到端 LOAD→EXEC→STORE 回归已通过；
+- `vsp_decoded_action_controller` 与 `vsp_cluster_controller_wrapper`：统一
+  `EXEC/MEMORY/CONTROL` 分派、owner/context 检查、严格跨 class 顺序、统一
+  completion，以及等待 queue/tracker/memory/arbiter 强静止的 `END`；decoded LOAD →
+  profile-v0 encoded EXEC → decoded STORE → CONTROL.END 回归已通过；
 - 全量 lint/test 基线。
 
-当前优先级转向 admission predecoder、class router、跨 class 顺序和
-owner/resource controller；跨组 route 已从这条执行闭环中解耦并延期。物理 memory
-hierarchy 仍在 `dmem_*` 逻辑边界之外。在出现新的阻塞负载证据前，暂缓增加 lane
-arithmetic feature。
+当前优先级转向 admission predecoder/queue-head integration、动态 owner/resource
+状态和 sequencer control-store/PC/loop 交付；跨组 route 已从这条执行闭环中解耦并
+延期。物理 memory hierarchy 仍在 `dmem_*` 逻辑边界之外。在出现新的阻塞负载证据
+前，暂缓增加 lane arithmetic feature。
 
 ## M1：SIMD4 transaction wrapper `[已实现参考]`
 
@@ -118,7 +122,7 @@ mismatch、endpoint illegal、state completion 竞争下的背压稳定、无 pa
 fire、单 tracker entry 下未获 grant 的 slot 不虚占 credit，以及最终 tracker 清空。独立
 frontend/dispatcher/tracker 随机测试继续覆盖 mask overlap、表满和多返回乱序。
 
-## M3：有状态 controller `[decode holding 与 EXEC integration 已实现，状态控制待接入]`
+## M3：有状态 controller `[strict ordered reference 已实现，并发状态控制待接入]`
 
 - `owner_valid + owner_id` table；
 - `simd_issue_queue` 已实现每 context FIFO：一个 admission 入口、所有 context
@@ -126,16 +130,24 @@ frontend/dispatcher/tracker 随机测试继续覆盖 mask overlap、表满和多
 - frontend 已实现 round-robin live-head 选择、每 slot opaque locked shadow、
   group-mask 冲突避让和 terminal pop；
 - `simd_issue_decode_stage` 已实现每 issue slot 的 decoded holding、provenance、
-  class/response/resource/canonical 元数据与同拍 retire/refill；standalone EXEC
-  expander 已实现，待实现 admission predecode、class/resource metadata，并替换当前
-  `hook_*` 后接入 queue ownership；字段分层见[指令交付](instruction-delivery.md)；
+  class/response/resource/canonical 元数据与同拍 retire/refill；EXEC
+  expander 已实现并接到 controller action 入口；待实现 admission predecode、
+  class/resource metadata，并替换当前 `hook_*` 后接入 queue ownership；字段分层见
+  [指令交付](instruction-delivery.md)；
 - 接入 late expander 时，把 reference frontend 当前内部的 dispatch terminal/pop
   改为 expander/最终合法性/class routing 之后回传，避免 opaque entry 被提前退休；
-- 待增加 resource-aware scheduling、class router 和 exact shared-resource
-  arbitration；
+- `vsp_decoded_action_controller` 已提供一个全局 single-active 的 class router：
+  action 在目标 engine 完成并且统一 completion 被接收前不会让更年轻 action 前进；
+  静态 decode/control/owner error 以零子请求的 ordered completion 返回；
+- `CONTROL.END` 已实现：等待 EXEC queue、completion/result tracker、MEMORY engine
+  和 VRF arbiter 全部静止；它不直接检查外部 result 口是否为空，但有限 collector
+  满时，外部背压会阻止剩余 result obligation 退休并间接延迟 END；
+- 待增加 resource-aware concurrent scheduling、exact shared-resource arbitration、
+  动态 owner table 和 context-scoped quiesce；
 - entry 留在 FIFO，或原子转移到被 inflight 跟踪的 issue stage；成功 fire 或带容量
   的错误 completion 才从控制器退休；
-- context-scoped `QUIESCE(mask)`；
+- context-scoped `QUIESCE(mask)`；当前 `END` 是整个 reference wrapper 的全局结束动作，
+  不替代一般化的 ownership handoff barrier；
 - 以已有 tracker 的 context/tag busy 与 execution-pending 为 EXEC
   记账基础；再合并 MEMORY/controller inflight；
 - quiescent 后 ownership 转移，转移不自动清 RF；
@@ -168,9 +180,11 @@ ack 时目标 inflight 必须为零。
   state-read/write endpoint 之间仲裁；当前一次只保留一个 child owner，read 等待
   completion 与 response 两者，write 等待 completion；
 - 已实现 `vsp_cluster_memory_wrapper`，把 vector memory engine 经 VRF arbiter 接到
-  四组 cluster execution integration。它暴露彼此独立的 decoded EXEC 与 MEMORY
-  command 入口，尚无
-  common class router、program-order enforcement、owner/resource controller；
+  四组 cluster execution integration；它继续暴露彼此独立的 decoded EXEC 与 MEMORY
+  command 入口，便于叶级验证；
+- 已实现 `vsp_cluster_controller_wrapper`，在上一层接收一个 ordered action stream，
+  将 encoded EXEC、decoded MEMORY 与 `CONTROL.END` 统一分派和退休；动态
+  owner/resource state、queue-head predecode 和多 active action 仍在后续；
 - queue 仍只保存 descriptor/metadata，真实 transfer data 走 child/data path；
 - `dmem_req/rsp` 保持无 ID 的单飞行有序 data-memory 逻辑口；
   fault cause/eaddr 返回 parent completion；当前没有 MMU、TLB、PTW、
@@ -179,8 +193,11 @@ ack 时目标 inflight 必须为零。
 独立 vector memory engine 验收已覆盖 LOAD/STORE 顺序、背压、tail、稀疏 mask、
 错误与 partial 记账。集成 testbench 在 `dmem_*` 外提供 local-memory model，
 顺序执行 LOAD → ADD-immediate EXEC → STORE；117 项检查覆盖四组结果、
-请求背压、parent completion 与 protocol-error。该测试证明 decoded wiring 闭环，
-不证明硬件 local SRAM、最终 MEMORY ISA 或跨 class 自动排序已经完成。
+请求背压、parent completion 与 protocol-error。更外层 controller 回归以持续提供的
+action stream 执行 decoded LOAD → profile-v0 encoded ADD-immediate EXEC → decoded
+STORE → CONTROL.END，覆盖自动排序、
+统一 completion 背压、owner/decode error 与 memory fault。两者都不证明硬件 local
+SRAM、最终 MEMORY ISA 或高吞吐 sequencer 已完成。
 
 ## M5：跨组 route `[延期、与当前控制闭环解耦]`
 

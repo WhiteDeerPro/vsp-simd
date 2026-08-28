@@ -3,22 +3,25 @@
 这是一个通用的可编程向量/SIMD RTL 研究项目。图像、视频和信号处理是当前代表性
 负载，但不进入硬件操作语义。统一用词见[术语表](docs/architecture/terminology.md)。
 
-项目已经形成一个可运行的 EXEC cluster reference integration，但仍不是完整 VSP：
+项目已经形成一个可运行的有序 action reference integration，但仍不是完整 VSP：
 
 ```text
 VSP / SoC 子系统（未来）
 └── 计算集群（开发中）
     ├── late-decode holding stage（参考 RTL 已实现，尚未接入 queue ownership）
-    ├── standalone EXEC uword profile-v0 expander（参考 RTL 已实现）
+    ├── EXEC uword profile-v0 expander（参考 RTL 已实现并接入控制 wrapper）
     ├── EXEC cluster integration（参考 RTL 已实现）
     │   ├── queue / RR live-head / atomic dispatch / per-group ingress
     │   ├── 4 × SIMD4 transaction wrapper
     │   └── completion tracker / result collector / reject sink
-    ├── admission predecoder / class router（尚无 RTL）
+    ├── strict ordered action controller / class router（参考 RTL 已实现）
+    │   ├── EXEC → profile-v0 expander → EXEC cluster
+    │   ├── MEMORY → vector memory engine
+    │   └── CONTROL.END → strong-quiescent completion
     ├── VRF vector memory engine（独立参考 RTL 已实现）
     ├── VRF arbiter（参考 RTL 已实现）
     ├── lane route（组内 crossbar 已实现；跨组 route 延期）
-    └── owner/barrier/跨 class 顺序与 sequencer controller（待实现）
+    └── admission predecoder、动态 owner/resource 与 sequencer/control store（待实现）
 ```
 
 “搜索、凝视、分层、附着、抽象、联合、追踪”属于软件算法。硬件不预设这些语义，只提供能够忠实、高效编纂这些算法的通用原语。
@@ -59,6 +62,14 @@ VSP / SoC 子系统（未来）
 - `simd_issue_decode_stage`：每 issue slot 一项的 late-decode holding 边界，保存
   raw/resolved/cached provenance 与 class/response/resource/canonical 输出；当前使用
   可替换 hook，不定义最终 32-bit/16-bit 编码；
+- `vsp_decoded_action_controller`：统一接收 `EXEC/MEMORY/CONTROL` action，执行
+  owner/context/类别检查、严格跨 class 顺序和统一 completion；首个 profile
+  全局只保留一个 active action，`CONTROL.END` 等待内部执行队列、tracker、
+  memory engine 和 VRF arbiter 全部静止；`program_done` 只表示 END completion
+  退休，不汇总此前 action 是否成功；
+- `vsp_cluster_controller_wrapper`：把 profile-v0 encoded EXEC、decoded MEMORY、
+  EXEC cluster 与 vector memory engine 接成一条有序 action 链；EXEC data result
+  仍与 command completion 独立返回；
 - 独立 `vsp_vector_memory_engine`：VRF-only，一个 active command、一个
   outstanding memory beat，按 group 升序在连续 4-byte beat 上执行
   LOAD/STORE，并报告 stop-on-first 的 partial masks/bytes；
@@ -70,17 +81,19 @@ VSP / SoC 子系统（未来）
 canonical EXEC 控制，内部 queue、dispatcher、per-group ingress、wrapper、
 tracker、reject buffer 和 result collector 已组成可背压事务闭环。可信
 state-read/write subrequest lane 使外部 engine 能传输 VRF row；它们不是算术指令。
-`simd_issue_decode_stage` 已给出晚译码后的稳定 holding 边界，但 compact uword 的
-真实 parser/predecoder、class router 和 encoded 格式尚未实现，也尚未重排到当前
-frontend 的 queue-head 路径。因此 reference integration 不能被称为完整 decoder、
-controller 或 sequencer。
+`simd_issue_decode_stage` 已给出晚译码后的稳定 holding 边界，profile-v0 EXEC
+parser/expander 也已在 controller wrapper 的 action 入口接入。当前 class router
+验证的是一个保守的、全局单 active action 路径；admission predecoder、cached
+resource metadata 与 queue-head late-decode 重排尚未实现。因此该 reference
+integration 可以验证程序顺序和完成合同，但还不是完整 sequencer，也不代表最终
+吞吐组织。
 跨 lane 路由不再候选为与 MEMORY 并列的独立 command class。当前候选是寄存器形式的
 gather：`DR[lane] = SR[IR[lane]]`，其中索引向量 IR 由 VRF 提供，允许一对一置换
 与广播，不支持 scatter（同一操作内不会出现多通道写同一通道）。它属于 Vector ALU
 内的一个 routing 级，计划由 gather-only Omega 网络实现，尚未落地 RTL。
 
-`vsp_vector_memory_engine` 已独立实现 MEMORY command 行为，但尚未接入
-class router、local SRAM 或 DMA，不表示整个存储路径已闭合。
+`vsp_vector_memory_engine` 已接入 reference class router，但尚未接入 local SRAM 或
+DMA，不表示整个存储路径已闭合。
 它区分 execution context 与 address context，并携带
 `LOCAL/PHYSICAL/TRANSLATED` address-space 类别；这只定义可插入未来
 翻译/路由 adapter 的有序 data-memory 逻辑口，当前没有 MMU、TLB、
