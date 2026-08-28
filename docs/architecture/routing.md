@@ -33,9 +33,9 @@ out[lane] = in[index[lane]]
 这与多级网络内部两条合法路径争用同一 link 的 internal path conflict 是两回事。
 
 当前 SIMD4 RTL 采用直接 4×4 crossbar。接口保留任意重复索引，因此组内已经支持
-广播；普通 Bênes 网络只保证一一置换，无法直接表达这一点。扩大并行度时的候选
-拓扑是用统一的 multicast Omega 网络覆盖组内与跨组 gather，详见下文；这不是由
-当前 crossbar 自动推出的唯一方案。
+广播；普通 Bênes 网络只保证一一置换，无法直接表达这一点。跨组 route 当前延期，
+不进入 controller/encoding 工作；若以后重启，先比较固定 16-lane 的 16×16 byte
+crossbar。下文的 Omega 内容只保留为早期探索记录。
 
 ## `simd_route` 操作
 
@@ -86,7 +86,12 @@ mask：
 crossbar 共享选择网络，也可以根据时序结果分拍执行；这一选择仍然开放。
 跨 group 的 packet 拼接、余数保留和网络流控仍属于上级 VSP 互连问题。
 
-## 跨组 lane gather `[候选语义，RTL 待实现]`
+## 跨组 lane gather `[延期议题；以下含历史探索]`
+
+当前决策是不实现、不编码跨组 route，并让它与 EXEC 控制闭环解耦。组内 4×4 route
+继续可用。若负载测量支持恢复该工作，首个实现基线改为 16×16 byte crossbar；索引
+来源、资源预留、错误行为和流水仍需届时另行闭合。以下 register-gather 语义与
+Omega 比较保留用于追溯问题，不代表当前路线或已选拓扑。
 
 跨组路由不再候选为与 MEMORY 并列的独立 command class，也不再预设以 SIMD4 row
 为端口颗粒。当前用一个 register-gather action 描述目标语义；它不是已经编码的
@@ -130,9 +135,9 @@ Bênes 是 rearrangeable non-blocking permutation network，动态 route-setting
 静态 pattern 可以预先求控制，动态实现也并非被排除；当前只是不把已验证的裸 Bênes
 研究模块接入执行数据通路。
 
-### 候选实现：gather-only Omega 网络
+### 历史候选：gather-only Omega 网络
 
-计划用 multicast Omega 网络替代跨组 Bênes，并统一组内/组间路由：
+曾讨论用 multicast Omega 网络替代跨组 Bênes，并统一组内/组间路由：
 
 - `N` 端口需 `log2(N)` 级，每级 `N/2` 个 2×2 switch；16 lane 为 4 级 32 个
   switch，每 switch 8-bit 数据；
@@ -157,15 +162,12 @@ FFT/小波是这里的主要负载依据：它们的 butterfly 在 stride 跨过
 路由替换这些往返，降低内存压力。
 
 当前 RTL 状态：组内 4×4 crossbar（`simd_crossbar`/`simd_route`）已实现并验证；
-跨组 Omega 网络、索引到控制位的 routing logic、以及它在 Vector ALU 内的接线
-均尚未实现。参数化 Bênes 网络（`benes_network`）作为置换网络研究模块保留，
-不接入数据通路。
+没有跨组 route RTL，也没有相关编码。参数化 Bênes 网络（`benes_network`）与上述
+Omega 方案只作为网络研究材料保留，不接入数据通路。
 
 ## Broadcast 边界
 
 当前 `ROUTE_OP_BROADCAST` 是 lane-to-lanes broadcast。展开后的 scalar immediate
 已经能送到单个 SIMD4；cluster 中相同 uop/常数的物理交付应使用分层控制扇出，
-不经过全局 N×N data crossbar。某个索引模式能被候选 Omega 网络路由时，跨组置换
-或广播可由一次 gather 完成；发生 blocking 时，只有在上述 all-or-nothing 拆分或
-partial-accept 协议之一确定后才能安全多 pass。组内复制仍可由目的 SIMD4 的 local
-broadcast 完成。
+不经过全局 N×N data crossbar。跨组广播/置换在延期期间不具有可调用硬件语义；
+组内复制仍可由目的 SIMD4 的 local broadcast 完成。

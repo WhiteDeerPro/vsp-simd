@@ -8,15 +8,16 @@
 ```text
 VSP / SoC 子系统（未来）
 └── 计算集群（开发中）
-    ├── late-decode holding stage（参考 RTL 已实现，真实编码 hook 待填）
+    ├── late-decode holding stage（参考 RTL 已实现，尚未接入 queue ownership）
+    ├── standalone EXEC uword profile-v0 expander（参考 RTL 已实现）
     ├── EXEC cluster integration（参考 RTL 已实现）
     │   ├── queue / RR live-head / atomic dispatch / per-group ingress
     │   ├── 4 × SIMD4 transaction wrapper
     │   └── completion tracker / result collector / reject sink
-    ├── predecoder / compact decoder / class router（尚无 RTL）
+    ├── admission predecoder / class router（尚无 RTL）
     ├── VRF vector memory engine（独立参考 RTL 已实现）
     ├── VRF arbiter（参考 RTL 已实现）
-    ├── lane gather 网络（组内 crossbar 已实现；跨组 Omega 待实现）
+    ├── lane route（组内 crossbar 已实现；跨组 route 延期）
     └── owner/barrier/跨 class 顺序与 sequencer controller（待实现）
 ```
 
@@ -135,6 +136,7 @@ make BUILD_DIR=/tmp/vsp-build clean
 - [架构范围工作稿](docs/architecture/overview.md)
 - [SIMD4 集群控制工作稿](docs/design/cluster-control.md)
 - [队列、微指令与译码候选](docs/design/instruction-delivery.md)
+- [Internal EXEC uword profile v0](docs/design/exec-uword-profile-v0.md)
 - [数据准备与 DMA 边界](docs/design/data-movement.md)
 - [架构问题集](docs/explorations/architecture-qa.md)
 - [VSP/SIMD 集群实验路线](docs/design/development-roadmap.md)

@@ -129,11 +129,12 @@ queue、两 slot。
 `payload/resolved/sched_meta/tag/group_mask` 的 EXEC frontend；它已有
 RR 队头选择和受阻后稳定的 opaque holding slot。`simd_cluster_exec` 已用
 full-decoded profile 接到 group wrappers，`simd_issue_decode_stage` 也已验证晚译码
-holding 协议；但还没有真实 predecoder/canonical expander 或 class router。
-datapath 仍只暴露展开控制边界，holding hook 不证明 encoded parser 已实现。
-当前 32-bit payload、16-bit resolved 和 16-bit sched-meta 只是 opaque
+holding 协议；standalone `vsp_exec_uword_expander` 已能解析内部 profile v0，但还
+没有 admission predecoder、class router 或 queue-head integration。datapath 仍只暴露
+展开控制边界，独立 expander 尚未替换 holding hook。当前 32-bit payload、16-bit
+resolved 和 16-bit sched-meta 只是 opaque
 默认宽度，不是已定义的 instruction format。术语上应分开 major
-dispatch class、未定义的 compact uword，以及 canonical EXEC 中的
+dispatch class、版本化的内部 compact uword profile，以及 canonical EXEC 中的
 6-bit `simd_op_e` function；`op_i`/`exec_op_i` 不是完整 opcode。
 
 **当前建议 `[候选]`**：per-context FIFO 保存 compact uword、resolved sideband

@@ -32,8 +32,10 @@
   slot-specific tracker/resource gate、原子 ingress multicast、四个 group wrapper、
   buffered reject completion、state-read/write child lane 与 RR result collector；
 - 每 issue slot 一项的 decode holding stage：raw/resolved/cached provenance 与
-  canonical class/resource/payload 输出在背压下保持稳定；真实 compact decoder
-  仍是可替换 hook；
+  canonical class/resource/payload 输出在背压下保持稳定；
+- standalone `vsp_exec_uword_expander`：解析内部 profile v0 的 32-bit base 与可选
+  immediate extension，覆盖当前全部非 route EXEC function，并对非法 word 进行
+  无副作用 canonicalization；尚未接入 queue/head holding；
 - 独立 VRF-only `vsp_vector_memory_engine`：single active parent/single
   outstanding memory beat、稀疏 group-mask 连续 beat 映射、LOAD/STORE 子事务与
   stop-on-first partial completion；
@@ -43,9 +45,10 @@
   VRF arbiter 接入四组 cluster，端到端 LOAD→EXEC→STORE 回归已通过；
 - 全量 lint/test 基线。
 
-当前优先级转向 decoder/class router、跨 class 顺序、owner/resource controller 与
-跨组 lane gather 网络；物理 memory hierarchy 仍在 `dmem_*` 逻辑边界之外。在出现
-新的阻塞负载证据前，暂缓增加 lane arithmetic feature。
+当前优先级转向 admission predecoder、class router、跨 class 顺序和
+owner/resource controller；跨组 route 已从这条执行闭环中解耦并延期。物理 memory
+hierarchy 仍在 `dmem_*` 逻辑边界之外。在出现新的阻塞负载证据前，暂缓增加 lane
+arithmetic feature。
 
 ## M1：SIMD4 transaction wrapper `[已实现参考]`
 
@@ -123,9 +126,9 @@ frontend/dispatcher/tracker 随机测试继续覆盖 mask overlap、表满和多
 - frontend 已实现 round-robin live-head 选择、每 slot opaque locked shadow、
   group-mask 冲突避让和 terminal pop；
 - `simd_issue_decode_stage` 已实现每 issue slot 的 decoded holding、provenance、
-  class/response/resource/canonical 元数据与同拍 retire/refill；待实现 compact uword
-  admission predecode 和替换当前 `hook_*` 的真实 canonical expander；替代方案和字段
-  分层见[指令交付](instruction-delivery.md)；
+  class/response/resource/canonical 元数据与同拍 retire/refill；standalone EXEC
+  expander 已实现，待实现 admission predecode、class/resource metadata，并替换当前
+  `hook_*` 后接入 queue ownership；字段分层见[指令交付](instruction-delivery.md)；
 - 接入 late expander 时，把 reference frontend 当前内部的 dispatch terminal/pop
   改为 expander/最终合法性/class routing 之后回传，避免 opaque entry 被提前退休；
 - 待增加 resource-aware scheduling、class router 和 exact shared-resource
@@ -179,56 +182,19 @@ ack 时目标 inflight 必须为零。
 请求背压、parent completion 与 protocol-error。该测试证明 decoded wiring 闭环，
 不证明硬件 local SRAM、最终 MEMORY ISA 或跨 class 自动排序已经完成。
 
-## M5：跨组 lane gather `[候选语义，RTL 待实现]`
+## M5：跨组 route `[延期、与当前控制闭环解耦]`
 
-本阶段目标是把跨 lane 路由做成 Vector ALU 内的一级，而不是独立 command class：
+组内 4×4 `simd_crossbar/simd_route` 继续作为已验证的 leaf capability 保留；profile
+v0 不编码 route，当前 controller/cluster 工作也不等待跨组网络。
 
-```text
-ROUTE SR, IR, DR
-DR[lane] = SR[IR[lane]]
-```
+若代表性 FFT/小波等负载证明跨组交换值得专用硬件，重新启动时的简单基线是固定
+16-lane 的 16×16 byte crossbar，而不是先实现动态 Bênes/Omega route-setting。届时
+仍需单独定义 index 来源、group-local VRF 的 stripe、source/destination 资源预留、
+out-of-range 行为、流水和写回事务。它应作为可替换的 Vector ALU/cluster data-path
+stage 接入，不改变 EXEC/MEMORY/CONTROL 的顺序与完成合同。
 
-- `SR/IR/DR` 是逻辑视图，如何 stripe 到各 group-local VRF row 尚未定义；`IR` 候选
-  来自 VRF，可以是运行时计算结果；
-- 8-bit index 可编码 0..255，实际可达范围受网络 source count `N` 限制，至多为
-  `min(256,N)` 个 lane；out-of-range 返回零还是错误仍待定义；
-- 只做 gather：允许一对一置换与广播，不支持 scatter。同一操作内不会出现多个源
-  竞争写同一目的，因此不需要 conflict-detection CAM、写归约或串行化重排；
-- 组内 4×4 crossbar（`simd_crossbar`/`simd_route`）已实现并验证；
-- 跨组网络候选为 multicast Omega：`log2(N)` 级、每级 `N/2` 个 2×2 switch；完整
-  route-setting 仍需比较反向 request 或由完整 IR 生成 multicast tree 等方案；
-- 残余 blocking 的前进协议需二选一：all-or-nothing 加 conflict witness/预拆子集，
-  或 partial accept 加 per-destination completion mask；单一 conflict flag 不构成闭环；
-- 超出单条 gather 范围的向量由 sequencer 拆成多次操作，原地重叠需要
-  scratch/ping-pong 或编译器 cycle decomposition。
-
-当前不选择 Bênes：基础网络不原生复制输入，动态 route-setting 的面积和延迟也尚无
-负载证据支持；这不是宣称硬件动态求路不可实现。理由与拓扑对比见
-[路由](../architecture/routing.md)。
-
-负载依据来自 FFT/小波：butterfly 的 stride 跨过 group 边界时（16 lane 下
-stride=4）需要跨组交换，若只有组内 crossbar，这些 stage 会退化成
-STORE→重排寻址→LOAD 的内存往返。
-
-本阶段待实现：Omega 网络 datapath、索引到控制位的 routing logic、在 Vector ALU
-内的接线与资源仲裁。`benes_network` 作为置换网络研究模块保留，不接入数据通路。
-
-验收分开检查两类语义：unique-index permutation 必须保持 data/mask token 守恒，
-并验证 identity、route 与 inverse 恢复；重复索引只能按显式 gather request 复制对应
-source，且 data/mask 同步。另覆盖 conflict 和随机 backpressure；若采用 partial
-accept，验证 returned completion mask 与未写回 lane，若采用 all-or-nothing，则验证
-失败 pass 零副作用及子集重试。最后用多 pass + local route 完成 WORD byte-plane
-分发和重组。
-
-随后扩展规模：
-
-- 首个网络 profile 可先接受 `GROUP_COUNT>=2` 的二次幂；以后增加 padding wrapper 后，
-  再用六个 SIMD4 测试八端口网络及两个 invalid dummy endpoint；
-- 比较更大 group 数下的组合、流水和分级实现，但保持相同的 lane-gather 语义；
-- 通过真实交换 trace 测量 route reuse、pass 数、scratch 占用和全局链路线长；
-- 在 M4 vector memory engine 下游增加 DMA/地址空间 adapter，再评估二维地址状态；
-- 非一致性 accelerator 作为首个 SoC 集成候选；CPU cache coherence 是否需要由
-  系统边界决定，不在 group 内预设。
+`benes_network` 和既有多级网络文档保留为探索材料，不接入当前数据通路，也不作为
+decoder/class-router 的前置条件。
 
 ## M6：负载闭环与可选加速 `[比较集合]`
 

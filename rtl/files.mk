@@ -5,6 +5,7 @@
 
 RTL_PKG := rtl/pkg/simd_pkg.sv
 RTL_VSP_PKG := rtl/pkg/vsp_pkg.sv
+RTL_VSP_EXEC_UWORD_PKG := rtl/pkg/vsp_exec_uword_pkg.sv
 
 RTL_LANE := rtl/units/simd_lane.sv
 RTL_PARTITIONED_ADDSUB := rtl/units/simd_partitioned_addsub.sv
@@ -28,6 +29,7 @@ RTL_ISSUE_QUEUE := rtl/cluster/simd_issue_queue.sv
 RTL_CLUSTER_ISSUE_FRONTEND := rtl/cluster/simd_cluster_issue_frontend.sv
 RTL_GROUP_COMPLETION_TRACKER := rtl/cluster/simd_group_completion_tracker.sv
 RTL_ISSUE_DECODE_STAGE := rtl/cluster/simd_issue_decode_stage.sv
+RTL_VSP_EXEC_UWORD_EXPANDER := rtl/cluster/vsp_exec_uword_expander.sv
 RTL_CLUSTER_RESULT_COLLECTOR := rtl/cluster/simd_cluster_result_collector.sv
 RTL_CLUSTER_EXEC := rtl/cluster/simd_cluster_exec.sv
 RTL_CLUSTER_VRF_ARBITER := rtl/cluster/vsp_cluster_vrf_arbiter.sv
@@ -46,6 +48,8 @@ CLUSTER_ISSUE_FRONTEND_RTL := $(RTL_ISSUE_QUEUE) $(RTL_ISSUE_DISPATCH) \
 		$(RTL_CLUSTER_ISSUE_FRONTEND)
 GROUP_COMPLETION_TRACKER_RTL := $(RTL_GROUP_COMPLETION_TRACKER)
 ISSUE_DECODE_STAGE_RTL := $(RTL_ISSUE_DECODE_STAGE)
+VSP_EXEC_UWORD_EXPANDER_RTL := $(RTL_PKG) $(RTL_VSP_EXEC_UWORD_PKG) \
+		$(RTL_UOP_LEGAL) $(RTL_VSP_EXEC_UWORD_EXPANDER)
 CLUSTER_RESULT_COLLECTOR_RTL := $(RTL_CLUSTER_RESULT_COLLECTOR)
 CLUSTER_VRF_ARBITER_RTL := $(RTL_CLUSTER_VRF_ARBITER)
 UOP_LEGAL_RTL := $(RTL_PKG) $(RTL_UOP_LEGAL)

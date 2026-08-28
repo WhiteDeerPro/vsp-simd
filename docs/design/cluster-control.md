@@ -164,9 +164,10 @@ dst_group_mask       写入的目的 group
 resource_group_mask  src_group_mask | dst_group_mask
 ```
 
-cluster scheduler 需在 action 原子接受前解析三者以完成资源预留。网络拓扑选择
-（候选为支持 broadcast 的 Omega 网络）、索引到控制位的派生以及为何不用 Bênes，
-统一记录在[路由](../architecture/routing.md)，本页不重复。
+cluster scheduler 需在 action 原子接受前解析三者以完成资源预留。当前跨组 route 已
+从控制闭环中延期；若以后重启，先以固定 16-lane 的 16×16 byte crossbar 为数据通路
+基线，再依据负载决定 index 派生和流水。拓扑探索记录在
+[路由](../architecture/routing.md)，本页不重复。
 
 超出单条 gather 寻址范围的逻辑向量由 sequencer 拆成多次操作；多次操作不提供整个
 向量的原地原子性，源/目的重叠时需要 scratch/ping-pong 或编译器 cycle
@@ -399,17 +400,17 @@ SRAM RTL，也不包含 cache、MMU/TLB/PTW、DMA 或 coherence。当前 117 项
 
 ## 14. 后续实验顺序 `[计划]`
 
-1. 在已有 decode holding stage 的 `hook_*` 位置实现 compact-uword predecode 与
-   canonical expander，并把当前 full-decoded admission 重排到 selected-head late
-   decode/class-router 边界；terminal/pop 由最终 engine fire 或 error sink 回传；
+1. 以已有 standalone EXEC profile-v0 expander 为 canonical 解析基线，实现
+   compact-uword admission predecode，并把当前 full-decoded admission 重排到
+   selected-head late decode/class-router 边界；terminal/pop 由最终 engine fire 或
+   error sink 回传；
 2. 增加 common class router、program-order/error/completion 汇聚、owner state、
    barrier/quiescent 和 resource-aware scheduling，把当前两个 decoded command
    入口及外部 owner/grant 配置收进有状态 controller；
 3. 保留当前 vector-memory→shared VRF arbiter→wrapper 接线，在 `dmem_*` 下游比较并接入
    物理 local SRAM、cache/MMU adapter 或 DMA 边界；
-4. 实现跨组 lane gather 网络（候选 Omega）及其索引到控制位的 routing logic，
-   作为 Vector ALU 内的一级接入 group wrapper，并用多次 gather + local route
-   验证 word 分发和重组；
+4. 跨组 route 暂不进入当前实现序列；出现负载依据后，以独立 16×16 byte crossbar
+   实验重新评估，不回侵现有 class/retire 合同；
 5. 在 vector memory engine 下游接 DMA/地址空间 adapter，再依据实测比较二维地址
    与多 outstanding，不在
    SIMD group 内处理 cache coherence；

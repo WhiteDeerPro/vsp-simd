@@ -1,13 +1,14 @@
 # 队列、微指令与译码器候选设计
 
-> 状态：EXEC cluster integration 与 late-decode holding stage 已有参考 RTL；真实
-> predecoder/canonical expander、class router 和 encoded format 尚未实现。本文用于
-> 比较实现路径，不拥有最终指令格式或控制器组织的决策权。
+> 状态：EXEC cluster integration、late-decode holding stage，以及 standalone
+> EXEC-uword profile-v0 canonical expander 已有参考 RTL；admission predecoder、
+> class router 和 queue-head integration 尚未实现。本文用于比较实现路径，不拥有
+> 最终外部指令格式或控制器组织的决策权。
 
 ## 1. 当前真实状态 `[RTL事实]`
 
-现在已有 full-decoded EXEC 集群闭环和译码后的状态边界，但还没有实际解析
-compact uword 位域的译码逻辑：
+现在已有 full-decoded EXEC 集群闭环、译码后的状态边界，以及一套尚未接入 queue
+控制链的 compact EXEC 解析逻辑：
 
 - `simd_datapath` 直接接收 `op`、寄存器地址、立即数、mask、route、reduction
   和写回选择等展开控制；
@@ -32,11 +33,15 @@ compact uword 位域的译码逻辑：
   holding stage：它锁存 raw/resolved/cached provenance，以及 hook 产生的
   class/response/group-mask/exact-resource/canonical-payload/legal/error；背压时所有
   字段稳定。当前 hook 是参考 adapter 接口，不是 encoded parser。
+- `vsp_exec_uword_expander` 组合解析内部实验 profile v0 的 32-bit base 与可选
+  32-bit scalar-immediate extension，覆盖当前全部非 route EXEC function；它复用
+  `simd_uop_legal`，对非法项输出确定 cause 并把所有 canonical 副作用归零。具体
+  位域见 [EXEC uword profile v0](exec-uword-profile-v0.md)。
 
-因此现在可以准确地说：full-decoded reference profile 已能执行和退休
-EXEC；decode holding 的协议也已验证。尚缺的是从真实 encoded/compact uword
-唯一派生 hook 输出的 predecoder/expander，以及把该 late-decode stage 重排到 queue
-head 与 class router 之间。holding stage 本身不等于完成了译码规则。
+因此现在可以准确地说：full-decoded reference profile 已能执行和退休 EXEC，
+decode holding 协议与 standalone EXEC canonical expansion 也已验证。尚缺的是
+admission predecode/cached metadata，以及把 expander、late-decode stage、class
+router 和 terminal feedback 接到 queue head。独立 expander 不等于完成了整条控制链。
 
 ## 2. 区分三种表示 `[分析模型]`
 
@@ -65,8 +70,9 @@ canonical EXEC bundle 中的 function，不是完整 opcode。
 | compact FIFO + cached predecode + head expansion | 存储较小，同时能提前仲裁资源 | 两段译码之间必须保持语义一致，并定义 canonical bundle |
 
 当前 `simd_issue_queue`、frontend 与 decode holding stage 提供第三种 hybrid 可复用
-的存储、发射和稳定输出协议边界，但不规定不透明字段的 bit layout。它仍需要真实
-predecoder/expander、queue 面积和代表性 trace
+的存储、发射和稳定输出协议边界，但不规定不透明字段的 bit layout。profile v0
+已经给出一个可测的 EXEC bit layout；方案比较仍需要 admission predecoder、实际
+integration、queue 面积和代表性 trace
 比较；前两种方案没有因此被架构性排除。“无解码队列”不是独立方案：保存
 encoded uword 只是把译码推迟到队头之后。
 
@@ -109,8 +115,9 @@ pop。这保证 downstream backpressure 下 payload 稳定，FIFO head 仍是唯
 
 第一版 `simd_cluster_exec` 已用 full-decoded queue profile 闭合
 `group_issue_slot` bundle mux、group ingress、wrapper、tracker 和 result/reject
-返回。尚缺的是把真实 predecoder/canonical expander 与 class router 放到选中队头
-和该 canonical cluster 边界之间；当前 cluster execution integration 不负责 encoded format。
+返回。尚缺的是把已有 standalone canonical expander 与未来 predecoder/class router
+放到选中队头和该 canonical cluster 边界之间；当前 cluster execution integration
+仍不负责 encoded format。
 
 ## 5. Queue entry 应保存什么 `[RTL边界 + 候选语义]`
 
@@ -147,7 +154,7 @@ sched_meta`。context 由所属逻辑 FIFO 隐含；默认宽度只是 elaborati
 
 `sched_meta` 不是软件或 sequencer 可以任意填写的第二份资源声明；它必须由硬件
 predecoder 生成，并在 canonical expansion 时复核关键约束。
-当前四个字段使用独立参数宽度只是为了先验证 FIFO。接入真实 predecoder 前，应由
+当前四个字段使用独立参数宽度只是为了先验证 FIFO。接入 profile/predecoder 时，应由
 唯一的 `uword_t/resolved_t/sched_meta_t`（或等价 profile type）的 `$bits` 驱动这些
 宽度，避免 controller top 人工重复 `32/16/16`；这仍不要求确定最终 ISA。
 
@@ -247,7 +254,8 @@ credit 的 reject 时同时清 slot 并拉高该 queue 的 `head_ready_i`。full
 `simd_issue_decode_stage` 已实现第 4 项所需的一项 elastic holding：没有组合
 fall-through，支持同拍 retire/refill，并在 stall 时保持 raw provenance、class、
 resource、canonical payload 与错误字段全部稳定。当前 `hook_*` 由 reference driver
-产生；未来 compact decoder 在其前方或内部派生同一组字段即可。该模块的
+产生；已有 EXEC expander 可在其前方派生 canonical EXEC 字段，class/response/
+resource metadata 仍需 predecoder 与 class router 补齐。该模块的
 `in_valid && in_ready` 表示 entry 所有权已经转入 holding。若未来仍让 FIFO 持有
 entry 直到 engine/error terminal，则必须另加 claim/captured 门控，不能在旧输出退休
 时把仍可见的同一 FIFO head 当作 refill 再捕获一次。
@@ -329,20 +337,22 @@ context 不是 MMU 或 virtual-address 实现证明；当前只将它们传到
 上级 expander 负责的
 是格式解析、立即数扩展、默认字段、资源分类和非法组合检查。
 
-## 9. 关于指令字 `[开放问题]`
+## 9. 关于指令字 `[内部实验 + 开放问题]`
 
-当前没有已定义的 32-bit 或 16-bit instruction。内部信号
+当前有一套 32-bit base + optional 32-bit extension 的内部
+[EXEC uword profile v0](exec-uword-profile-v0.md)，用于检验 code density 和 decoder
+边界；它不是外部 instruction。当前仍没有已定义的 32-bit 或 16-bit 软件指令。
+内部信号
 `op_i`/`exec_op_i` 携带的 6-bit `simd_op_e` 只是 canonical
 `EXEC` 的 function，不是完整 opcode。应分开三层：
 
 1. major dispatch class：`EXEC/MEMORY/CONTROL`；
-2. 尚未定义编码的 compact uword；
+2. 版本化的内部 compact uword profile；
 3. 已展开 canonical EXEC 中的 `simd_op_e` function。
 
-queue 参数的 32-bit payload、16-bit resolved 和 16-bit sched-meta
-只是 opaque 默认宽度，不是格式合同。一个常用本地 ALU uword 也许可以压进
-32 bit，但以下内容很
-容易超过基础字：
+queue 参数的 32-bit payload、16-bit resolved 和 16-bit sched-meta 仍只是 opaque
+默认宽度，不会因为 profile v0 出现就自动成为 entry 格式合同。profile v0 已证明
+常用本地 ALU action 可放入一个 32-bit base，但以下内容仍需 extension 或 sideband：
 
 - 完整 32-bit scalar immediate；
 - 较大的 `target_group_mask`；
@@ -406,8 +416,8 @@ barrier 语义的实测复杂度。
   硬件派生的 cached `sched_meta`；
 - issue slot 前：完整展开成 decoded canonical bundle；
 - 当前每个 issue slot：已有 FIFO head 的 opaque locked shadow，以及独立
-  `simd_issue_decode_stage` 所验证的 decoded holding 结构；尚需真实 canonical
-  expander 把 raw/resolved/cached entry 唯一变成 hook 输出；
+  `simd_issue_decode_stage` 所验证的 decoded holding 结构；standalone EXEC
+  expander 已能把 profile-v0 packet 唯一展开，但尚未接到这些状态边界；
 - 接入 late expander 时：先把当前 frontend 的 terminal/pop 从内部 group dispatch
   解耦，改由 expander 后的目标 engine 或 ordered error sink 回传；
 - expander 后：按 `dispatch_class` 分流，group dispatcher 只接收确实需要 group 的
@@ -421,8 +431,8 @@ barrier 语义的实测复杂度。
 - 当前 RTL：已有 legality、decoded group wrapper、EXEC frontend、completion
   tracker、decode holding stage，以及闭合 queue/dispatch/ingress/wrapper/
   result/reject 的 `simd_cluster_exec`；
-- 当前仍没有真实 predecoder/canonical expander、class router、owner
-  state、barrier/controller 或 host completion；独立 VRF-only
+- 当前仍没有 admission predecoder、class router、owner state、barrier/controller
+  或 host completion；已有 standalone EXEC canonical expander，独立 VRF-only
   `vsp_vector_memory_engine` 已有 RTL，但未接入该控制路径；
 - 最终 instruction width 和字段分配继续延期。
 

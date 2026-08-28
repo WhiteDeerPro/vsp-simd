@@ -69,6 +69,7 @@ vector operation、element 和 register，不暴露不必要的物理分组。
 | `MEMORY` | 进入 vector memory engine 的 dispatch class |
 | `CONTROL` | 计划进入 barrier/admin/controller path 的 dispatch class；当前尚无对应 RTL |
 | sequencer/control word (`uword`) | 候选的紧凑内部控制存储格式；不是已定义的 16/32-bit ISA instruction |
+| EXEC uword profile v0 | 当前用于实验的 `32-bit base + optional immediate extension` 内部 EXEC 表示；不包含 action envelope、MEMORY/CONTROL 或外部 ISA 承诺 |
 | micro-op (`uop`) | 已译码或部分译码、可供调度和执行消费的内部操作 |
 | function ID | canonical EXEC bundle 中的 `simd_op_e`；不是完整 opcode |
 | execution context | 顺序、所有权、调度和完成回送身份；当前不是 hardware thread，也没有独立 architectural PC |

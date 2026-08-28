@@ -39,7 +39,7 @@ Q&A 代替这类记录。
 | [数据通路](architecture/datapath.md) | RTL 事实 | VRF/ARF/MRF、并行控制、mask、立即数与提交 |
 | [微架构图](architecture/microarchitecture.md) | RTL 事实 | 单个 SIMD4 的读取、执行、合法性和写回 |
 | [寄存器文件](architecture/register-file.md) | RTL 事实 + 物理候选 | 逻辑端口、masked write 与 bank/SRAM 问题 |
-| [局部与跨组路由](architecture/routing.md) | RTL 事实 + 上层候选 | local crossbar、broadcast、slide、compact 与跨组 gather 候选 |
+| [局部与跨组路由](architecture/routing.md) | local RTL 事实 + 延期探索 | local crossbar、broadcast、slide、compact 与延期的跨组 route |
 | [定点宽窄语义](architecture/fixed-point.md) | RTL 事实 | AVG、WIDEN/WADD/WSUB、NSLICE/NCLIP |
 | [乘法语义与映射](architecture/arithmetic.md) | RTL 事实 + 候选 | byte MUL/MAC 与多 byte 映射触发条件 |
 
@@ -55,9 +55,10 @@ Graphviz 源与生成图和说明文档放在一起：
 | 文档 | 状态 | 内容 |
 |---|---|---|
 | [集群控制工作稿](design/cluster-control.md) | EXEC/MEMORY decoded reference RTL 事实 + 候选 controller | frontend、ingress、group wrapper、VRF subrequest 仲裁、completion/result、owner 与 multicast |
-| [队列与译码候选](design/instruction-delivery.md) | decode holding 已实现，真实译码/展开待实现 | queue、live-head、locked shadow、predecode、expander 与 CPU decoder 差异 |
+| [队列与译码候选](design/instruction-delivery.md) | decode holding 与 standalone EXEC expander 已实现，控制链接入待办 | queue、live-head、locked shadow、predecode、expander 与 CPU decoder 差异 |
+| [Internal EXEC uword profile v0](design/exec-uword-profile-v0.md) | 内部实验编码 + RTL 映射 | 32-bit base、optional immediate extension、canonical EXEC 与非法 cause |
 | [数据准备与 DMA 边界](design/data-movement.md) | decoded VRF LOAD/STORE cluster 闭环已实现，物理 memory 集成待办 | MEMORY LOAD/STORE、shared VRF arbiter、data-memory 逻辑口、local SRAM 与 DMA |
-| [集群实验路线](design/development-roadmap.md) | EXEC integration、decode holding、vector memory engine/VRF arbiter、decoded memory wrapper 已实现 + 控制集成计划 | wrapper、cluster、controller、跨组 gather、DMA |
+| [集群实验路线](design/development-roadmap.md) | EXEC integration/expander、vector memory engine/VRF arbiter、decoded memory wrapper 已实现 + 控制集成计划 | wrapper、cluster、controller、延期 route、DMA |
 
 这里的 decoder 属于 sequencer 到执行 group 之间的内部控制层，不意味着 SIMD4
 获得取指、分支或异常能力。
@@ -78,7 +79,7 @@ Graphviz 源与生成图和说明文档放在一起：
 | [验证 harness 与路径漂移](verification/harness.md) | 方法工作稿 | 测试分类、非声明范围、准入、替换与退役 |
 
 SAD、动态 ALU、local route、Bênes、compact、MRF、reduction、
-issue/decode frontend、dispatcher、cluster execution integration、result collector、completion
+issue/decode frontend、EXEC uword expander、dispatcher、cluster execution integration、result collector、completion
 tracker、VRF vector memory engine、cluster VRF arbiter、decoded memory wrapper 与 legality 的
 具体覆盖仍由 `sim/` 中的自检 testbench 记录。
 
