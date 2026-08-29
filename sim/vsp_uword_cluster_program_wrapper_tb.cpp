@@ -17,9 +17,12 @@ constexpr uint8_t kMemory = 1;
 constexpr uint8_t kControl = 2;
 constexpr uint8_t kStatusOk = 0;
 constexpr uint8_t kStatusDecode = 1;
-constexpr uint8_t kBadFormat = 1;
+constexpr uint8_t kLoad = 0;
+constexpr uint8_t kStore = 1;
+constexpr uint8_t kLocal = 0;
 constexpr uint8_t kBadSubop = 2;
 constexpr uint8_t kBadExtension = 4;
+constexpr uint8_t kBadImmediate = 5;
 
 uint64_t checks = 0;
 
@@ -159,12 +162,45 @@ struct Completion {
   bool end;
 };
 
+void expect_completion_stable(const Completion& expected,
+                              const Completion& actual) {
+  expect_eq("stalled completion class", expected.action_class,
+            actual.action_class);
+  expect_eq("stalled completion context", expected.context, actual.context);
+  expect_eq("stalled completion tag", expected.tag, actual.tag);
+  expect_eq("stalled completion group mask", expected.group_mask,
+            actual.group_mask);
+  expect_eq("stalled completion status", expected.status, actual.status);
+  expect_eq("stalled completion decode error", expected.decode_error,
+            actual.decode_error);
+  expect_eq("stalled completion END", expected.end, actual.end);
+}
+
 struct Result {
   uint8_t group;
   uint8_t context;
   uint8_t tag;
   uint32_t narrow;
   uint8_t narrow_mask;
+};
+
+struct DmemRequest {
+  uint8_t op = 0;
+  uint32_t eaddr = 0;
+  uint8_t addr_space = 0;
+  uint8_t addr_context = 0;
+  uint32_t wdata = 0;
+  uint8_t wstrb = 0;
+};
+
+struct DmemModel {
+  bool response_pending = false;
+  int response_delay = 0;
+  uint32_t response_data = 0;
+  uint8_t response_fault = 0;
+  bool held_request_valid = false;
+  DmemRequest held_request;
+  std::vector<DmemRequest> requests;
 };
 
 struct Run {
@@ -176,13 +212,107 @@ struct Run {
   std::vector<Result> results;
 };
 
-Run run_until_terminal(Vvsp_uword_cluster_program_wrapper& dut) {
+void check_dmem_request(const DmemRequest& expected,
+                        const DmemRequest& actual,
+                        const std::string& name) {
+  expect_eq(name + " op", expected.op, actual.op);
+  expect_eq(name + " eaddr", expected.eaddr, actual.eaddr);
+  expect_eq(name + " address space", expected.addr_space,
+            actual.addr_space);
+  expect_eq(name + " address context", expected.addr_context,
+            actual.addr_context);
+  expect_eq(name + " write data", expected.wdata, actual.wdata);
+  expect_eq(name + " write strobe", expected.wstrb, actual.wstrb);
+}
+
+DmemRequest sample_dmem_request(
+    const Vvsp_uword_cluster_program_wrapper& dut) {
+  return {static_cast<uint8_t>(dut.dmem_req_op_o),
+          static_cast<uint32_t>(dut.dmem_req_eaddr_o),
+          static_cast<uint8_t>(dut.dmem_req_addr_space_o),
+          static_cast<uint8_t>(dut.dmem_req_addr_context_o),
+          static_cast<uint32_t>(dut.dmem_req_wdata_o),
+          static_cast<uint8_t>(dut.dmem_req_wstrb_o)};
+}
+
+void update_dmem_model(DmemModel& model, bool request_fire,
+                       const DmemRequest& request, bool response_fire) {
+  if (response_fire) model.response_pending = false;
+  if (model.response_pending && model.response_delay > 0)
+    --model.response_delay;
+
+  if (request_fire) {
+    expect_eq("data-memory remains single-outstanding", 0,
+              model.response_pending);
+    model.requests.push_back(request);
+    model.response_pending = true;
+    model.response_delay = 2;
+    model.response_fault = 0;
+    model.response_data =
+        (request.op == kLoad && request.eaddr == 0x100)
+            ? 0x04030201U
+            : 0;
+  }
+}
+
+Run run_until_terminal(Vvsp_uword_cluster_program_wrapper& dut,
+                       DmemModel* dmem = nullptr) {
   Run run;
+  bool held_completion_valid = false;
+  Completion held_completion{};
   for (int cycle = 0; cycle < 800; ++cycle) {
-    // Exercise completion backpressure without changing stream order.
-    dut.action_cpl_ready_i = (cycle % 5) != 2;
+    // Exercise multi-cycle completion backpressure without changing stream
+    // order, and check the unified state/cluster mux holds every field.
+    dut.action_cpl_ready_i = (cycle % 7) >= 3;
     dut.exec_result_ready_i = (cycle % 4) != 1;
+    dut.dmem_req_ready_i = dmem == nullptr || (cycle % 3) != 1;
+    dut.dmem_rsp_valid_i =
+        dmem != nullptr && dmem->response_pending &&
+        dmem->response_delay == 0;
+    dut.dmem_rsp_rdata_i =
+        dmem != nullptr ? dmem->response_data : 0;
+    dut.dmem_rsp_fault_cause_i =
+        dmem != nullptr ? dmem->response_fault : 0;
     eval_low(dut);
+
+    const Completion visible_completion = {
+        static_cast<uint8_t>(dut.action_cpl_class_o),
+        static_cast<uint8_t>(dut.action_cpl_context_o),
+        static_cast<uint8_t>(dut.action_cpl_tag_o),
+        static_cast<uint8_t>(dut.action_cpl_group_mask_o),
+        static_cast<uint8_t>(dut.action_cpl_status_o),
+        static_cast<uint8_t>(dut.action_cpl_decode_error_o),
+        static_cast<bool>(dut.action_cpl_end_o)};
+    if (held_completion_valid) {
+      expect_eq("stalled completion remains valid", 1,
+                dut.action_cpl_valid_o);
+      expect_completion_stable(held_completion, visible_completion);
+    }
+    if (dut.action_cpl_valid_o && !dut.action_cpl_ready_i &&
+        !held_completion_valid) {
+      held_completion_valid = true;
+      held_completion = visible_completion;
+    }
+
+    if (dmem != nullptr && dmem->held_request_valid) {
+      expect_eq("stalled data-memory request remains valid", 1,
+                dut.dmem_req_valid_o);
+      check_dmem_request(dmem->held_request, sample_dmem_request(dut),
+                         "stalled data-memory request remains stable");
+    }
+
+    const bool request_fire =
+        dut.dmem_req_valid_o && dut.dmem_req_ready_i;
+    const bool response_fire =
+        dut.dmem_rsp_valid_i && dut.dmem_rsp_ready_o;
+    const DmemRequest request = sample_dmem_request(dut);
+    if (dmem != nullptr && dut.dmem_req_valid_o &&
+        !dut.dmem_req_ready_i && !dmem->held_request_valid) {
+      dmem->held_request_valid = true;
+      dmem->held_request = request;
+    }
+    if (dmem != nullptr && request_fire)
+      dmem->held_request_valid = false;
 
     if (dut.action_cpl_valid_o && dut.action_cpl_ready_i) {
       run.completions.push_back(
@@ -193,6 +323,7 @@ Run run_until_terminal(Vvsp_uword_cluster_program_wrapper& dut) {
            static_cast<uint8_t>(dut.action_cpl_status_o),
            static_cast<uint8_t>(dut.action_cpl_decode_error_o),
            static_cast<bool>(dut.action_cpl_end_o)});
+      held_completion_valid = false;
     }
     if (dut.exec_result_valid_o && dut.exec_result_ready_i) {
       run.results.push_back(
@@ -202,7 +333,7 @@ Run run_until_terminal(Vvsp_uword_cluster_program_wrapper& dut) {
            static_cast<uint32_t>(dut.exec_result_narrow_o),
            static_cast<uint8_t>(dut.exec_result_narrow_mask_o)});
     }
-    if (dut.dmem_req_valid_o && dut.dmem_req_ready_i)
+    if (request_fire)
       ++run.dmem_requests;
     if (dut.program_done_o) run.done = true;
     if (dut.program_failed_o) run.failed = true;
@@ -210,11 +341,17 @@ Run run_until_terminal(Vvsp_uword_cluster_program_wrapper& dut) {
 
     if ((run.done || run.failed) && !dut.program_active_o) {
       tick(dut);
+      if (dmem != nullptr)
+        update_dmem_model(*dmem, request_fire, request, response_fire);
       dut.action_cpl_ready_i = 1;
       dut.exec_result_ready_i = 1;
+      dut.dmem_req_ready_i = 1;
+      dut.dmem_rsp_valid_i = 0;
       return run;
     }
     tick(dut);
+    if (dmem != nullptr)
+      update_dmem_model(*dmem, request_fire, request, response_fire);
   }
   fail("program terminal timeout", 1, 0);
 }
@@ -236,8 +373,9 @@ void check_completion(const Completion& actual, uint8_t action_class,
 
 int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
-  if (argc != 2) {
-    std::cerr << "usage: " << argv[0] << " PROGRAM.hex\n";
+  if (argc != 3) {
+    std::cerr << "usage: " << argv[0]
+              << " EXEC_PROGRAM.hex MEMORY_STATE_PROGRAM.hex\n";
     return 2;
   }
 
@@ -247,6 +385,17 @@ int main(int argc, char** argv) {
       0xc0000000U};
   if (program != golden) {
     std::cerr << "generated executable example differs from golden\n";
+    return 1;
+  }
+
+  const std::vector<uint32_t> memory_state_program = read_hex(argv[2]);
+  const std::vector<uint32_t> memory_state_golden = {
+      0xc4080000U, 0x00000100U, 0xc4100000U, 0x00000004U,
+      0xc1184400U, 0xc620c000U, 0xfffffff8U, 0xb4151048U,
+      0x00000004U, 0x10020430U, 0x00000001U, 0xb6150c88U,
+      0x00000000U, 0xc0000000U};
+  if (memory_state_program != memory_state_golden) {
+    std::cerr << "generated MEMORY/state example differs from golden\n";
     return 1;
   }
 
@@ -282,6 +431,65 @@ int main(int argc, char** argv) {
   expect_eq("normal issued no data-memory request", 0,
             normal.dmem_requests);
 
+  // Exercise the reverse engine boundary as well: a cluster EXEC completion
+  // must retire before the following sequencer-local state command can fire.
+  const std::vector<uint32_t> exec_then_state = {
+      0x10000010U, 0xc4280000U, 0x00000200U, 0xc0000000U};
+  program_store(dut, exec_then_state);
+  launch(dut, kBasePc + 16, 0, 0x1, 0x44);
+  Run reverse_order = run_until_terminal(dut);
+  expect_eq("EXEC then state completed", 1, reverse_order.done);
+  expect_eq("EXEC then state has no error", 0, reverse_order.error);
+  expect_eq("EXEC then state completion count", 3,
+            reverse_order.completions.size());
+  check_completion(reverse_order.completions[0], kExec, 0, 0x44, 0x1,
+                   kStatusOk, 0, false, "reverse-order EXEC");
+  check_completion(reverse_order.completions[1], kControl, 0, 0x45, 0,
+                   kStatusOk, 0, false, "reverse-order SMOVI");
+  check_completion(reverse_order.completions[2], kControl, 0, 0x46, 0,
+                   kStatusOk, 0, true, "reverse-order END");
+
+  // State records construct both addresses, the load feeds VRF1, EXEC adds
+  // one to each byte into VRF2, and the store returns the transformed row.
+  program_store(dut, memory_state_program);
+  launch(dut,
+         kBasePc + static_cast<uint32_t>(4 * memory_state_program.size()),
+         1, 0x1, 0x48);
+  DmemModel dmem;
+  Run memory_state = run_until_terminal(dut, &dmem);
+  expect_eq("MEMORY/state program completed", 1, memory_state.done);
+  expect_eq("MEMORY/state program did not fail", 0, memory_state.failed);
+  expect_eq("MEMORY/state program has no accumulated error", 0,
+            memory_state.error);
+  expect_eq("MEMORY/state completion count", 8,
+            memory_state.completions.size());
+  for (size_t index = 0; index < 4; ++index) {
+    check_completion(memory_state.completions[index], kControl, 1,
+                     static_cast<uint8_t>(0x48 + index), 0,
+                     kStatusOk, 0, false,
+                     "state CONTROL " + std::to_string(index));
+  }
+  check_completion(memory_state.completions[4], kMemory, 1, 0x4c, 0x1,
+                   kStatusOk, 0, false, "semantic VLOAD");
+  check_completion(memory_state.completions[5], kExec, 1, 0x4d, 0x1,
+                   kStatusOk, 0, false, "loaded-row EXEC");
+  check_completion(memory_state.completions[6], kMemory, 1, 0x4e, 0x1,
+                   kStatusOk, 0, false, "semantic VSTORE");
+  check_completion(memory_state.completions[7], kControl, 1, 0x4f, 0,
+                   kStatusOk, 0, true, "MEMORY/state END");
+  expect_eq("MEMORY/state exports no EXEC result", 0,
+            memory_state.results.size());
+  expect_eq("MEMORY/state request count", 2, memory_state.dmem_requests);
+  expect_eq("data-memory model captured both requests", 2,
+            dmem.requests.size());
+  check_dmem_request({kLoad, 0x100, kLocal, 0x2a, 0, 0},
+                     dmem.requests[0], "semantic VLOAD request");
+  check_dmem_request({kStore, 0x104, kLocal, 0x2a,
+                      0x05040302U, 0xf},
+                     dmem.requests[1], "semantic VSTORE request");
+  expect_eq("no response remains after MEMORY/state END", 0,
+            dmem.response_pending);
+
   // An exact END-looking word in an opaque MEMORY body is data, not a header.
   // The MEMORY parent rejects in order, then the following real END retires.
   const std::vector<uint32_t> opaque_memory = {
@@ -294,13 +502,14 @@ int main(int argc, char** argv) {
   expect_eq("opaque memory accumulates rejection", 1, memory.error);
   expect_eq("opaque memory completion count", 2, memory.completions.size());
   check_completion(memory.completions[0], kMemory, 0, 0x60, 0x3,
-                   kStatusDecode, kBadFormat, false, "opaque MEMORY");
+                   kStatusDecode, kBadImmediate, false, "opaque MEMORY");
   check_completion(memory.completions[1], kControl, 0, 0x61, 0,
                    kStatusOk, 0, true, "opaque MEMORY following END");
   expect_eq("rejected memory issued no dmem request", 0,
             memory.dmem_requests);
 
-  // C0000001 shares the CONTROL major but is not the canonical END word.
+  // C0000001 shares the CONTROL major but is neither canonical END nor the
+  // required two-word shape of its numerically selected SMOVI sub-operation.
   const std::vector<uint32_t> other_control = {
       0xc0000001U, 0xc0000000U};
   program_store(dut, other_control);
@@ -310,7 +519,7 @@ int main(int argc, char** argv) {
   expect_eq("other CONTROL completion count", 2,
             control.completions.size());
   check_completion(control.completions[0], kControl, 1, 0x70, 0,
-                   kStatusDecode, kBadSubop, false, "other CONTROL");
+                   kStatusDecode, kBadExtension, false, "other CONTROL");
   check_completion(control.completions[1], kControl, 1, 0x71, 0,
                    kStatusOk, 0, true, "other CONTROL following END");
 

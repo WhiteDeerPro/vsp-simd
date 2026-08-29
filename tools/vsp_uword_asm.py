@@ -67,6 +67,28 @@ ROUTE_OPS = {
     "slide_up": 2,
     "slide_down": 3,
 }
+STATE_OPS = {
+    "smovi": 0,
+    "sadd": 1,
+    "saddi": 2,
+}
+MEMORY_OPS = {
+    "vload": 0,
+    "vstore": 1,
+}
+MEMORY_ADDR_SPACES = {
+    "local": 0,
+    "physical": 1,
+    "translated": 2,
+}
+
+# Profile-v0 semantic records use the current default widths of the state and
+# memory engines. Opaque MEMORY/CONTROL remain available below for framing
+# and rejection tests which intentionally need records outside this profile.
+STATE_REGS = 32
+MEMORY_VRF_ROWS = 16
+MEMORY_MAX_SPAN_BYTES = 16
+MEMORY_OFFSET_W = 16
 
 
 class AssemblyError(Exception):
@@ -152,6 +174,149 @@ def encode_element_immediate(text: str, mode: str, line_number: int) -> int:
             f"line {line_number}: immediate {value} does not fit {width} bits"
         )
     return value & unsigned_max
+
+
+def encode_word_immediate(text: str, name: str, line_number: int) -> int:
+    """Encode a full 32-bit word, accepting signed or unsigned spelling."""
+    value = parse_integer(text, line_number)
+    if value < -(1 << 31) or value > 0xFFFFFFFF:
+        raise AssemblyError(
+            f"line {line_number}: {name} {value} does not fit 32 bits"
+        )
+    return value & 0xFFFFFFFF
+
+
+def encode_signed_immediate(text: str, name: str, width: int,
+                            line_number: int) -> int:
+    value = parse_integer(text, line_number)
+    signed_min = -(1 << (width - 1))
+    signed_max = (1 << (width - 1)) - 1
+    if value < signed_min or value > signed_max:
+        raise AssemblyError(
+            f"line {line_number}: {name} {value} does not fit signed {width} bits"
+        )
+    return value & 0xFFFFFFFF
+
+
+def encode_state(tokens: list[str], operation: str,
+                 line_number: int) -> list[int]:
+    """Encode a sequencer-state CONTROL record."""
+    named, positional = split_arguments(tokens, line_number)
+    if positional:
+        raise AssemblyError(
+            f"line {line_number}: {operation.upper()} fields must use key=value syntax"
+        )
+
+    rd = require_range(
+        "rd", parse_integer(take_named(named, "rd", None, line_number),
+                            line_number),
+        0, STATE_REGS - 1, line_number,
+    )
+    rs1 = 0
+    rs2 = 0
+    immediate: int | None = None
+
+    if operation == "sadd":
+        rs1 = require_range(
+            "rs1", parse_integer(take_named(named, "rs1", None, line_number),
+                                 line_number),
+            0, STATE_REGS - 1, line_number,
+        )
+        rs2 = require_range(
+            "rs2", parse_integer(take_named(named, "rs2", None, line_number),
+                                 line_number),
+            0, STATE_REGS - 1, line_number,
+        )
+    elif operation == "saddi":
+        rs1 = require_range(
+            "rs1", parse_integer(take_named(named, "rs1", None, line_number),
+                                 line_number),
+            0, STATE_REGS - 1, line_number,
+        )
+        immediate = encode_word_immediate(
+            take_named(named, "imm", None, line_number), "immediate",
+            line_number,
+        )
+    else:
+        immediate = encode_word_immediate(
+            take_named(named, "imm", None, line_number), "immediate",
+            line_number,
+        )
+
+    if named:
+        unknown = ", ".join(sorted(named))
+        raise AssemblyError(
+            f"line {line_number}: unknown {operation.upper()} fields: {unknown}"
+        )
+
+    body_words = int(immediate is not None)
+    header = 0
+    header |= 0xC << 28
+    header |= body_words << 26
+    header |= STATE_OPS[operation] << 24
+    header |= rd << 19
+    header |= rs1 << 14
+    header |= rs2 << 9
+    return [header] if immediate is None else [header, immediate]
+
+
+def encode_memory(tokens: list[str], operation: str,
+                  line_number: int) -> list[int]:
+    """Encode the fixed two-word MEMORY profile-v0 record."""
+    named, positional = split_arguments(tokens, line_number)
+    if positional:
+        raise AssemblyError(
+            f"line {line_number}: {operation.upper()} fields must use key=value syntax"
+        )
+
+    space_name = take_named(named, "space", "local", line_number).lower()
+    if space_name not in MEMORY_ADDR_SPACES:
+        raise AssemblyError(
+            f"line {line_number}: unknown address space {space_name!r}"
+        )
+    addr_context = require_range(
+        "addr_context",
+        parse_integer(take_named(named, "addr_context", "0", line_number),
+                      line_number),
+        0, 0xFF, line_number,
+    )
+    sbase = require_range(
+        "sbase",
+        parse_integer(take_named(named, "sbase", None, line_number),
+                      line_number),
+        0, STATE_REGS - 1, line_number,
+    )
+    vrf = require_range(
+        "vrf", parse_integer(take_named(named, "vrf", None, line_number),
+                             line_number),
+        0, MEMORY_VRF_ROWS - 1, line_number,
+    )
+    span = require_range(
+        "span", parse_integer(take_named(named, "span", None, line_number),
+                              line_number),
+        1, MEMORY_MAX_SPAN_BYTES, line_number,
+    )
+    offset = encode_signed_immediate(
+        take_named(named, "offset", "0", line_number), "offset",
+        MEMORY_OFFSET_W, line_number,
+    )
+
+    if named:
+        unknown = ", ".join(sorted(named))
+        raise AssemblyError(
+            f"line {line_number}: unknown {operation.upper()} fields: {unknown}"
+        )
+
+    header = 0
+    header |= 0xB << 28
+    header |= 1 << 26
+    header |= MEMORY_OPS[operation] << 25
+    header |= MEMORY_ADDR_SPACES[space_name] << 23
+    header |= addr_context << 15
+    header |= sbase << 10
+    header |= vrf << 6
+    header |= span << 1
+    return [header, offset]
 
 
 def encode_alu(tokens: list[str], immediate_form: bool,
@@ -398,6 +563,10 @@ def encode_statement(statement: str, line_number: int) -> list[int]:
         return encode_reduce(arguments, line_number)
     if operation == "exec_route":
         return encode_route(arguments, line_number)
+    if operation in STATE_OPS:
+        return encode_state(arguments, operation, line_number)
+    if operation in MEMORY_OPS:
+        return encode_memory(arguments, operation, line_number)
     if operation == "memory":
         return encode_opaque_record(0xB, arguments, line_number)
     if operation == "control":

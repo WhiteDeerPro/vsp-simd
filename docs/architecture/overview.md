@@ -148,13 +148,13 @@ operation 三层。当前既没有 32-bit 也没有 16-bit instruction；queue
 transaction wrapper、EXEC cluster execution integration、decode holding stage、VRF-only
 vector memory engine、shared VRF arbiter、decoded cluster memory wrapper 与 strict ordered
 action controller 及 standalone uword bundle predecoder 已完成参考实现。testbench 已在
-`dmem_*` 外用 local-memory model 验证 decoded LOAD → profile-v0 encoded EXEC →
-decoded STORE → `CONTROL.END`，包括
+`dmem_*` 外用 local-memory model 验证 encoded `SMOVI/SADD/SADDI` → `VLOAD` →
+profile-v0 encoded EXEC → `VSTORE` → `CONTROL.END`，包括
 完成背压、owner/decode error、EXEC child reject、result staging 和 memory fault；
 这不表示 local SRAM RTL、最终 MEMORY ISA 或完整 sequencer 已完成。当前工作
-计划继续实现 MEMORY semantic decode、三 record admission metadata/queue-head
-integration、已实现 address-state reference 的 class binding、动态 owner/resource 状态
-和 loop/redirect；
+计划继续实现三 record admission metadata/queue-head integration、把 strict path 的
+resolved address/state dependency 迁入 action window、动态 owner/resource 状态和
+loop/redirect；
 control-store/byte-PC/multi-framer/slot-0 action adapter 已有 strict reference closure。
 独立 I-side/D-side protocol model 及其预期 cache 边界见
 [内存模型边界](memory-hierarchy.md)。随后再根据结果决定物理 memory hierarchy、DMA、跨组交换与

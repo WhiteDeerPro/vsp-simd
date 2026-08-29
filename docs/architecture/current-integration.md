@@ -10,28 +10,30 @@ Graphviz 源文件为 [`current-integration.dot`](current-integration.dot)。
 
 ## 1. 两条已经能运行的路径 `[RTL事实]`
 
-当前有两条入口不同的闭环：
+当前有两条入口不同、但复用同一 vector memory engine 的闭环：
 
 1. uword 程序路径：behavioral control store → linear byte-PC source →
    multi-record framer → **slot 0** holding/action adapter → strict controller。
-   profile-v0 EXEC 与最终 `CONTROL.END` 能执行和退休；MEMORY record 目前形成有序
-   decode rejection。
+   profile-v0 EXEC、sequencer-local `SMOVI/SADD/SADDI`、两词
+   `VLOAD/VSTORE` 与最终 `CONTROL.END` 都能执行和有序退休。现有回归已经运行
+   `state address → VLOAD → EXEC → VSTORE → END`，并检查真实 dmem 地址、数据与
+   byte strobe。
 2. decoded MEMORY 路径：外部直接提供完整 MEMORY descriptor，经 strict controller
    进入 vector memory engine，再通过 VRF arbiter 和 group state endpoint 完成
    LOAD/STORE。该路径已和 EXEC、END 做过端到端参考回归。
 
-因此，“encoded 程序能运行 EXEC/END”和“decoded LOAD/STORE 能运行”都成立；
-“encoded MEMORY uword 已能 LOAD/STORE”尚不成立。
+因此，“encoded 程序能用地址状态驱动 LOAD/STORE”与“外部 decoded descriptor 入口
+仍可独立使用”都成立。encoded MEMORY 不是独立的新内存实现：semantic decoder 在
+action admission 读取 state base，现有 memory engine 接收快照后的 descriptor。
 
 `vsp_uword_multi_framer` 最多可同时暴露三条 record，`vsp_ordered_action_window`
 也已有四项窗口、两个 EXEC view 和一个 side view，但 strict wrapper 仍只消费 slot 0。
 window、late-decode holding stage 与 class engines 尚未组成并发 program path。
 
-另有两个已验证但尚未绑定到 strict program path 的 reference：
-`vsp_ordered_ifetch_model` 为独立 I-side bundle endpoint；
-`vsp_sequencer_state_engine` 提供 per-context 32-bit 地址状态与 base query。前者仍需
-launch address metadata/fault adapter，后者仍需 MEMORY semantic decoder 在 admission
-时读取并快照 base，不能把“模块存在”写成 encoded MEMORY 已经可执行。
+`vsp_ordered_ifetch_model` 仍是尚未绑定到 strict program path 的独立 I-side bundle
+endpoint，需要 launch address metadata/fault adapter。与它不同，
+`vsp_sequencer_state_engine`、CONTROL/MEMORY semantic decoder 和 action adapter 已经
+接入 strict wrapper；它们仍不在独立的并发 action-window reference 中。
 
 ## 2. PC 为什么有时表现为 `+16` `[RTL事实]`
 
@@ -51,7 +53,7 @@ branch/loop redirect。
 
 ## 3. 向量取数与 AGU `[RTL事实 + 分层说明]`
 
-一条 decoded vector-memory parent 含：
+semantic MEMORY record 在 admission 后形成一条 decoded vector-memory parent：
 
 ```text
 LOAD/STORE + context/tag
@@ -136,18 +138,19 @@ SRAM/cache，合流位置也是下游仲裁，不是让 data AGU 修改 PC。
 
 ## 6. Sequencer 地址/控制侧完成度 `[RTL事实 + 候选]`
 
-`vsp_sequencer_state_engine` 已实现一条独立 decoded reference：默认每 execution
+`vsp_sequencer_state_engine` 默认每 execution
 context 32 个 32-bit state register，register 0 恒零；支持 `SMOVI`、`SADD`、
 `SADDI`，按模 \(2^{32}\) 回绕；一项 registered completion 可背压；组合 base query
-供 MEMORY admission 快照。它不持有 PC，也不访问 dmem。
+供 MEMORY admission 快照。CONTROL decoder 输出的合法 state action 在 strict wrapper
+内被送到该 engine；其 completion 与 cluster completion 在同一有序出口汇合。MEMORY
+decoder 只在完整合法记录可见时查询 base，memory action 被接纳后由现有 engine 保存
+descriptor，后续 state 写不能改变在途访问。state engine 本身仍不持有 PC，也不访问
+dmem。
 
-它尚未接 CONTROL-uword decoder、action controller 或 vector memory engine，因此
-encoded program 仍不能使用这些操作。当前也没有 `SET_GMASK`、loop/branch/redirect、
+当前没有 `SET_GMASK`、loop/branch/redirect、
 scalar load/store、reduction/count 写 state、CALL/RET、CSR、特权态或中断入口。
-CONTROL profile 仍只定义最终 `END`。
-
-下一步应先实现 MEMORY semantic decoder，并在 action admission 时把 state base、
-signed offset、address metadata 与 group mask 解析成现有 decoded descriptor。之后再按
-负载证据增加 group-mask state 和计数 loop；redirect 必须单独扩展 program source 并
-清理 framer/window 中的年轻记录。具体边界见
+当前 state/MEMORY 绑定只属于 global single-active、slot-0 strict closure；把它移入
+多 record admission/window 时，还必须把 state RAW/WAW、resolved base 与 MEMORY/VRF
+依赖写入 window metadata。之后再按负载证据增加 group-mask state 和计数 loop；
+redirect 必须单独扩展 program source 并清理 framer/window 中的年轻记录。具体边界见
 [Sequencer 标量/地址状态](../design/sequencer-state.md)。

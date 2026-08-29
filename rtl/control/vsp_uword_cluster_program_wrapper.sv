@@ -20,6 +20,7 @@ module vsp_uword_cluster_program_wrapper #(
   parameter int MEM_EADDR_W       = 32,
   parameter int MEM_OFFSET_W      = 16,
   parameter int ADDR_CONTEXT_W    = 8,
+  parameter int STATE_REGS        = 32,
   parameter int DECODE_ERROR_W    =
       vsp_exec_uword_pkg::VSP_EXEC_UWORD_ERROR_W,
   parameter int VRF_ADDR_W = (VREGS <= 2) ? 1 : $clog2(VREGS),
@@ -31,6 +32,8 @@ module vsp_uword_cluster_program_wrapper #(
   parameter int OFFSET_W = $clog2(LANES + 1),
   parameter int SPAN_BYTES_W = ((GROUP_COUNT*LANES) <= 1) ? 1 :
                                $clog2((GROUP_COUNT*LANES) + 1),
+  parameter int STATE_REG_INDEX_W = (STATE_REGS <= 2) ? 1 :
+                                    $clog2(STATE_REGS),
   parameter int FETCH_COUNT_W = (FETCH_WORDS < 2) ? 1 :
                                 $clog2(FETCH_WORDS + 1)
 ) (
@@ -117,6 +120,7 @@ module vsp_uword_cluster_program_wrapper #(
 );
   import vsp_action_pkg::*;
   import vsp_exec_uword_pkg::*;
+  import vsp_sequencer_state_pkg::*;
   import vsp_uword_pkg::*;
 
   logic control_store_write_valid;
@@ -186,9 +190,59 @@ module vsp_uword_cluster_program_wrapper #(
   logic [VSP_EXEC_UWORD_W-1:0] adapter_exec_base_word;
   logic adapter_exec_extension_valid;
   logic [VSP_EXEC_UWORD_W-1:0] adapter_exec_extension_word;
+  logic adapter_action_is_state;
+  logic [VSP_STATE_OP_W-1:0] adapter_state_op;
+  logic [STATE_REG_INDEX_W-1:0] adapter_state_rd;
+  logic [STATE_REG_INDEX_W-1:0] adapter_state_rs1;
+  logic [STATE_REG_INDEX_W-1:0] adapter_state_rs2;
+  logic [31:0] adapter_state_imm;
+  logic adapter_memory_base_read_valid;
+  logic [VSP_MEMORY_UWORD_STATE_REG_W-1:0]
+      adapter_memory_base_read_reg;
+  logic [MEM_EADDR_W-1:0] adapter_memory_base_read_data;
+  logic adapter_memory_base_read_legal;
+  logic [vsp_pkg::VSP_MEM_OP_W-1:0] adapter_memory_op;
+  logic [vsp_pkg::VSP_MEM_ADDR_SPACE_W-1:0]
+      adapter_memory_addr_space;
+  logic [VSP_MEMORY_UWORD_ADDR_CONTEXT_W-1:0]
+      adapter_memory_addr_context;
+  logic [MEM_EADDR_W-1:0] adapter_memory_base_eaddr;
+  logic signed [VSP_MEMORY_UWORD_OFFSET_W-1:0]
+      adapter_memory_eaddr_offset;
+  logic [VSP_MEMORY_UWORD_VRF_ROW_W-1:0] adapter_memory_vrf_row;
+  logic [VSP_MEMORY_UWORD_SPAN_BYTES_W-1:0]
+      adapter_memory_span_bytes;
   logic [PC_W-1:0] adapter_action_start_pc;
   logic adapter_action_is_end;
   logic adapter_end_allowed;
+
+  logic cluster_action_valid;
+  logic cluster_action_ready;
+  logic cluster_action_cpl_valid;
+  logic cluster_action_cpl_ready;
+  logic [VSP_ACTION_CLASS_W-1:0] cluster_action_cpl_class;
+  logic [CONTEXT_W-1:0] cluster_action_cpl_context;
+  logic [TAG_W-1:0] cluster_action_cpl_tag;
+  logic [GROUP_COUNT-1:0] cluster_action_cpl_group_mask;
+  logic [VSP_ACTION_CPL_STATUS_W-1:0] cluster_action_cpl_status;
+  logic [DECODE_ERROR_W-1:0] cluster_action_cpl_decode_error;
+  logic cluster_action_cpl_end;
+
+  logic state_action_selected;
+  logic state_cmd_valid;
+  logic state_cmd_ready;
+  logic state_cpl_valid;
+  logic state_cpl_ready;
+  logic [CONTEXT_W-1:0] state_cpl_context;
+  logic [TAG_W-1:0] state_cpl_tag;
+  logic [VSP_STATE_CPL_STATUS_W-1:0] state_cpl_status;
+  logic state_busy;
+  logic state_router_protocol_error_q;
+
+  logic [ADDR_CONTEXT_W-1:0] action_memory_addr_context;
+  logic signed [MEM_OFFSET_W-1:0] action_memory_eaddr_offset;
+  logic [VRF_ADDR_W-1:0] action_memory_vrf_row;
+  logic [SPAN_BYTES_W-1:0] action_memory_span_bytes;
 
   logic action_record_valid_q;
   logic [VSP_ACTION_CLASS_W-1:0] action_record_class_q;
@@ -234,7 +288,7 @@ module vsp_uword_cluster_program_wrapper #(
   logic program_finish_failure;
   logic transport_failure_now;
 
-  assign start_ready_o = rst_ni && !program_active_q &&
+  assign start_ready_o = rst_ni && !program_active_q && !state_busy &&
       !cluster_controller_busy && source_start_ready && framer_idle &&
       !framer_clear_q && !action_record_valid_q;
   assign start_fire = start_valid_i && start_ready_o;
@@ -262,7 +316,11 @@ module vsp_uword_cluster_program_wrapper #(
     record_ready = '0;
     // A one-entry registered boundary deliberately breaks ready/payload
     // combinational paths between the framer and the decoded controller.
-    record_ready[0] = !action_record_valid_q && program_active_q;
+    // While a state completion is pending, holding slot zero closed preserves
+    // global record order and prevents a younger cluster action from passing
+    // the sequencer-local engine.
+    record_ready[0] = !action_record_valid_q && program_active_q &&
+                      !state_busy;
   end
 
   assign adapter_end_allowed =
@@ -288,9 +346,9 @@ module vsp_uword_cluster_program_wrapper #(
   assign action_cpl_fire = action_cpl_valid_o && action_cpl_ready_i;
   assign program_finish_success = program_active_q && end_retired_q &&
       !terminal_boundary_error_q && !source_running && framer_halted &&
-      !cluster_controller_busy && !action_record_valid_q;
+      !cluster_controller_busy && !state_busy && !action_record_valid_q;
   assign program_finish_failure = program_active_q &&
-      !cluster_controller_busy && !source_running &&
+      !cluster_controller_busy && !state_busy && !source_running &&
       !action_record_valid_q && !record_valid[0] &&
       ((terminal_boundary_error_q && framer_halted) ||
        (eof_records_done_q && !end_retired_q) ||
@@ -310,7 +368,57 @@ module vsp_uword_cluster_program_wrapper #(
   assign cluster_protocol_error_o = cluster_controller_protocol_error ||
       cluster_exec_protocol_error || cluster_mem_protocol_error;
   assign protocol_error_o = fetch_protocol_error_o ||
-      cluster_protocol_error_o || terminal_boundary_error_q;
+      cluster_protocol_error_o || state_router_protocol_error_q ||
+      terminal_boundary_error_q;
+
+  // A legal CONTROL-state record is the only action intercepted locally.
+  // Malformed state records continue through the generic controller so they
+  // retire on the existing ordered decode-error path.  The two engines are
+  // mutually excluded until their completion has been consumed.
+  assign state_action_selected = adapter_action_valid &&
+      adapter_action_is_state && adapter_action_legal;
+  assign state_cmd_valid = state_action_selected &&
+                           !cluster_controller_busy;
+  assign cluster_action_valid = adapter_action_valid &&
+                                !state_action_selected && !state_busy;
+  assign adapter_action_ready = state_action_selected ?
+      (!cluster_controller_busy && state_cmd_ready) :
+      (!state_busy && cluster_action_ready);
+
+  // Current encoded MEMORY profile v0 uses the same widths as this program
+  // wrapper's reference parameters.  Explicit casts keep the semantic resize
+  // visible if a later integration experiments with smaller physical files.
+  assign action_memory_addr_context =
+      ADDR_CONTEXT_W'(adapter_memory_addr_context);
+  assign action_memory_eaddr_offset =
+      MEM_OFFSET_W'($signed(adapter_memory_eaddr_offset));
+  assign action_memory_vrf_row = VRF_ADDR_W'(adapter_memory_vrf_row);
+  assign action_memory_span_bytes =
+      SPAN_BYTES_W'(adapter_memory_span_bytes);
+
+  // State and cluster completions cannot overlap in the strict reference
+  // path.  State has deterministic priority while an assertion below records
+  // any integration violation rather than combining two parents.
+  assign action_cpl_valid_o = state_cpl_valid || cluster_action_cpl_valid;
+  assign state_cpl_ready = action_cpl_ready_i && state_cpl_valid;
+  assign cluster_action_cpl_ready = action_cpl_ready_i &&
+                                    !state_cpl_valid;
+  assign action_cpl_class_o = state_cpl_valid ?
+      VSP_ACTION_CLASS_CONTROL : cluster_action_cpl_class;
+  assign action_cpl_context_o = state_cpl_valid ?
+      state_cpl_context : cluster_action_cpl_context;
+  assign action_cpl_tag_o = state_cpl_valid ?
+      state_cpl_tag : cluster_action_cpl_tag;
+  assign action_cpl_group_mask_o = state_cpl_valid ?
+      '0 : cluster_action_cpl_group_mask;
+  assign action_cpl_status_o = state_cpl_valid ?
+      (state_cpl_status == VSP_STATE_CPL_OK ? VSP_ACTION_CPL_OK :
+                                             VSP_ACTION_CPL_CONTROL_ERROR) :
+      cluster_action_cpl_status;
+  assign action_cpl_decode_error_o = state_cpl_valid ?
+      '0 : cluster_action_cpl_decode_error;
+  assign action_cpl_end_o = state_cpl_valid ? 1'b0 :
+                                              cluster_action_cpl_end;
 
   vsp_uword_control_store #(
     .PC_W(PC_W),
@@ -412,7 +520,14 @@ module vsp_uword_cluster_program_wrapper #(
     .GROUP_COUNT(GROUP_COUNT),
     .CONTEXT_COUNT(CONTEXT_COUNT),
     .TAG_W(TAG_W),
+    .MEM_EADDR_W(MEM_EADDR_W),
+    .STATE_REGS(STATE_REGS),
+    .VREGS(VREGS),
+    .MAX_SPAN_BYTES(
+        ((GROUP_COUNT*LANES) < VSP_MEMORY_UWORD_MAX_SPAN_BYTES) ?
+            (GROUP_COUNT*LANES) : VSP_MEMORY_UWORD_MAX_SPAN_BYTES),
     .DECODE_ERROR_W(DECODE_ERROR_W),
+    .STATE_REG_INDEX_W(STATE_REG_INDEX_W),
     .CONTEXT_W(CONTEXT_W)
   ) u_action_adapter (
     .clk_i,
@@ -443,8 +558,57 @@ module vsp_uword_cluster_program_wrapper #(
     .action_exec_base_word_o(adapter_exec_base_word),
     .action_exec_extension_valid_o(adapter_exec_extension_valid),
     .action_exec_extension_word_o(adapter_exec_extension_word),
+    .action_is_state_o(adapter_action_is_state),
+    .action_state_op_o(adapter_state_op),
+    .action_state_rd_o(adapter_state_rd),
+    .action_state_rs1_o(adapter_state_rs1),
+    .action_state_rs2_o(adapter_state_rs2),
+    .action_state_imm_o(adapter_state_imm),
+    .memory_base_read_valid_o(adapter_memory_base_read_valid),
+    .memory_base_read_reg_o(adapter_memory_base_read_reg),
+    .memory_base_read_data_i(adapter_memory_base_read_data),
+    .memory_base_read_legal_i(adapter_memory_base_read_legal),
+    .action_memory_op_o(adapter_memory_op),
+    .action_memory_addr_space_o(adapter_memory_addr_space),
+    .action_memory_addr_context_o(adapter_memory_addr_context),
+    .action_memory_base_eaddr_o(adapter_memory_base_eaddr),
+    .action_memory_eaddr_offset_o(adapter_memory_eaddr_offset),
+    .action_memory_vrf_row_o(adapter_memory_vrf_row),
+    .action_memory_span_bytes_o(adapter_memory_span_bytes),
     .action_start_pc_o(adapter_action_start_pc),
     .action_is_control_end_o(adapter_action_is_end)
+  );
+
+  vsp_sequencer_state_engine #(
+    .STATE_W(MEM_EADDR_W),
+    .STATE_REGS(STATE_REGS),
+    .CONTEXT_COUNT(CONTEXT_COUNT),
+    .TAG_W(TAG_W),
+    .STATE_REG_INDEX_W(STATE_REG_INDEX_W),
+    .CONTEXT_ID_W(CONTEXT_W)
+  ) u_state_engine (
+    .clk_i,
+    .rst_ni,
+    .cmd_valid_i(state_cmd_valid),
+    .cmd_ready_o(state_cmd_ready),
+    .cmd_op_i(adapter_state_op),
+    .cmd_context_i(adapter_action_context),
+    .cmd_tag_i(adapter_action_tag),
+    .cmd_rd_i(adapter_state_rd),
+    .cmd_rs1_i(adapter_state_rs1),
+    .cmd_rs2_i(adapter_state_rs2),
+    .cmd_imm_i(MEM_EADDR_W'(adapter_state_imm)),
+    .base_read_valid_i(adapter_memory_base_read_valid),
+    .base_read_context_i(adapter_action_context),
+    .base_read_reg_i(STATE_REG_INDEX_W'(adapter_memory_base_read_reg)),
+    .base_read_data_o(adapter_memory_base_read_data),
+    .base_read_legal_o(adapter_memory_base_read_legal),
+    .cpl_valid_o(state_cpl_valid),
+    .cpl_ready_i(state_cpl_ready),
+    .cpl_context_o(state_cpl_context),
+    .cpl_tag_o(state_cpl_tag),
+    .cpl_status_o(state_cpl_status),
+    .busy_o(state_busy)
   );
 
   /* verilator lint_off PINCONNECTEMPTY */
@@ -475,8 +639,8 @@ module vsp_uword_cluster_program_wrapper #(
   ) u_cluster_controller (
     .clk_i,
     .rst_ni,
-    .action_valid_i(adapter_action_valid),
-    .action_ready_o(adapter_action_ready),
+    .action_valid_i(cluster_action_valid),
+    .action_ready_o(cluster_action_ready),
     .action_class_i(adapter_action_class),
     .action_legal_i(adapter_action_legal),
     .action_decode_error_i(adapter_action_decode_error),
@@ -489,24 +653,24 @@ module vsp_uword_cluster_program_wrapper #(
     .action_exec_extension_word_i(adapter_exec_extension_word),
     .action_exec_extension_required_diag_o(
         action_exec_extension_required_unused),
-    .action_memory_op_i('0),
-    .action_memory_addr_space_i('0),
-    .action_memory_addr_context_i('0),
-    .action_memory_base_eaddr_i('0),
-    .action_memory_eaddr_offset_i('0),
-    .action_memory_vrf_row_i('0),
-    .action_memory_span_bytes_i('0),
+    .action_memory_op_i(adapter_memory_op),
+    .action_memory_addr_space_i(adapter_memory_addr_space),
+    .action_memory_addr_context_i(action_memory_addr_context),
+    .action_memory_base_eaddr_i(adapter_memory_base_eaddr),
+    .action_memory_eaddr_offset_i(action_memory_eaddr_offset),
+    .action_memory_vrf_row_i(action_memory_vrf_row),
+    .action_memory_span_bytes_i(action_memory_span_bytes),
     .group_owner_valid_i(group_owner_valid),
     .group_owner_i(group_owner),
-    .action_cpl_valid_o,
-    .action_cpl_ready_i,
-    .action_cpl_class_o,
-    .action_cpl_context_o,
-    .action_cpl_tag_o,
-    .action_cpl_group_mask_o,
-    .action_cpl_status_o,
-    .action_cpl_decode_error_o,
-    .action_cpl_end_o,
+    .action_cpl_valid_o(cluster_action_cpl_valid),
+    .action_cpl_ready_i(cluster_action_cpl_ready),
+    .action_cpl_class_o(cluster_action_cpl_class),
+    .action_cpl_context_o(cluster_action_cpl_context),
+    .action_cpl_tag_o(cluster_action_cpl_tag),
+    .action_cpl_group_mask_o(cluster_action_cpl_group_mask),
+    .action_cpl_status_o(cluster_action_cpl_status),
+    .action_cpl_decode_error_o(cluster_action_cpl_decode_error),
+    .action_cpl_end_o(cluster_action_cpl_end),
     .program_done_o(cluster_raw_program_done),
     .action_cpl_exec_group_mask_o(),
     .action_cpl_exec_result_mask_o(),
@@ -588,7 +752,14 @@ module vsp_uword_cluster_program_wrapper #(
       action_record_present_word_count_q <= '0;
       action_record_words_q <= '0;
       action_record_truncated_q <= 1'b0;
+      state_router_protocol_error_q <= 1'b0;
     end else begin
+      if (protocol_error_clear_i)
+        state_router_protocol_error_q <= 1'b0;
+      if ((state_cpl_valid && cluster_action_cpl_valid) ||
+          (state_busy && cluster_controller_busy))
+        state_router_protocol_error_q <= 1'b1;
+
       if (start_fire)
         source_terminal_drain_q <= 1'b0;
       else if (framer_stop_fetch)
@@ -658,7 +829,9 @@ module vsp_uword_cluster_program_wrapper #(
           transport_failure_q <= 1'b1;
           program_error_q <= 1'b1;
         end
-        if (cluster_protocol_error_o)
+        if (cluster_protocol_error_o || state_router_protocol_error_q ||
+            (state_cpl_valid && cluster_action_cpl_valid) ||
+            (state_busy && cluster_controller_busy))
           program_error_q <= 1'b1;
         if (action_cpl_fire &&
             action_cpl_status_o != VSP_ACTION_CPL_OK)
@@ -684,6 +857,12 @@ module vsp_uword_cluster_program_wrapper #(
     if (ADMIT_SLOTS < 1)
       $error("ADMIT_SLOTS must expose at least the strict slot zero");
     if (PC_W < 3) $error("PC_W must hold byte PCs");
+    if (MEM_EADDR_W != 32)
+      $error("encoded state/MEMORY profile v0 requires 32-bit eaddr state");
+    if (MEM_OFFSET_W != VSP_MEMORY_UWORD_OFFSET_W)
+      $error("encoded MEMORY profile v0 requires a signed 16-bit offset");
+    if (ADDR_CONTEXT_W != VSP_MEMORY_UWORD_ADDR_CONTEXT_W)
+      $error("encoded MEMORY profile v0 requires 8-bit address context");
   end
 
   /* verilator lint_off UNUSED */
@@ -698,6 +877,9 @@ module vsp_uword_cluster_program_wrapper #(
       (^program_group_mask_q) ^ cluster_mem_busy ^
       cluster_vrf_arbiter_busy ^ cluster_exec_queue_empty ^
       cluster_exec_tracker_empty ^ (^cluster_context_quiescent) ^
+      state_cmd_valid ^ state_cmd_ready ^ state_busy ^
+      adapter_memory_base_read_valid ^
+      (^adapter_memory_base_read_reg) ^
       action_exec_extension_required_unused ^
       cluster_raw_protocol_error_unused ^ framer_stream_abort_q;
   /* verilator lint_on UNUSED */

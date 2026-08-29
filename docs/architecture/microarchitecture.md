@@ -152,10 +152,11 @@ RF read -> optional route / operand mux -> lane execute -> optional reduce
 
 尚未实现的主要结构包括：
 
-- admission legality/cached resource metadata、queue-head canonical expansion、
-  以及 address-state engine 到 CONTROL/MEMORY decoder 的绑定；per-context 32-bit
-  state RF 与 `SMOVI/SADD/SADDI` 已有独立 decoded reference，EXEC frontend 的 slot
-  仍是 opaque shadow；
+- admission legality/cached resource metadata、queue-head canonical expansion，以及把
+  strict slot-0 已接通的 CONTROL-state/MEMORY resolved-base 语义迁移到 action window；
+  per-context 32-bit state RF、`SMOVI/SADD/SADDI` 和 encoded `VLOAD/VSTORE` 已在
+  global-single-active program closure 中闭环，独立并发 frontend 的 slot 仍是 opaque
+  shadow；
 - per-context/concurrent class scheduling、长期资源预留、动态 owner table、一般化
   barrier/admin 与 host completion；当前 strict controller 已提供单 active action 的
   class routing、ordered error/completion 汇聚和 `END`；

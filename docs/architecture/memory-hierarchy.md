@@ -90,21 +90,23 @@ execution context 负责 action 所有权和 completion 回送；address context
 
 ## 5. Sequencer 地址状态
 
-`vsp_sequencer_state_engine` 已提供第一版 decoded address-state reference：
+`vsp_sequencer_state_engine` 已提供并接入第一版 address-state path：
 
 - 默认每 execution context 具有 32 个 32-bit state register；寄存器 0 恒为零；
 - `SMOVI`、`SADD`、`SADDI`，按 32-bit modulo arithmetic 工作；
 - command/completion 均可背压，completion stalled 时不会重复写状态；
-- 组合 base query 供未来 MEMORY decoder 在 **action admission** 时快照地址。
+- 组合 base query 供 MEMORY decoder 在 **action admission** 时快照地址。
 
 该模块不持有 PC、不发 memory request，也没有 flags、branch、loop、scalar load/store、
 CSR 或中断入口。它只是 sequencer 生成地址、stride 和 count 的状态，不是一颗独立 CPU。
-当前尚未把它接到 CONTROL-uword decoder 或 encoded MEMORY path。
+strict program wrapper 已把 CONTROL-state decoder、两词 MEMORY decoder、state query 与
+现有 vector memory engine 接通；端到端回归覆盖 state 地址构造、VLOAD、EXEC、VSTORE
+和 END。该接法仍是 slot-0/global-single-active 基线，不代表并发 action window 已绑定。
 
 ## 6. 后续实现顺序
 
-1. 定义 MEMORY record semantic decode，并在 admission 时读取/快照 state base；
-2. 给 program launch 增加 I-side address-space/context，接通 ordered fetch provider；
+1. 给 program launch 增加 I-side address-space/context，接通 ordered fetch provider；
+2. 把 state/MEMORY 的 resolved base 与 RAW/WAW 依赖纳入 multi-record action window；
 3. 若 I/D 最终共享端口，实现单 lower-beat outstanding 的公平 adapter，并覆盖 I/D
    竞争、response 背压、fault 累积和 reset；
 4. 有 workload 命中率与带宽数据后，再选择 I-cache/D-cache line、容量和 replacement；

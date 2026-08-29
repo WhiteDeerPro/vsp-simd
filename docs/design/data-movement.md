@@ -5,9 +5,11 @@
 > `vsp_cluster_memory_wrapper` 已把 blocking 的 vector memory engine 接到
 > EXEC cluster，形成 decoded LOAD→EXEC→STORE 参考闭环。
 > 其外的 `vsp_cluster_controller_wrapper` 已增加 strict class router 和跨 class
-> 程序顺序：MEMORY descriptor 仍为 decoded，EXEC 使用 profile-v0 packet。
-> uword program wrapper 中的 MEMORY record 仍形成有序 decode rejection；encoded
-> MEMORY semantic decoder 尚未接通。`sim/models/vsp_ordered_dmem_model.sv` 已提供
+> 程序顺序：进入该层的 MEMORY descriptor 为 decoded canonical 形态，EXEC 使用
+> profile-v0 packet。更外层 uword program wrapper 已接通固定两 word MEMORY semantic
+> decoder、sequencer address-state base 快照和 CONTROL state decoder；strict slot-0
+> 定向程序已执行 `SMOVI/SADD/SADDI → VLOAD → EXEC → VSTORE → END`。
+> `sim/models/vsp_ordered_dmem_model.sv` 已提供
 > 可配置 FIFO outstanding 的有序仿真 endpoint，但不代表物理 SRAM 已实现。
 > 动态 owner/resource controller、物理 local SRAM、MMU/cache 与 DMA 仍待实现。
 > 本文不规定总线宽度、SRAM 组织或 DMA 描述符格式。
@@ -168,9 +170,9 @@ memory fault/partial detail 保存进统一可背压 completion，并禁止年�
 CONTROL 越过尚未退休的 MEMORY。owner snapshot 当前由外部提供，至少从 action
 accept 保持到 child completion；这不是动态 owner table。
 
-## 5. 首个集成闭环与延期项 `[已实现参考 + 延期项]`
+## 5. Strict 集成闭环与延期项 `[已实现参考 + 延期项]`
 
-首个闭环可以保持 blocking：
+当前闭环保持 blocking：
 
 ```text
 dmem LOAD response
@@ -191,6 +193,18 @@ decoded STORE → END` action stream，不由 driver 等待并选择下一 class
 controller 自动建立顺序，并验证统一 completion 背压、MEMORY owner precheck、
 fault/partial detail 与 END。该 closure 仍是 blocking single-active reference，
 不表示 queue-head sequencer、物理 SRAM 或 DMA 已完成。
+
+再外层 `vsp_uword_cluster_program_wrapper` 已从 behavioral control store 的 byte-PC
+stream 解析 CONTROL state 与 MEMORY record。当前 directed closure 先以
+`SMOVI/SADD/SADDI` 构造 `0x100/0x104` 两个 effective address，再执行单组四 byte
+`VLOAD → ADD-immediate EXEC → VSTORE → END`；test-side dmem responder 验证
+address space/context、request backpressure、load data、store data/strobe，以及八项
+有序 completion/tag。MEMORY admission 快照 state base，后续 transfer 不 live-read
+state RF。
+
+该闭环仍只消费 framer slot 0，并在全局 single-active controller 下逐项推进；它没有
+接入 `vsp_ordered_action_window`，也不证明 multi-record 并发 admission、计算/搬运
+重叠或高吞吐 memory supply 已实现；program path 也没有 loop/branch/redirect。
 
 物理 local SRAM、DMA、
 cache/MMU adapter、packetizer/gearbox 和系统级 ingress/capture FIFO 也未集成；

@@ -1,0 +1,16 @@
+# End-to-end state/address, vector-memory and SIMD4 program.  The directed
+# wrapper test launches only group 0 with span=4, supplies 0x04030201 at
+# effective address 0x100, and expects 0x05040302 to be stored at 0x104.
+
+entry:
+    SMOVI rd=1 imm=0x100
+    SMOVI rd=2 imm=4
+    SADD rd=3 rs1=1 rs2=2
+    SADDI rd=4 rs1=3 imm=-8
+
+    VLOAD space=local addr_context=0x2a sbase=4 vrf=1 span=4 offset=4
+    EXEC_ALU_RI op=add mode=byte va=1 vd=2 imm=1
+    VSTORE space=local addr_context=0x2a sbase=3 vrf=2 span=4
+
+program_end:
+    CONTROL_END

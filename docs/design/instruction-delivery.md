@@ -3,10 +3,11 @@
 > 状态：uword bundle framing/class predecoder、单 record assembler、三 record framer、
 > 顺序 byte-PC program source、浅层 ordered action window、EXEC cluster integration、
 > late-decode holding stage、EXEC-uword profile-v0 canonical expander，以及 strict ordered
-> class router 已有参考 RTL。严格 PC→EXEC/END program closure 已接通；多 record
+> class router 已有参考 RTL。严格
+> PC→CONTROL-state→MEMORY→EXEC→MEMORY→END program closure 已接通；多 record
 > framer 与 action window 的三项并发路径仍是独立吞吐/依赖边界，尚未替换 strict
-> single-active action-stream 路径。MEMORY semantic decode、完整 admission metadata 与
-> 并发 queue-head integration 仍未完成。
+> single-active action-stream 路径。完整 admission metadata、并发 queue-head/window
+> integration、loop/redirect 与物理 memory hierarchy 仍未完成。
 > 本文用于比较实现路径，不拥有
 > 最终外部指令格式或控制器组织的决策权。
 
@@ -69,19 +70,23 @@
   已把 profile-v0 EXEC expander、decoded MEMORY 和最小 `CONTROL.END` 接到这条路径。
   该路径全局只保留一个 active action，尚未复用 per-context queue/head scheduler。
 - `vsp_uword_action_adapter` 与 `vsp_uword_cluster_program_wrapper` 已把 behavioral
-  control store、byte-PC source、multi-record framer、launch envelope、profile-v0 EXEC
-  和 final `CONTROL.END` 接到上述 strict controller。当前 closure 只消费 framer 的
-  slot 0，并在 controller 完成前保持一项 action；MEMORY record 只产生 ordered decode
-  reject，不会被零填充为 memory command。因此它证明 PC→EXEC/END 的严格保序闭环，
-  不证明三项 admission 或 action window 已接入执行端。
+  control store、byte-PC source、multi-record framer、launch envelope、profile-v0 EXEC、
+  fixed-profile MEMORY decoder、CONTROL-state decoder/state engine 和 final
+  `CONTROL.END` 接到 strict 路径。当前 closure 只消费 framer slot 0，并在前一 action
+  completion 退休前阻止年轻 record；MEMORY admission 从同 context state RF 快照 base，
+  再向既有 decoded memory engine 提交 canonical descriptor。定向程序已执行
+  `SMOVI/SADD/SADDI → VLOAD → EXEC → VSTORE → END`，但不证明三项 admission 或
+  action window 已接入执行端。
 
 因此现在可以准确地说：full-decoded reference profile 已能执行和退休 EXEC，
 decode holding 协议、EXEC canonical expansion、跨 class 严格顺序、multi-record
-framing，以及一个独立的浅层依赖窗口都已有验证。尚缺的是 MEMORY/CONTROL semantic
-decode、真实 shared-resource metadata，以及把三 record admission、ordered window、
-late decode 和各 class engine 组成同一条并发控制链。严格 action-stream 接法只证明
-PC→record→EXEC/END 的保序合同能够闭环，不等于三发射 sequencer 已完成；当前
-MEMORY 可执行路径仍由 decoded reference 入口验证，而不是从 uword stream 驱动。
+framing，以及一个独立的浅层依赖窗口都已有验证。当前 MEMORY/CONTROL semantic
+decode 已覆盖固定 profile 的 `VLOAD/VSTORE`、`SMOVI/SADD/SADDI` 与 `END`；尚缺的是
+更多 CONTROL 语义、真实 shared-resource metadata，以及把三 record admission、
+ordered window、late decode 和各 class engine 组成同一条并发控制链。严格
+action-stream 接法已经证明
+PC→record→state/MEMORY/EXEC/END 的保序合同能够闭环，但不等于三发射 sequencer
+已完成。
 
 ### 1.1 Uword bundle framing 与 class predecode `[RTL事实 + 内部实验]`
 
@@ -105,13 +110,16 @@ MEMORY 可执行路径仍由 decoded reference 入口验证，而不是从 uword
 EXEC 是否拥有 extension 由 `vsp_exec_uword_extension_required()` 唯一判定，canonical
 expander 复用同一函数。已经识别的 EXEC format 即使 sub-op、reserved bit 或地址
 随后被判非法，仍按结构位消费 extension。MEMORY/CONTROL body 与 EXEC extension
-都是 opaque 32-bit word；它们的高 nibble 即使看起来像另一个 header，也不会被再次
-分类。
+对 framing 层都是 opaque 32-bit word；它们的高 nibble 即使看起来像另一个 header，
+也不会被再次分类。class decoder 随后才解释合法 profile：当前 MEMORY 只接受固定
+header+signed-offset 两 word，CONTROL state 的 `SMOVI/SADDI` 接受 header+immediate，
+`SADD` 与 canonical `END` 是单 word。
 
-`0xb/0xc + body_count` 只是当前内部 stream framing experiment，不定义
-MEMORY/CONTROL body 字段，也不承诺最终 ISA。它以两个 header bit 换取 class decoder
-尚未完成时的通用 1..4-word framing；相应代价是这些位损坏可能使扫描多消费后续
-word。若后续可靠性或 code-density 证据不接受该权衡，可以版本化改成
+`0xb/0xc + body_count` 仍是当前内部 stream framing experiment，不承诺最终 ISA。
+当前 semantic decoder 在这个通用 framing 上定义了一个固定子集，并把其余长度、
+reserved bit 或非 canonical offset 当作 ordered decode error；framer 本身不解释这些
+字段。两个 body-count bit 的代价仍是：字段损坏可能使扫描多消费后续 word。若后续
+可靠性或 code-density 证据不接受该权衡，可以版本化改成
 `(major, subformat)` 固定长度表；不能让两套长度规则在同一 profile 中并存。
 
 一个 bundle 可同时输出多条归一化 record；未完成的最后一条不输出为完整 record，
@@ -177,8 +185,9 @@ bundle 不参与组包；assembler 置 sticky protocol error，并丢弃到该 s
 最终 bundle，避免错误地址的数据被拼成伪 record。
 
 `tools/vsp_uword_asm.py` 是验证这条内部路径的工程辅助工具，不是外部 ISA
-assembler。它目前能产生 profile-v0 ALU RR/RI、opaque MEMORY/CONTROL、
-`CONTROL_END` 和 raw word，并可输出 byte-PC listing 与 symbol JSON。ALU builder
+assembler。它目前能产生 profile-v0 ALU RR/RI、`SMOVI/SADD/SADDI`、
+`VLOAD/VSTORE`、opaque MEMORY/CONTROL、`CONTROL_END` 和 raw word，并可输出
+byte-PC listing 与 symbol JSON。semantic builder
 拒绝它能静态识别的 profile-v0 mode/reduction/unused-field 非法组合；故意构造非法
 record 时使用 raw word。外部 instruction 宽度和软件 ABI 仍未选择。
 
@@ -215,14 +224,18 @@ behavioral control store
     -> single-outstanding byte-PC program source
     -> 4-word multi-record framer
     -> slot-0 action holding / vsp_uword_action_adapter
-    -> strict vsp_cluster_controller_wrapper
-    -> EXEC group completion/result or ordered error
+    -> CONTROL state engine or strict vsp_cluster_controller_wrapper
+    -> MEMORY vector engine / EXEC cluster / ordered error
     -> final CONTROL.END retirement
 ```
 
-launch 捕获 `context/group_mask/tag_seed`，后续每个被 controller 接受的 record 递增 tag。
-adapter 检查 EXEC base/extension 结构、undefined/truncated record，以及 canonical
-`CONTROL.END`。END 只有位于 `[start_pc,end_pc)` 的最终一个 word 才合法；early END
+launch 捕获 `context/group_mask/tag_seed`，后续每个被执行端接受的 record 递增 tag。
+adapter 检查 EXEC base/extension、CONTROL state、MEMORY descriptor、
+undefined/truncated record，以及 canonical `CONTROL.END`。CONTROL decoder 把
+`SMOVI/SADD/SADDI` 送入 per-context address-state engine；MEMORY decoder 在 admission
+时读取同 context base register，并把已快照的 base、signed offset、address
+space/context、VRF row、span 与 launch group mask 送入 memory engine。END 只有位于
+`[start_pc,end_pc)` 的最终一个 word 才合法；early END
 先停止向 framer 输入更年轻 record，再以 ordered control reject 失败并排空 source。
 EOF 没有 END、截断 EXEC、未知 CONTROL 和 fetch fault 都形成可观察的 program failure；
 fetch fault 通过 `stream_abort` 清除 incomplete tail，允许下一次 launch 重新开始。opaque
@@ -231,9 +244,9 @@ MEMORY body 中出现 `0xC0000000` 不会被当作 END。
 这个 wrapper 刻意只令 `record_ready[0]` 有效，并在一项 action holding 与全局
 single-active controller 后推进。尽管 framer 参数仍为 `ADMIT_SLOTS=3`，closure 的
 实测吞吐上限不是三 action/cycle；其目的只是证明 record boundary、envelope、ordered
-reject、EXEC writeback/result 和 END 生命周期可以从 PC 串到退休。它也没有接
-`vsp_ordered_action_window`，没有 MEMORY uword semantic decoder、branch/loop、真实
-I-cache 或持续四 word/cycle 的供给结构。
+reject、state RAW、MEMORY data movement、EXEC writeback/result 和 END 生命周期可以
+从 PC 串到退休。它没有接 `vsp_ordered_action_window`，也没有 branch/loop、真实
+I-cache、MMU、DMA 或持续四 word/cycle 的供给结构。
 
 ## 2. 区分三种表示 `[分析模型]`
 
@@ -627,9 +640,10 @@ barrier 语义的实测复杂度。
   result/reject 的 `simd_cluster_exec`；
 - 当前已有 standalone bundle framing/class predecoder、byte-PC program source、跨
   bundle stateful assembler/multi-record framer、strict single-active class
-  router、ordered error/completion、最小 `CONTROL.END` 和已接入的 VRF-only memory
-  engine；`vsp_uword_cluster_program_wrapper` 已把 program record 经 action adapter 接到
-  strict EXEC/END 路径，但只消费 slot 0，MEMORY uword 仍作 ordered reject。仍没有
+  router、ordered error/completion、CONTROL state engine、当前固定 profile 的
+  `VLOAD/VSTORE` decoder、最小 `CONTROL.END` 和已接入的 VRF-only memory engine；
+  `vsp_uword_cluster_program_wrapper` 已把 program record 经 action adapter 接到
+  strict state/MEMORY/EXEC/END 路径，但只消费 slot 0。仍没有
   multi-record→ordered-window→多 engine 的并发接线、真实 admission resource
   predecode、queue-head integration、动态 owner/resource state、一般化 barrier、
   loop/redirect 或 host completion；当前 control store 只是行为模型；

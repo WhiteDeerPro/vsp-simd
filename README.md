@@ -16,7 +16,8 @@ VSP / SoC 子系统（未来）
     │   └── completion tracker / result collector / reject sink
     ├── strict ordered action controller / class router（参考 RTL 已实现）
     │   ├── EXEC → profile-v0 expander → EXEC cluster
-    │   ├── MEMORY → vector memory engine
+    │   ├── MEMORY → semantic decoder / address-state snapshot → vector memory engine
+    │   ├── CONTROL state → sequencer address-state engine
     │   └── CONTROL.END → strong-quiescent completion
     ├── VRF vector memory engine（独立参考 RTL 已实现）
     ├── VRF arbiter（参考 RTL 已实现）
@@ -24,12 +25,12 @@ VSP / SoC 子系统（未来）
     ├── byte-PC program source / control-store model / bundle assembler（独立参考 RTL 已实现）
     ├── multi-record framer / slot-0 action adapter / strict program wrapper（已接通）
     ├── ordered action window（参考 RTL 已验证，尚未接入 strict program path）
-    ├── sequencer address-state engine（decoded 参考 RTL；尚未接入 program path）
+    ├── sequencer address-state engine（已接入 strict slot-0 program path）
     ├── ordered I-side fetch 仿真模型（simulation only）
     ├── ordered dmem 仿真模型（可配置 FIFO outstanding；simulation only）
     ├── lane route（组内 crossbar 与单字 uword 已接通；跨组 route 延期）
-    └── MEMORY semantic decode、address-state binding、admission metadata、
-        动态 owner/resource 与 loop/redirect（待实现）
+    └── admission metadata、动态 owner/resource、并发 action-window binding
+        与 loop/redirect（待实现）
 ```
 
 “搜索、凝视、分层、附着、抽象、联合、追踪”属于软件算法。硬件不预设这些语义，只提供能够忠实、高效编纂这些算法的通用原语。
@@ -90,8 +91,9 @@ VSP / SoC 子系统（未来）
 - `vsp_cluster_controller_wrapper`：把 profile-v0 encoded EXEC、decoded MEMORY、
   EXEC cluster 与 vector memory engine 接成一条有序 action 链；EXEC data result
   仍与 command completion 独立返回；
-- 内部 uword 工具与 program frontend reference：把 profile-v0 EXEC、opaque
-  MEMORY/CONTROL 或 raw word 编制成 hex/listing/symbol，写入可替换的 control-store
+- 内部 uword 工具与 program frontend reference：把 profile-v0 EXEC、
+  `SMOVI/SADD/SADDI` CONTROL state、`VLOAD/VSTORE` MEMORY、opaque record 或 raw word
+  编制成 hex/listing/symbol，写入可替换的 control-store
   行为模型，从参数化 byte PC 顺序读取，并跨 bundle 组装为单 record ready/valid；
   工具提供本地 `EXEC_ROUTE` 与 `EXEC_REDUCE` pseudo-op；
 - 独立 `vsp_vector_memory_engine`：VRF-only，一个 active command、一个
@@ -105,7 +107,8 @@ VSP / SoC 子系统（未来）
   queue；它尚未接 program source，也不是 I-cache；
 - `vsp_sequencer_state_engine`：per-context 32-bit address state、恒零 register 0、
   `SMOVI/SADD/SADDI`、可背压 completion 和 base query；它不持有 PC 或 memory port，
-  尚未接 CONTROL/MEMORY semantic decode；
+  当前已由 strict program wrapper 的 CONTROL decoder 驱动，并在 MEMORY action admission
+  时提供 base 快照；
 - `vsp_cluster_vrf_arbiter`：在多个 VRF-only client 与 cluster 的单组 group VRF
   state-read/write 端点之间做 RR 仲裁，一次保留一个 subrequest owner；
 - Verilator lint 与自检仿真。
@@ -119,11 +122,13 @@ parser/expander 也已在 controller wrapper 的 action 入口接入。当前 cl
 验证的是一个保守的、全局单 active action 路径。`vsp_uword_predecoder` 已能在
 一个 4-word bundle 内划分 mixed uword record 并预判 dispatch class；
 `vsp_uword_cluster_program_wrapper` 已把线性 byte PC、control-store、multi-record
-framer、launch envelope、slot-0 action adapter 和 strict EXEC/END controller 接通。
-它仍只消费 slot 0；MEMORY uword 当前有序拒绝，三 record admission metadata、
-ordered window/class-engine binding 与 queue-head late-decode 重排尚未接通。
-因此该 reference integration 可以验证程序顺序和完成合同，但还不是完整 sequencer，
-也不代表最终吞吐组织。
+framer、launch envelope、slot-0 action adapter、state/MEMORY semantic decoder 和 strict
+controller 接通。当前定向闭环能够从 encoded stream 顺序执行
+`SMOVI/SADD/SADDI → VLOAD → EXEC → VSTORE → END`，并在 MEMORY admission 时快照
+state base。它仍只消费 slot 0；三 record admission metadata、ordered window 与多
+engine 并发 binding、queue-head late-decode 重排尚未接通。因此该 reference
+integration 可以验证程序顺序、地址状态、数据搬运和完成合同，但还不是并发
+sequencer，也不代表最终吞吐组织。
 跨组 lane 路由不再候选为与 MEMORY 并列的独立 command class。当前候选是寄存器形式的
 gather：`DR[lane] = SR[IR[lane]]`，其中索引向量 IR 由 VRF 提供，允许一对一置换
 与广播，不支持 scatter（同一操作内不会出现多通道写同一通道）。它属于 Vector ALU
@@ -137,6 +142,7 @@ DMA，不表示整个存储路径已闭合。
 `LOCAL/PHYSICAL/TRANSLATED` address-space 类别；这只定义可插入未来
 翻译/路由 adapter 的有序 data-memory 逻辑口，当前没有 MMU、TLB、
 PTW 或 cache；只有独立的 I-side protocol model，不是 architectural IFetch。
+当前 control-store source 也不是 I-cache；program path 没有 loop/branch/redirect。
 
 术语上，当前内部信号名为 `op_i`/`exec_op_i`；6-bit `simd_op_e`
 只是 canonical `EXEC` 的 function，不是完整 opcode。项目尚未定义
@@ -180,7 +186,8 @@ make test
 
 ```bash
 make test-vsp-sequencer-state-engine test-vsp-ordered-ifetch-model
-make test-vsp-uword-asm test-vsp-uword-program-frontend
+make test-vsp-uword-asm test-vsp-uword-program-frontend \
+  test-vsp-uword-cluster-program
 python3 tools/vsp_uword_asm.py examples/uword/pc_smoke.uasm \
   -o /tmp/vsp-pc-smoke.hex --base-pc 0x20 \
   --listing /tmp/vsp-pc-smoke.lst --symbols /tmp/vsp-pc-smoke.json

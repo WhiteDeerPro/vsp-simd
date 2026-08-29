@@ -3,8 +3,17 @@ module vsp_uword_action_adapter #(
   parameter int GROUP_COUNT = 4,
   parameter int CONTEXT_COUNT = 2,
   parameter int TAG_W = 8,
+  parameter int MEM_EADDR_W = 32,
+  parameter int STATE_REGS = 32,
+  parameter int VREGS = 16,
+  parameter int MAX_SPAN_BYTES =
+      ((GROUP_COUNT*4) < vsp_uword_pkg::VSP_MEMORY_UWORD_MAX_SPAN_BYTES) ?
+          (GROUP_COUNT*4) :
+          vsp_uword_pkg::VSP_MEMORY_UWORD_MAX_SPAN_BYTES,
   parameter int DECODE_ERROR_W =
       vsp_exec_uword_pkg::VSP_EXEC_UWORD_ERROR_W,
+  parameter int STATE_REG_INDEX_W = (STATE_REGS <= 2) ? 1 :
+                                    $clog2(STATE_REGS),
   parameter int CONTEXT_W = (CONTEXT_COUNT <= 2) ? 1 :
                             $clog2(CONTEXT_COUNT)
 ) (
@@ -57,6 +66,39 @@ module vsp_uword_action_adapter #(
   output logic [vsp_exec_uword_pkg::VSP_EXEC_UWORD_W-1:0]
                                                      action_exec_extension_word_o,
 
+  // CONTROL-state actions remain in the ordered record stream but are
+  // executed by the sequencer-local state engine rather than by the cluster
+  // controller.  A legal state action uses an otherwise undefined CONTROL op
+  // value so an integration mistake cannot silently turn it into END.
+  output logic                                      action_is_state_o,
+  output logic [vsp_sequencer_state_pkg::VSP_STATE_OP_W-1:0]
+                                                     action_state_op_o,
+  output logic [STATE_REG_INDEX_W-1:0]              action_state_rd_o,
+  output logic [STATE_REG_INDEX_W-1:0]              action_state_rs1_o,
+  output logic [STATE_REG_INDEX_W-1:0]              action_state_rs2_o,
+  output logic [31:0]                               action_state_imm_o,
+
+  // The MEMORY decoder queries sequencer state combinationally.  Its resolved
+  // base and all other descriptor fields must be sampled on action admission;
+  // no downstream engine may live-read the state RF.
+  output logic                                      memory_base_read_valid_o,
+  output logic [vsp_uword_pkg::VSP_MEMORY_UWORD_STATE_REG_W-1:0]
+                                                     memory_base_read_reg_o,
+  input  logic [MEM_EADDR_W-1:0]                    memory_base_read_data_i,
+  input  logic                                      memory_base_read_legal_i,
+  output logic [vsp_pkg::VSP_MEM_OP_W-1:0]         action_memory_op_o,
+  output logic [vsp_pkg::VSP_MEM_ADDR_SPACE_W-1:0]
+                                                     action_memory_addr_space_o,
+  output logic [vsp_uword_pkg::VSP_MEMORY_UWORD_ADDR_CONTEXT_W-1:0]
+                                                     action_memory_addr_context_o,
+  output logic [MEM_EADDR_W-1:0]                    action_memory_base_eaddr_o,
+  output logic signed [vsp_uword_pkg::VSP_MEMORY_UWORD_OFFSET_W-1:0]
+                                                     action_memory_eaddr_offset_o,
+  output logic [vsp_uword_pkg::VSP_MEMORY_UWORD_VRF_ROW_W-1:0]
+                                                     action_memory_vrf_row_o,
+  output logic [vsp_uword_pkg::VSP_MEMORY_UWORD_SPAN_BYTES_W-1:0]
+                                                     action_memory_span_bytes_o,
+
   // Trace-only metadata remains aligned with action_valid_o and is useful for
   // associating an ordered rejection with its source byte PC.
   output logic [PC_W-1:0]                           action_start_pc_o,
@@ -74,8 +116,30 @@ module vsp_uword_action_adapter #(
   logic expected_exec_extension;
   logic exec_shape_ok;
   logic complete_shape;
-  logic canonical_end;
   logic action_fire;
+
+  logic control_out_valid;
+  logic control_is_end;
+  logic control_is_state;
+  logic control_legal;
+  logic [VSP_EXEC_UWORD_ERROR_W-1:0] control_error;
+  logic [vsp_sequencer_state_pkg::VSP_STATE_OP_W-1:0]
+      control_state_op;
+  logic [STATE_REG_INDEX_W-1:0] control_state_rd;
+  logic [STATE_REG_INDEX_W-1:0] control_state_rs1;
+  logic [STATE_REG_INDEX_W-1:0] control_state_rs2;
+  logic [31:0] control_state_imm;
+
+  logic memory_out_valid;
+  logic memory_legal;
+  logic [VSP_EXEC_UWORD_ERROR_W-1:0] memory_error;
+  logic [vsp_pkg::VSP_MEM_OP_W-1:0] memory_op;
+  logic [vsp_pkg::VSP_MEM_ADDR_SPACE_W-1:0] memory_addr_space;
+  logic [VSP_MEMORY_UWORD_ADDR_CONTEXT_W-1:0] memory_addr_context;
+  logic [MEM_EADDR_W-1:0] memory_base_eaddr;
+  logic signed [VSP_MEMORY_UWORD_OFFSET_W-1:0] memory_eaddr_offset;
+  logic [VSP_MEMORY_UWORD_VRF_ROW_W-1:0] memory_vrf_row;
+  logic [VSP_MEMORY_UWORD_SPAN_BYTES_W-1:0] memory_span_bytes;
 
   assign header = record_words_i[0 +: VSP_UWORD_W];
   assign expected_exec_extension =
@@ -86,9 +150,55 @@ module vsp_uword_action_adapter #(
       (record_word_count_i ==
        (expected_exec_extension ? VSP_UWORD_WORD_COUNT_W'(2) :
                                   VSP_UWORD_WORD_COUNT_W'(1)));
-  assign canonical_end = complete_shape &&
-      (record_word_count_i == VSP_UWORD_WORD_COUNT_W'(1)) &&
-      vsp_uword_is_control_end(header);
+  vsp_control_uword_decoder #(
+    .STATE_REGS(STATE_REGS),
+    .STATE_REG_INDEX_W(STATE_REG_INDEX_W)
+  ) u_control_decoder (
+    .record_valid_i(record_valid_i &&
+                    record_class_i == VSP_ACTION_CLASS_CONTROL),
+    .record_word_count_i,
+    .record_present_word_count_i,
+    .record_words_i,
+    .record_truncated_i,
+    .out_valid_o(control_out_valid),
+    .is_control_end_o(control_is_end),
+    .is_state_o(control_is_state),
+    .legal_o(control_legal),
+    .error_cause_o(control_error),
+    .state_op_o(control_state_op),
+    .state_rd_o(control_state_rd),
+    .state_rs1_o(control_state_rs1),
+    .state_rs2_o(control_state_rs2),
+    .state_imm_o(control_state_imm)
+  );
+
+  vsp_memory_uword_decoder #(
+    .MEM_EADDR_W(MEM_EADDR_W),
+    .STATE_REGS(STATE_REGS),
+    .VREGS(VREGS),
+    .MAX_SPAN_BYTES(MAX_SPAN_BYTES)
+  ) u_memory_decoder (
+    .record_valid_i(record_valid_i &&
+                    record_class_i == VSP_ACTION_CLASS_MEMORY),
+    .record_word_count_i,
+    .record_present_word_count_i,
+    .record_words_i,
+    .record_truncated_i,
+    .base_read_valid_o(memory_base_read_valid_o),
+    .base_read_reg_o(memory_base_read_reg_o),
+    .base_read_data_i(memory_base_read_data_i),
+    .base_read_legal_i(memory_base_read_legal_i),
+    .out_valid_o(memory_out_valid),
+    .legal_o(memory_legal),
+    .error_cause_o(memory_error),
+    .op_o(memory_op),
+    .addr_space_o(memory_addr_space),
+    .addr_context_o(memory_addr_context),
+    .base_eaddr_o(memory_base_eaddr),
+    .eaddr_offset_o(memory_eaddr_offset),
+    .vrf_row_o(memory_vrf_row),
+    .span_bytes_o(memory_span_bytes)
+  );
 
   always_comb begin
     action_valid_o = record_valid_i;
@@ -104,8 +214,21 @@ module vsp_uword_action_adapter #(
     action_exec_extension_valid_o = 1'b0;
     action_exec_extension_word_o =
         record_words_i[VSP_UWORD_W +: VSP_UWORD_W];
+    action_is_state_o = 1'b0;
+    action_state_op_o = '0;
+    action_state_rd_o = '0;
+    action_state_rs1_o = '0;
+    action_state_rs2_o = '0;
+    action_state_imm_o = '0;
+    action_memory_op_o = '0;
+    action_memory_addr_space_o = '0;
+    action_memory_addr_context_o = '0;
+    action_memory_base_eaddr_o = '0;
+    action_memory_eaddr_offset_o = '0;
+    action_memory_vrf_row_o = '0;
+    action_memory_span_bytes_o = '0;
     action_start_pc_o = record_start_pc_i;
-    action_is_control_end_o = canonical_end;
+    action_is_control_end_o = control_is_end;
 
     if (!record_major_defined_i) begin
       action_decode_error_o =
@@ -131,24 +254,41 @@ module vsp_uword_action_adapter #(
         end
 
         VSP_ACTION_CLASS_MEMORY: begin
-          // MEMORY framing is intentionally opaque in this first executable
-          // closure.  It must retire as an ordered decode rejection rather
-          // than being interpreted as a zero-filled memory descriptor.
-          action_decode_error_o =
-              DECODE_ERROR_W'(VSP_EXEC_UWORD_ERROR_BAD_FORMAT);
+          action_legal_o = memory_legal;
+          action_decode_error_o = DECODE_ERROR_W'(memory_error);
+          action_memory_op_o = memory_op;
+          action_memory_addr_space_o = memory_addr_space;
+          action_memory_addr_context_o = memory_addr_context;
+          action_memory_base_eaddr_o = memory_base_eaddr;
+          action_memory_eaddr_offset_o = memory_eaddr_offset;
+          action_memory_vrf_row_o = memory_vrf_row;
+          action_memory_span_bytes_o = memory_span_bytes;
         end
 
         VSP_ACTION_CLASS_CONTROL: begin
           action_group_mask_o = '0;
-          if (canonical_end && record_control_end_allowed_i) begin
+          action_is_state_o = control_is_state;
+          action_state_op_o = control_state_op;
+          action_state_rd_o = control_state_rd;
+          action_state_rs1_o = control_state_rs1;
+          action_state_rs2_o = control_state_rs2;
+          action_state_imm_o = control_state_imm;
+          if (control_is_end && record_control_end_allowed_i) begin
             action_legal_o = 1'b1;
             action_decode_error_o =
                 DECODE_ERROR_W'(VSP_EXEC_UWORD_ERROR_NONE);
+          end else if (control_is_state) begin
+            // 2'h1 is intentionally undefined by vsp_action_pkg.  Legal state
+            // records are intercepted by the sequencer wrapper; accidentally
+            // forwarding one to the generic controller yields CONTROL_ERROR
+            // instead of terminating the program.
+            action_control_op_o = VSP_CONTROL_OP_W'(1);
+            action_legal_o = control_legal;
+            action_decode_error_o = DECODE_ERROR_W'(control_error);
           end else begin
-            // Profile v0 defines no other CONTROL operation.  In particular,
-            // C0000001 and a CONTROL record carrying body words are not END.
-            action_decode_error_o =
-                DECODE_ERROR_W'(VSP_EXEC_UWORD_ERROR_BAD_SUBOP);
+            action_decode_error_o = DECODE_ERROR_W'(
+                control_is_end ? VSP_EXEC_UWORD_ERROR_BAD_SUBOP :
+                                 control_error);
           end
         end
 
@@ -183,7 +323,20 @@ module vsp_uword_action_adapter #(
     if (GROUP_COUNT < 1) $error("GROUP_COUNT must be positive");
     if (CONTEXT_COUNT < 1) $error("CONTEXT_COUNT must be positive");
     if (TAG_W < 1) $error("TAG_W must be positive");
+    if (MEM_EADDR_W < 1) $error("MEM_EADDR_W must be positive");
+    if (STATE_REGS < 1 || STATE_REGS > 32)
+      $error("STATE_REGS must fit the current five-bit profile");
+    if (VREGS < 1 || VREGS > 16)
+      $error("VREGS must fit the current four-bit profile");
+    if (MAX_SPAN_BYTES < 1 ||
+        MAX_SPAN_BYTES > VSP_MEMORY_UWORD_MAX_SPAN_BYTES)
+      $error("MAX_SPAN_BYTES must fit the current five-bit profile");
     if (DECODE_ERROR_W != VSP_EXEC_UWORD_ERROR_W)
       $error("adapter diagnostics require EXEC-uword error width");
   end
+
+  /* verilator lint_off UNUSED */
+  logic decoder_observability_used;
+  assign decoder_observability_used = control_out_valid ^ memory_out_valid;
+  /* verilator lint_on UNUSED */
 endmodule

@@ -59,7 +59,7 @@ digraph vsp_current_integration {
       label="single action holding\nslot 0 only"
     ];
     adapter [
-      label="uword action adapter\nlaunch envelope + monotonically advancing tag"
+      label="uword action adapter\nclass semantic decode + launch envelope\nmonotonically advancing tag"
     ];
 
     launch -> pc_source [label="start"];
@@ -91,10 +91,10 @@ digraph vsp_current_integration {
       fillcolor="#ecf8ef",
       color="#4e8f62"
     ];
-    memory_reject [
-      label="MEMORY uword\nordered decode reject\n(no semantic decoder yet)",
-      fillcolor="#fff0f0",
-      color="#b45b5b"
+    semantic_decode [
+      label="CONTROL-state / MEMORY profile v0\nrecord legality + base snapshot",
+      fillcolor="#ecf8ef",
+      color="#4e8f62"
     ];
     end_control [
       label="canonical final CONTROL.END\nwait strong quiescence",
@@ -107,9 +107,15 @@ digraph vsp_current_integration {
       color="#4e8f62"
     ];
 
-    adapter -> action_select [label="ordered action"];
+    adapter -> semantic_decode [label="ordered record"];
+    semantic_decode -> action_select [label="EXEC / resolved MEMORY / END"];
     action_select -> strict_controller;
-    action_select -> memory_reject [color="#b45b5b", label="current program path"];
+    semantic_decode -> state_engine [label="legal state action"];
+    state_engine -> semantic_decode [
+      color="#8056a6",
+      fontcolor="#684686",
+      label="base query / ordered completion"
+    ];
     strict_controller -> exec_cluster [label="decoded EXEC"];
     strict_controller -> end_control [label="CONTROL"];
     exec_cluster -> strict_controller [
@@ -125,7 +131,7 @@ digraph vsp_current_integration {
   }
 
   subgraph cluster_memory {
-    label="Decoded vector-memory reference path";
+    label="Vector-memory engine path (encoded + decoded ingress)";
     color="#75a986";
     style=rounded;
 
@@ -218,30 +224,25 @@ digraph vsp_current_integration {
   }
 
   state_engine [
-    label="standalone sequencer state engine\nper-context 32-bit state RF\nSMOVI / SADD / SADDI + base query",
+    label="sequencer-local state engine\nper-context 32-bit state RF\nSMOVI / SADD / SADDI + base query",
     shape=box,
     style="rounded,filled",
-    fillcolor="#fff7dc",
-    color="#b58b23"
+    fillcolor="#ecf8ef",
+    color="#4e8f62"
   ];
   control_gap [
-    label="still missing:\nMEMORY-uword semantic decode and base snapshot,\nloop/redirect, scalar L/S, reduction-to-state,\nper-record group-mask state",
+    label="still missing:\nstate/address dependencies in concurrent window,\nloop/redirect, scalar L/S, reduction-to-state,\nper-record group-mask state",
     shape=note,
     style="filled,dashed",
     fillcolor="#fff0f0",
     color="#b45b5b"
-  ];
-  state_engine -> decoded_memory [
-    style=dashed,
-    color="#b58b23",
-    label="base query not yet bound"
   ];
   control_gap -> state_engine [style=dashed, color="#b45b5b"];
   control_gap -> pc_source [style=dashed, color="#b45b5b", label="future redirect"];
 
   legend [
     shape=note,
-    label="Legend\nblue: instantiated uword transport\ngreen: instantiated decoded engine path\namber: verified reference/model, not in strict path\nred/gray dashed: missing or future boundary\npurple: completion/result return",
+    label="Legend\nblue: instantiated uword transport\ngreen: instantiated semantic/engine path\namber: verified reference/model, not in strict path\nred/gray dashed: missing or future boundary\npurple: completion/result return",
     fillcolor="#ffffff",
     color="#9aa7b3"
   ];
