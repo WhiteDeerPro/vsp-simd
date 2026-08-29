@@ -40,9 +40,8 @@ module vsp_exec_uword_expander #(
   output logic [simd_pkg::REDUCE_OP_W-1:0]         reduce_op_o,
   output logic                                      export_narrow_o,
 
-  // Cross-group routing is outside profile v0.  These outputs make the tie-off
-  // explicit at the canonical boundary and leave the existing decoded EXEC
-  // interface unchanged when an adapter is added later.
+  // Profile v0 encodes the already-implemented SIMD4-local source-A route.
+  // Cross-group routing remains outside this expander.
   output logic                                      route_enable_o,
   output logic [simd_pkg::ROUTE_OP_W-1:0]          route_op_o,
   output logic [7:0]                                route_index_o,
@@ -104,6 +103,13 @@ module vsp_exec_uword_expander #(
   logic raw_reduce_enable;
   logic [REDUCE_OP_W-1:0] raw_reduce_op;
   logic raw_export_narrow;
+  logic raw_route_enable;
+  logic [ROUTE_OP_W-1:0] raw_route_op;
+  logic [7:0] raw_route_index;
+  logic [1:0] raw_route_broadcast_index;
+  logic [2:0] raw_route_slide_amount;
+  logic [31:0] raw_route_lower;
+  logic [31:0] raw_route_upper;
 
   logic mode_legal;
   logic writeback_legal;
@@ -155,6 +161,13 @@ module vsp_exec_uword_expander #(
     raw_reduce_enable = 1'b0;
     raw_reduce_op = REDUCE_OP_SUM_U;
     raw_export_narrow = 1'b0;
+    raw_route_enable = 1'b0;
+    raw_route_op = ROUTE_OP_GATHER;
+    raw_route_index = '0;
+    raw_route_broadcast_index = '0;
+    raw_route_slide_amount = '0;
+    raw_route_lower = '0;
+    raw_route_upper = '0;
 
     unique case (format)
       VSP_EXEC_UWORD_FMT_ALU: begin
@@ -485,6 +498,47 @@ module vsp_exec_uword_expander #(
                     (raw_write_vrf || (base_word_i[19:16] == 4'h0));
       end
 
+      VSP_EXEC_UWORD_FMT_ROUTE: begin
+        // A route word is a byte-mode PASS_A whose source-A operand first
+        // traverses the existing SIMD4-local crossbar.  The format is one
+        // word: four 2-bit gather indices fit in route_ctrl[7:0].  Slides use
+        // zero boundary operands in this profile.
+        raw_op = SIMD_OP_PASS_A;
+        raw_elem_mode = ELEM_MODE_BYTE;
+        raw_reads_vrf_a = 1'b1;
+        raw_src_a_addr = base_word_i[25:22];
+        raw_dst_vrf_addr = base_word_i[21:18];
+        mask_selector_present = 1'b1;
+        mask_sel = base_word_i[17:15];
+        raw_write_vrf = base_word_i[14];
+        raw_export_narrow = base_word_i[13];
+        reduce_sel = base_word_i[12:10];
+        raw_route_enable = 1'b1;
+        raw_route_op = base_word_i[27:26];
+        reserved_ok = base_word_i[1:0] == 2'h0;
+        unused_ok = unused_ok &&
+                    (raw_write_vrf || (base_word_i[21:18] == 4'h0));
+
+        unique case (base_word_i[27:26])
+          ROUTE_OP_GATHER: begin
+            raw_route_index = base_word_i[9:2];
+          end
+          ROUTE_OP_BROADCAST: begin
+            raw_route_broadcast_index = base_word_i[3:2];
+            unused_ok = unused_ok && (base_word_i[9:4] == 6'h0);
+          end
+          ROUTE_OP_SLIDE_UP,
+          ROUTE_OP_SLIDE_DOWN: begin
+            raw_route_slide_amount = base_word_i[4:2];
+            unused_ok = unused_ok && (base_word_i[9:5] == 5'h0);
+            // SIMD4 permits complete-group transfer at amount=4.  Values
+            // 5..7 are not deferred to the execution stage.
+            subop_ok = int'(base_word_i[4:2]) <= 4;
+          end
+          default: subop_ok = 1'b0;
+        endcase
+      end
+
       default: begin
         // Safe defaults above form the canonical candidate for a bad format.
       end
@@ -556,7 +610,7 @@ module vsp_exec_uword_expander #(
     .write_arf_i(raw_write_arf),
     .write_mrf_i(raw_write_mrf),
     .reduce_enable_i(raw_reduce_enable),
-    .route_enable_i(1'b0),
+    .route_enable_i(raw_route_enable),
     .mode_legal_o(mode_legal),
     .writeback_legal_o(writeback_legal),
     .reduce_legal_o(reduce_legal),
@@ -662,6 +716,16 @@ module vsp_exec_uword_expander #(
       reduce_enable_o = raw_reduce_enable;
       reduce_op_o = raw_reduce_enable ? raw_reduce_op : REDUCE_OP_SUM_U;
       export_narrow_o = raw_export_narrow;
+
+      route_enable_o = raw_route_enable;
+      route_op_o = raw_route_enable ? raw_route_op : ROUTE_OP_GATHER;
+      route_index_o = raw_route_enable ? raw_route_index : 8'h0;
+      route_broadcast_index_o = raw_route_enable ?
+                                    raw_route_broadcast_index : 2'h0;
+      route_slide_amount_o = raw_route_enable ?
+                                 raw_route_slide_amount : 3'h0;
+      route_lower_o = raw_route_enable ? raw_route_lower : 32'h0;
+      route_upper_o = raw_route_enable ? raw_route_upper : 32'h0;
 
       result_has_narrow_o = raw_export_narrow;
       result_has_reduce_o = raw_reduce_enable;

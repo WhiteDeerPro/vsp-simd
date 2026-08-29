@@ -18,6 +18,8 @@ constexpr uint8_t kCompress = 0x28;
 constexpr uint8_t kMand = 0x2a;
 constexpr uint8_t kByteMode = 0;
 constexpr uint8_t kReduceSumU = 0;
+constexpr uint8_t kReduceMinU = 2;
+constexpr uint8_t kReduceMaxU = 4;
 constexpr uint8_t kReqExec = 0;
 constexpr uint8_t kReqStateWrite = 1;
 constexpr uint8_t kVrf = 0;
@@ -657,6 +659,38 @@ int main(int argc, char** argv) {
   expect_eq("reduce has narrow", 0, dut.rsp_has_narrow_o);
   expect_eq("reduce has value", 1, dut.rsp_has_reduce_o);
   expect_eq("reduce value", 54, dut.rsp_reduce_value_o);
+  pop_both(dut);
+
+  // The same scalar result channel exposes horizontal SIMD4 MIN/MAX and the
+  // winning physical lane. Row 0 holds lanes {10, 2, 30, 4} here.
+  clear_exec(dut);
+  dut.exec_valid_i = 1;
+  dut.exec_tag_i = 0x38;
+  dut.exec_op_i = kPassA;
+  dut.exec_src_a_addr_i = 0;
+  dut.exec_reduce_enable_i = 1;
+  dut.exec_reduce_op_i = kReduceMinU;
+  accept_exec(dut);
+  expect_completion(dut, 0, 0x38, kReqExec, false, true);
+  expect_eq("minimum reduce response valid", 1, dut.rsp_valid_o);
+  expect_eq("minimum reduce has value", 1, dut.rsp_has_reduce_o);
+  expect_eq("minimum reduce value", 2, dut.rsp_reduce_value_o);
+  expect_eq("minimum reduce lane", 1, dut.rsp_reduce_index_o);
+  pop_both(dut);
+
+  clear_exec(dut);
+  dut.exec_valid_i = 1;
+  dut.exec_tag_i = 0x39;
+  dut.exec_op_i = kPassA;
+  dut.exec_src_a_addr_i = 0;
+  dut.exec_reduce_enable_i = 1;
+  dut.exec_reduce_op_i = kReduceMaxU;
+  accept_exec(dut);
+  expect_completion(dut, 0, 0x39, kReqExec, false, true);
+  expect_eq("maximum reduce response valid", 1, dut.rsp_valid_o);
+  expect_eq("maximum reduce has value", 1, dut.rsp_has_reduce_o);
+  expect_eq("maximum reduce value", 30, dut.rsp_reduce_value_o);
+  expect_eq("maximum reduce lane", 2, dut.rsp_reduce_index_o);
   pop_both(dut);
 
   // Empty-mask reduction still returns an envelope, preventing a waiter from

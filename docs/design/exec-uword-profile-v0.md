@@ -1,8 +1,8 @@
 # Internal EXEC uword profile v0
 
 > 状态：内部实验 profile v0。本文给出一套可实现、可验证的
-> `32-bit base + optional 32-bit extension` 编码，用于把当前非 route 的
-> canonical EXEC 控制压缩后交给 sequencer、控制存储和 issue queue。
+> `32-bit base + optional 32-bit extension` 编码，用于把当前 canonical EXEC
+> 控制压缩后交给 sequencer、控制存储和 issue queue。
 > 它不定义外部软件 ISA，不声明 RVV 二进制兼容，也不改变
 > `simd_op_e` 在 SIMD4 边界上的 canonical function 角色。reference action wrapper
 > 已使用本 profile；standalone uword bundle predecoder 已复用其 packet 长度规则，
@@ -31,17 +31,18 @@ MRF address capacity   = 4 rows
 accumulator 宽度时，应定义另一个内部 profile，而不是改变 v0 对同一 bit pattern 的
 解释。
 
-profile v0 覆盖当前所有 `route_enable=0` 的 EXEC function，包括：
+profile v0 覆盖当前 EXEC function，包括：
 
 - 普通 VRF 算术、逻辑、比较、选择和 scalar-immediate 形式；
 - byte MUL/MAC；
 - WIDEN、WADD/WSUB、RSHIFT_RND、NCLIP 和 NSLICE；
 - COMPRESS/EXPAND；
 - MRF boolean operation；
+- SIMD4-local GATHER/BROADCAST/zero-fill SLIDE；
 - 显式 RF writeback、narrow export 和 byte reduction 的合法组合。
 
-`PASS_A` 仍在范围内；这里只是不允许它附加 local route。MEMORY、CONTROL、local
-route 和跨组 lane gather 不属于本 profile。
+local route 使用固定 `PASS_A/BYTE` 语义。MEMORY、CONTROL 与跨组 16-lane gather
+不属于本 profile。
 
 ## 2. 与 action envelope 的边界
 
@@ -96,7 +97,10 @@ format summary：
 | `0x8` | WADD_WSUB | 禁止；align 在 base 内 |
 | `0x9` | COMPACT | 禁止 |
 | `0xa` | MRF_LOGIC | 禁止 |
-| `0xb..0xf` | 非 EXEC / reserved | 不适用 |
+| `0xb` | 外层 MEMORY class | 不适用 |
+| `0xc` | 外层 CONTROL class | 不适用 |
+| `0xd` | ROUTE | 禁止 |
+| `0xe..0xf` | reserved | 不适用 |
 
 `alu_op`、`cmp_op`、`wide_op` 等都是 format-local sub-op。它们不是
 `simd_op_e` 的截短形式，也不能绕过映射表直接驱动 datapath。
@@ -413,6 +417,43 @@ count result 由 function 自动产生，不占 base 字段。reduction 仍只�
 `mask_enable=0`，element mode 固定为 BYTE，reduction 关闭。MNOT 要求 `mb=0`。
 结果可以同时写 MRF、物化成 VRF 全一/全零 byte，或作为 narrow result 导出。
 
+### 4.10 `fmt=0xd`：ROUTE
+
+```text
+31:28  fmt = 0xd
+27:26  route_op
+25:22  va
+21:18  vd
+17:15  mask_sel
+14     write_vrf
+13     export_narrow
+12:10  red
+9:2    route_ctrl
+1:0    reserved = 0
+```
+
+ROUTE 固定展开成 `SIMD_OP_PASS_A / ELEM_MODE_BYTE / route_enable=1`，只控制每个
+SIMD4 内已经存在的 source-A 4×4 crossbar：
+
+| `route_op` | `route_ctrl` | canonical route |
+|---:|---|---|
+| `0` | 四个 2-bit index；lane `n` 使用 `[2n+1:2n]` | `GATHER` |
+| `1` | `[1:0]` 为 source lane，`[7:2]=0` | `BROADCAST` |
+| `2` | `[2:0]` 为 amount `0..4`，`[7:3]=0` | `SLIDE_UP` |
+| `3` | `[2:0]` 为 amount `0..4`，`[7:3]=0` | `SLIDE_DOWN` |
+
+SLIDE 的 `route_lower/route_upper` 在本 profile 固定为零，因此是组内 zero-fill
+语义；跨组 boundary operand 不塞进控制字。`PASS_A + write_vrf` 是独立搬运，
+`export_narrow` 与 `red` 则观察 route 后的结果。其他 ALU 与 route 的融合形式暂不
+编码，可先用 ROUTE 临时行再执行下一条 ALU。
+
+示例：
+
+```text
+EXEC_ROUTE op=gather va=1 vd=2 i0=3 i1=2 i2=1 i3=0
+=> 0xd048406c
+```
+
 ## 5. Canonical expansion
 
 expander 对每个合法 base 生成完整、确定的 canonical EXEC bundle。没有在某个
@@ -423,9 +464,9 @@ format 中出现的字段必须规范成零，不继承上一条 entry 的值。
 | canonical 字段 | v0 派生规则 |
 |---|---|
 | `dispatch_class` | `EXEC` |
-| `route_enable` | `0` |
-| `route_op/index/broadcast/slide` | 全零 |
-| `route_lower/route_upper` | 不来自 uword；本 profile 输出零 |
+| `route_enable` | ROUTE 为 `1`，其他 format 为 `0` |
+| `route_op/index/broadcast/slide` | ROUTE 由 `route_op/route_ctrl` 派生，其他 format 全零 |
+| `route_lower/route_upper` | 不来自 uword；本 profile 始终输出零 |
 | `mask_enable/mask_addr` | 由 `mask_sel` 派生；MRF_LOGIC 固定 mask disabled |
 | `reduce_enable/reduce_op` | 由 `red` 派生 |
 | `use_imm/imm` | 由 `bimm` 或 MAC_RI 派生；WADD_WSUB 使用 inline align |
@@ -471,6 +512,7 @@ resource 不属于编码。predecoder/expander 至少根据 format 与 modifier 
 
 - 使用的 VRF-A、VRF-B、ARF 和两个 MRF read port；
 - VRF/ARF/MRF write port；
+- SIMD4-local route fabric；
 - reduction 与 group-result buffer；
 - immediate extension dependency。
 
@@ -515,7 +557,7 @@ VRF/ARF/MRF、不产生 partial multicast；只有 error completion 获得可靠
 
 ### 6.2 必须检查的条件
 
-1. `fmt=0x0/0xb..0xf`；
+1. `fmt=0x0/0xb/0xc/0xe/0xf`；
 2. ALU/CMP/WIDE 等 format 的 reserved sub-op；
 3. 任意 `reserved=0` 位非零；
 4. extension presence 与 `bimm`、MAC_RR/MAC_RI 不一致；
@@ -532,6 +574,8 @@ VRF/ARF/MRF、不产生 partial multicast；只有 error completion 获得可靠
     - ABS/PASS 的 `vb` 非零；
     - MNOT 的 `mb` 非零；
     - disabled write 的 destination 非零；
+    - BROADCAST/SLIDE 未使用的 `route_ctrl` 高位非零；
+    - SLIDE amount 超过 SIMD4 支持的 `0..4`；
 12. cached predecode 与 selected-head canonical expansion 对 format、result 或 resource
     的解释不一致。
 
@@ -582,21 +626,13 @@ packet 的格式需求，不能作为“先提交 base、下一拍再补 extensi
 
 ## 8. 延期边界
 
-### Local route
+### 跨组 route
 
-profile v0 的所有合法 entry 都展开为：
-
-```text
-route_enable = 0
-route fields = 0
-route boundary operands = 0
-```
-
-当前 local GATHER/BROADCAST/SLIDE 的 index、amount 与 boundary staging 需要自己的
-format/operand 合同。它们不复用 immediate extension，也不把 32-bit lower/upper
-boundary data 放进控制字。后续 route profile 可以占用仍可用的 EXEC format，或定义
-独立 extension kind；若与 mixed-uword experiment 使用的 `0xb/0xc` 重叠，应同时调整
-该版本的 outer framing。
+profile v0 的 ROUTE 只覆盖每个 SIMD4 内的 4×4 source-A crossbar。独立的默认
+16×16 `vsp_lane_gather` 尚未连接四个 group 的 VRF 读取、staging、写回、ownership、
+资源预留和 completion，因此没有可执行编码。它以后仍应进入 EXEC，而不是增加新的
+dispatch class；届时需要与本地 ROUTE 明确区分，并保持外层 `0xb/0xc`
+MEMORY/CONTROL framing 不冲突。
 
 ### MEMORY 与 CONTROL
 

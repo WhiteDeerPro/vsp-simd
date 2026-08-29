@@ -39,7 +39,7 @@ Q&A 代替这类记录。
 | [数据通路](architecture/datapath.md) | RTL 事实 | VRF/ARF/MRF、并行控制、mask、立即数与提交 |
 | [微架构图](architecture/microarchitecture.md) | RTL 事实 | 单个 SIMD4 的读取、执行、合法性和写回 |
 | [寄存器文件](architecture/register-file.md) | RTL 事实 + 物理候选 | 逻辑端口、masked write 与 bank/SRAM 问题 |
-| [局部与跨组路由](architecture/routing.md) | local RTL 事实 + 延期探索 | local crossbar、broadcast、slide、compact 与延期的跨组 route |
+| [局部与跨组路由](architecture/routing.md) | local RTL/编码事实 + 临时基线 + 延期探索 | 已编码 local crossbar/broadcast/slide、compact、16×16 固定 crossbar 临时基线与延期的跨组 route 接入 |
 | [定点宽窄语义](architecture/fixed-point.md) | RTL 事实 | AVG、WIDEN/WADD/WSUB、NSLICE/NCLIP |
 | [乘法语义与映射](architecture/arithmetic.md) | RTL 事实 + 候选 | byte MUL/MAC 与多 byte 映射触发条件 |
 
@@ -76,6 +76,9 @@ Graphviz 源与生成图和说明文档放在一起：
 | 文档 | 性质 | 内容 |
 |---|---|---|
 | [单通道 3×3 Gaussian](workloads/gaussian3x3.md) | 工作负载证据 | slide、连续 ARF MAC、tail mask 与 NCLIP |
+| [单通道 3×3 Sobel](workloads/sobel3x3.md) | 工作负载证据 | WSUB 宽有符号累加、共享 align 系数、NCLIP_S 与幅值合成，附微操作计量对比 |
+| [可分离 Gaussian 与两次舍入代价](workloads/gaussian3x3-separable.md) | 工作负载证据 + 比较集合 | 两 pass 8-bit 映射、按内容分类的偏差统计、行缓冲前提与对 HALF 支持的判断 |
+| [单通道 3×3 Median](workloads/median3x3.md) | 工作负载证据 | 19-comparator selection network、单写口三指令 compare-exchange，以及 lane reduction 不适用该布局的原因 |
 | [验证 harness 与路径漂移](verification/harness.md) | 方法工作稿 | 测试分类、非声明范围、准入、替换与退役 |
 
 SAD、动态 ALU、local route、Bênes、compact、MRF、reduction、

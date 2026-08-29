@@ -61,6 +61,12 @@ REDUCE_SELECTORS = {
     "max_u": 5,
     "max_s": 6,
 }
+ROUTE_OPS = {
+    "gather": 0,
+    "broadcast": 1,
+    "slide_up": 2,
+    "slide_down": 3,
+}
 
 
 class AssemblyError(Exception):
@@ -237,6 +243,116 @@ def encode_alu(tokens: list[str], immediate_form: bool,
     return [base] if extension is None else [base, extension]
 
 
+def encode_reduce(tokens: list[str], line_number: int) -> list[int]:
+    """Pseudo-op for the existing PASS_A plus SIMD4 reduction encoding."""
+    named, positional = split_arguments(tokens, line_number)
+    if positional:
+        raise AssemblyError(
+            f"line {line_number}: reduction fields must use key=value syntax"
+        )
+
+    reduce_name = take_named(named, "op", None, line_number).lower()
+    if reduce_name == "none" or reduce_name not in REDUCE_SELECTORS:
+        raise AssemblyError(
+            f"line {line_number}: unknown reduction {reduce_name!r}"
+        )
+    va_text = take_named(named, "va", None, line_number)
+    mask_name = take_named(named, "mask", "none", line_number).lower()
+    if named:
+        unknown = ", ".join(sorted(named))
+        raise AssemblyError(
+            f"line {line_number}: unknown reduction fields: {unknown}"
+        )
+
+    return encode_alu(
+        ["op=pass_a", "mode=byte", f"va={va_text}", "vb=0", "vd=0",
+         f"mask={mask_name}", "write=0", "export=0",
+         f"reduce={reduce_name}"],
+        False,
+        line_number,
+    )
+
+
+def encode_route(tokens: list[str], line_number: int) -> list[int]:
+    """Encode one SIMD4-local source-A route operation."""
+    named, positional = split_arguments(tokens, line_number)
+    if positional:
+        raise AssemblyError(
+            f"line {line_number}: route fields must use key=value syntax"
+        )
+
+    op_name = take_named(named, "op", None, line_number).lower()
+    if op_name not in ROUTE_OPS:
+        raise AssemblyError(f"line {line_number}: unknown route op {op_name!r}")
+    va = require_range(
+        "va", parse_integer(take_named(named, "va", None, line_number),
+                            line_number),
+        0, 15, line_number,
+    )
+    vd = require_range(
+        "vd", parse_integer(take_named(named, "vd", None, line_number),
+                            line_number),
+        0, 15, line_number,
+    )
+    mask_name = take_named(named, "mask", "none", line_number).lower()
+    reduce_name = take_named(named, "reduce", "none", line_number).lower()
+    if mask_name not in MASK_SELECTORS:
+        raise AssemblyError(f"line {line_number}: unknown mask selector {mask_name!r}")
+    if reduce_name not in REDUCE_SELECTORS:
+        raise AssemblyError(f"line {line_number}: unknown reduction {reduce_name!r}")
+    write_vrf = parse_boolean(
+        take_named(named, "write", "1", line_number), "write", line_number
+    )
+    export_narrow = parse_boolean(
+        take_named(named, "export", "0", line_number), "export", line_number
+    )
+    if not write_vrf and vd != 0:
+        raise AssemblyError(
+            f"line {line_number}: vd must be zero when write=0"
+        )
+
+    route_ctrl = 0
+    if op_name == "gather":
+        for lane in range(4):
+            source = require_range(
+                f"i{lane}",
+                parse_integer(take_named(named, f"i{lane}", None, line_number),
+                              line_number),
+                0, 3, line_number,
+            )
+            route_ctrl |= source << (2 * lane)
+    elif op_name == "broadcast":
+        route_ctrl = require_range(
+            "lane",
+            parse_integer(take_named(named, "lane", None, line_number),
+                          line_number),
+            0, 3, line_number,
+        )
+    else:
+        route_ctrl = require_range(
+            "amount",
+            parse_integer(take_named(named, "amount", None, line_number),
+                          line_number),
+            0, 4, line_number,
+        )
+
+    if named:
+        unknown = ", ".join(sorted(named))
+        raise AssemblyError(f"line {line_number}: unknown route fields: {unknown}")
+
+    base = 0
+    base |= 0xD << 28
+    base |= ROUTE_OPS[op_name] << 26
+    base |= va << 22
+    base |= vd << 18
+    base |= MASK_SELECTORS[mask_name] << 15
+    base |= write_vrf << 14
+    base |= export_narrow << 13
+    base |= REDUCE_SELECTORS[reduce_name] << 10
+    base |= route_ctrl << 2
+    return [base]
+
+
 def encode_opaque_record(major: int, tokens: list[str],
                          line_number: int) -> list[int]:
     named, positional = split_arguments(tokens, line_number)
@@ -278,6 +394,10 @@ def encode_statement(statement: str, line_number: int) -> list[int]:
         return encode_alu(arguments, False, line_number)
     if operation == "exec_alu_ri":
         return encode_alu(arguments, True, line_number)
+    if operation == "exec_reduce":
+        return encode_reduce(arguments, line_number)
+    if operation == "exec_route":
+        return encode_route(arguments, line_number)
     if operation == "memory":
         return encode_opaque_record(0xB, arguments, line_number)
     if operation == "control":

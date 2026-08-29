@@ -3,7 +3,8 @@ package vsp_exec_uword_pkg;
   // the canonical EXEC boundary.  Profile v0 deliberately targets the
   // current SIMD4 shape (8-bit physical lanes, 32-bit accumulators,
   // 16/8/4 VRF/ARF/MRF rows).  It is not an architectural instruction-set
-  // encoding.
+  // encoding. Format D controls only the group-local source-A route; the
+  // independent 16-lane cross-group candidate is outside this package.
   localparam int VSP_EXEC_UWORD_W = 32;
   localparam int VSP_EXEC_UWORD_FORMAT_W = 4;
 
@@ -17,7 +18,8 @@ package vsp_exec_uword_pkg;
     VSP_EXEC_UWORD_FMT_WIDE_CONVERT = 4'h7,
     VSP_EXEC_UWORD_FMT_WADD_WSUB    = 4'h8,
     VSP_EXEC_UWORD_FMT_COMPACT      = 4'h9,
-    VSP_EXEC_UWORD_FMT_MRF_LOGIC    = 4'ha
+    VSP_EXEC_UWORD_FMT_MRF_LOGIC    = 4'ha,
+    VSP_EXEC_UWORD_FMT_ROUTE        = 4'hd
   } vsp_exec_uword_format_e;
 
   // ALU-format sub-functions.  Values 21..31 remain available to a later
@@ -118,7 +120,8 @@ package vsp_exec_uword_pkg;
       VSP_EXEC_UWORD_FMT_WIDE_CONVERT,
       VSP_EXEC_UWORD_FMT_WADD_WSUB,
       VSP_EXEC_UWORD_FMT_COMPACT,
-      VSP_EXEC_UWORD_FMT_MRF_LOGIC:
+      VSP_EXEC_UWORD_FMT_MRF_LOGIC,
+      VSP_EXEC_UWORD_FMT_ROUTE:
         vsp_exec_uword_format_defined = 1'b1;
       default: vsp_exec_uword_format_defined = 1'b0;
     endcase

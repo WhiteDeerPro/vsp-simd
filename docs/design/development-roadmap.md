@@ -12,7 +12,9 @@
 - SIMD4 的 VRF/ARF/MRF、BYTE/HALF/WORD 动态 ADD/SUB/shift/compare；
 - byte 语义的饱和、AVG、ABSDIFF、MUL/MAC 和宽窄操作；
 - local route/broadcast/slide、compact/expand、MRF logic、narrow reduction；
-- Gaussian、SAD 与 low-32 byte-convolution 参考负载；
+- `vsp_lane_gather`：默认 16 lane 的固定全 crossbar 临时基线，动态索引与静态图样
+  已验证，未接入数据通路；
+- Gaussian、Sobel、Median、SAD 与 low-32 byte-convolution 参考负载；
 - 共享 operation/mode/writeback/reduce/route legality 检查；
 - 非法 reduction 的整事务零副作用门控；
 - 多 issue slot 的 owner 检查、原子 group-mask dispatch、backpressure、冲突和
@@ -34,7 +36,7 @@
 - 每 issue slot 一项的 decode holding stage：raw/resolved/cached provenance 与
   canonical class/resource/payload 输出在背压下保持稳定；
 - `vsp_exec_uword_expander`：解析内部 profile v0 的 32-bit base 与可选 immediate
-  extension，覆盖当前全部非 route EXEC function，并对非法 word 进行无副作用
+  extension，覆盖当前 EXEC function 与 SIMD4-local route，并对非法 word 进行无副作用
   canonicalization；已接入 strict controller action 入口，尚未接入 queue/head holding；
 - `vsp_uword_predecoder`：默认并行扫描 4 个连续 32-bit uword stream word，按结构长度
   划分完整 record、预判 dispatch class，并报告待续接尾 record；当前是无状态组合
@@ -58,8 +60,7 @@
 
 当前优先级转向 program record 到 action stream 的 adapter、admission
 legality/cached metadata、queue-head integration、动态 owner/resource 状态和
-sequencer loop/redirect；跨组
-route 已从这条执行闭环中解耦并延期。物理 memory hierarchy 仍在 `dmem_*` 逻辑边界
+sequencer loop/redirect；跨组 route 已从这条执行闭环中解耦并延期。物理 memory hierarchy 仍在 `dmem_*` 逻辑边界
 之外。在出现新的阻塞负载证据
 前，暂缓增加 lane arithmetic feature。
 
@@ -210,16 +211,21 @@ STORE → CONTROL.END，覆盖自动排序、
 统一 completion 背压、owner/decode error 与 memory fault。两者都不证明硬件 local
 SRAM、最终 MEMORY ISA 或高吞吐 sequencer 已完成。
 
-## M5：跨组 route `[延期、与当前控制闭环解耦]`
+## M5：跨组 route `[固定 crossbar 临时基线已实现；接入仍延期]`
 
-组内 4×4 `simd_crossbar/simd_route` 继续作为已验证的 leaf capability 保留；profile
-v0 不编码 route，当前 controller/cluster 工作也不等待跨组网络。
+组内 4×4 `simd_crossbar/simd_route` 已由单字 `fmt=0xd` 编码接入 profile v0，并通过
+assembler→predecoder→expander→controller→group writeback 回归。profile v0 不编码
+跨组 route，当前 controller/cluster 工作也不等待跨组网络。
 
-若代表性 FFT/小波等负载证明跨组交换值得专用硬件，重新启动时的简单基线是固定
-16-lane 的 16×16 byte crossbar，而不是先实现动态 Bênes/Omega route-setting。届时
-仍需单独定义 index 来源、group-local VRF 的 stripe、source/destination 资源预留、
-out-of-range 行为、流水和写回事务。它应作为可替换的 Vector ALU/cluster data-path
-stage 接入，不改变 EXEC/MEMORY/CONTROL 的顺序与完成合同。
+固定 16×16 byte crossbar 已按该基线实现为 `vsp_lane_gather`：纯 gather、九种 mode
+（含动态 GATHER）、rotate wrap 报告，独立验证通过。选它而不是先做动态 Bênes/Omega
+route-setting 的理由是成本位置——全 crossbar 无需 route 求解，动态索引不引入控制
+状态或冲突协议，代价只是 `O(N²)` mux。它先服务负载映射取证，可被后续方案替换。
+
+仍未定义、因此接入继续延期的部分：index 来源、group-local VRF 的 stripe、
+source/destination 资源预留、out-of-range 行为、分级/流水和写回事务。接入时它应
+作为可替换的 Vector ALU/cluster data-path stage，不改变 EXEC/MEMORY/CONTROL 的
+顺序与完成合同。
 
 `benes_network` 和既有多级网络文档保留为探索材料，不接入当前数据通路，也不作为
 decoder/class-router 的前置条件。
@@ -232,6 +238,11 @@ decoder/class-router 的前置条件。
 2. NSLICE + WADD/WSUB 组成的完整乘积求和；
 3. 可发射的 PMAC8/对角线卷积方案是否值得进入 RTL；
 4. 拟浮点双流。
+
+已完成一项：两 pass 8-bit 可分离 `[1,2,1]` Gaussian 与精确九 tap 的对比
+（[结论](../workloads/gaussian3x3-separable.md)）。它同时给出 HALF 支持的优先级
+判断：真正缺的是 HALF 粒度的 `ACC→VRF` 导出，而不是 HALF `MUL/MAC` 或宽域 ABS；
+可分离滤波本身不构成增加它们的理由。
 
 拟浮点当前只有 workload mapping 假说：M24 可先以 sign-extended WORD32 保存，
 E8 独立打包。当前五位 WORD shifter 会把更大 shift amount 截短，所以若采用这套

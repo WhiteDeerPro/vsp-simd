@@ -138,6 +138,22 @@ Action make_add_immediate(uint8_t tag, uint8_t src, uint8_t dst,
   return action;
 }
 
+Action make_route_gather(uint8_t tag, uint8_t src, uint8_t dst,
+                         uint8_t packed_indices) {
+  Action action;
+  action.action_class = kClassExec;
+  action.tag = tag;
+  action.group_mask = 0xf;
+  // EXEC local-route format D: PASS_A(BYTE), unmasked VRF write.  Each output
+  // lane owns one 2-bit source index in packed_indices.
+  action.exec_base = (uint32_t{0xd} << 28) |
+                     (uint32_t(src & 0xfU) << 22) |
+                     (uint32_t(dst & 0xfU) << 18) |
+                     (uint32_t{1} << 14) |
+                     (uint32_t(packed_indices) << 2);
+  return action;
+}
+
 Action make_end(uint8_t context, uint8_t tag) {
   Action action;
   action.action_class = kClassControl;
@@ -522,26 +538,28 @@ int main(int argc, char** argv) {
   const std::array<uint32_t, 4> source_words = {
       0x04030201U, 0x281e140aU, 0xfdfcfbfaU, 0xff800700U};
   const std::array<uint32_t, 4> expected_words = {
-      0x07060504U, 0x2b21170dU, 0x00fffefdU, 0x02830a03U};
+      0x04050607U, 0x0d17212bU, 0xfdfeff00U, 0x030a8302U};
   for (unsigned group = 0; group < source_words.size(); ++group)
     store_word(memory.bytes, kLoadBase + 4 * group, source_words[group], 0xf);
 
   const std::vector<Action> success_actions = {
       make_memory(kMemLoad, 0, 0x31, kLoadBase, 0xf, 2, 16),
       make_add_immediate(0x42, 2, 3, 3),
-      make_memory(kMemStore, 0, 0x53, kStoreBase, 0xf, 3, 16),
+      make_route_gather(0x4a, 3, 4, 0x1b),
+      make_memory(kMemStore, 0, 0x53, kStoreBase, 0xf, 4, 16),
       make_end(0, 0x64)};
   const std::vector<ExpectedCompletion> success_expected = {
       {kClassMemory, 0, 0x31, kStatusOk, 0, false, 0, false,
        kMemLoad, kMemCplOk, kFaultNone, 0, 0xf, 0xf, 0, 16, false},
       {kClassExec, 0, 0x42, kStatusOk, 0, false, 0xf, false},
+      {kClassExec, 0, 0x4a, kStatusOk, 0, false, 0xf, false},
       {kClassMemory, 0, 0x53, kStatusOk, 0, false, 0, false,
        kMemStore, kMemCplOk, kFaultNone, 0, 0xf, 0xf, 0, 16, false},
       {kClassControl, 0, 0x64, kStatusOk, 0, true}};
   const StreamResult success =
       run_stream(dut, memory, success_actions, success_expected, global_cycle);
-  expect_eq("success accepted all actions", 4, success.accept_cycles.size());
-  expect_eq("success retired all actions", 4,
+  expect_eq("success accepted all actions", 5, success.accept_cycles.size());
+  expect_eq("success retired all actions", 5,
             success.completion_cycles.size());
   for (std::size_t index = 1; index < success.accept_cycles.size(); ++index) {
     expect_eq("no cross-class issue before prior retire", 1,
@@ -744,8 +762,8 @@ int main(int argc, char** argv) {
 
   dut.final();
   std::cout << "PASS: VSP cluster controller " << checks
-            << " checks across decoded LOAD -> encoded EXEC -> decoded "
-               "STORE -> END, "
+            << " checks across decoded LOAD -> encoded ADDI/local ROUTE "
+               "-> decoded STORE -> END, "
                "ordering, backpressure, owner/decode errors and memory "
                "faults\n";
   return 0;

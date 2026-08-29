@@ -22,7 +22,7 @@ VSP / SoC 子系统（未来）
     ├── VRF arbiter（参考 RTL 已实现）
     ├── 4-word uword bundle framing / class predecode（独立参考 RTL 已实现）
     ├── byte-PC program source / control-store model / bundle assembler（独立参考 RTL 已实现）
-    ├── lane route（组内 crossbar 已实现；跨组 route 延期）
+    ├── lane route（组内 crossbar 与单字 uword 已接通；跨组 route 延期）
     └── action adapter、admission metadata、动态 owner/resource 与 loop/redirect（待实现）
 ```
 
@@ -39,13 +39,25 @@ VSP / SoC 子系统（未来）
 - 向量掩码执行；叶执行接口返回 merge 值，状态化 datapath 通过 masked RF write
   保留未激活 lane；
 - 窄结果与宽结果分离，使累加精度独立于 8-bit 窄结果；
-- 参数化组合 Bênes 网络，作为置换网络研究模块保留，不接入当前数据通路
-  （跨组 gather 计划改用支持广播的 Omega 网络）；
+- 参数化组合 Bênes 网络，作为置换网络研究模块保留，不接入当前数据通路；
+- `vsp_lane_gather`：默认 16 lane 的固定全 crossbar 临时基线，纯 gather，
+  动态索引之外提供 identity/broadcast/rotate/reverse/transpose/deinterleave/
+  interleave 静态图样与 rotate wrap 报告；已独立验证，不接入数据通路；
 - SIMD group 内的一份直接 crossbar，支持重复索引的 gather、lane broadcast 与 permutation；
+- 单字 `EXEC_ROUTE` 编制与 `fmt=0xd` canonical expansion，已沿严格 action 控制链
+  驱动每个 SIMD4 的本地 crossbar；
 - 可接相邻 SIMD group 边界的双向 slide，用于组成更宽的逻辑执行组；
 - mask-aware 的组合 reduction tree，可求和、最小值、最大值和获胜 lane；
 - 由 `ABSDIFF_U + REDUCE_SUM_U` 组合出的 SAD 验证内核；
 - 由外部微操作驱动的单通道 3×3 Gaussian，覆盖 slide、连续 ARF MAC、tail mask 与最终舍入窄化；
+- 由外部微操作驱动的单通道 3×3 Sobel，覆盖 `WSUB_U` 的负 ACC 累加链、共享 align
+  表达 1/2 系数、source-A route 参与宽三输入操作、`NCLIP_S` 有符号窄化与
+  `ABS_SAT_S`/`ADD_SAT_U` 幅值合成；
+- 两 pass 8-bit 可分离 `[1,2,1]` Gaussian 比较负载：测量两次舍入相对精确九 tap 的
+  偏差（本输入域内最大 1 LSB，仅出现在中间调内容）与微操作计量，并可选读入 PGM
+  手动查看；
+- 3×3 Median 比较负载：经全部 `9!` rank permutation 验证的 19-comparator
+  selection network，当前单写口映射为每 SIMD4 block 57 条 EXEC；
 - 外部 sequencer 发射的 VRF/ARF/MRF 状态化数据通路；
 - operation/mode/writeback/route/reduction 的共享合法性检查；
 - 默认 `4 group / 2 queue / 2 slot` 的 EXEC reference frontend：单 admission、
@@ -75,6 +87,7 @@ VSP / SoC 子系统（未来）
 - 内部 uword 工具与 program frontend reference：把 profile-v0 EXEC、opaque
   MEMORY/CONTROL 或 raw word 编制成 hex/listing/symbol，写入可替换的 control-store
   行为模型，从参数化 byte PC 顺序读取，并跨 bundle 组装为单 record ready/valid；
+  工具提供本地 `EXEC_ROUTE` 与 `EXEC_REDUCE` pseudo-op；
 - 独立 `vsp_vector_memory_engine`：VRF-only，一个 active command、一个
   outstanding memory beat，按 group 升序在连续 4-byte beat 上执行
   LOAD/STORE，并报告 stop-on-first 的 partial masks/bytes；
@@ -96,10 +109,12 @@ decode 或 queue admission，也不把 stream EOF 当成 `CONTROL.END`。
 admission legality/cached resource metadata 与 queue-head late-decode 重排尚未实现。
 因此该 reference integration 可以验证程序顺序和完成合同，但还不是完整 sequencer，
 也不代表最终吞吐组织。
-跨 lane 路由不再候选为与 MEMORY 并列的独立 command class。当前候选是寄存器形式的
+跨组 lane 路由不再候选为与 MEMORY 并列的独立 command class。当前候选是寄存器形式的
 gather：`DR[lane] = SR[IR[lane]]`，其中索引向量 IR 由 VRF 提供，允许一对一置换
 与广播，不支持 scatter（同一操作内不会出现多通道写同一通道）。它属于 Vector ALU
-内的一个 routing 级，计划由 gather-only Omega 网络实现，尚未落地 RTL。
+内的一个 routing 级；`vsp_lane_gather` 已按固定 16×16 crossbar 提供临时基线 RTL，
+但 stripe、索引来源、资源预留和写回事务未定义，因此尚未接入数据通路。
+这与已经接通的 SIMD4-local `fmt=0xd` ROUTE 是两个不同层次。
 
 `vsp_vector_memory_engine` 已接入 reference class router，但尚未接入 local SRAM 或
 DMA，不表示整个存储路径已闭合。

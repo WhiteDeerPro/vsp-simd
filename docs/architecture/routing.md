@@ -33,9 +33,10 @@ out[lane] = in[index[lane]]
 这与多级网络内部两条合法路径争用同一 link 的 internal path conflict 是两回事。
 
 当前 SIMD4 RTL 采用直接 4×4 crossbar。接口保留任意重复索引，因此组内已经支持
-广播；普通 Bênes 网络只保证一一置换，无法直接表达这一点。跨组 route 当前延期，
-不进入 controller/encoding 工作；若以后重启，先比较固定 16-lane 的 16×16 byte
-crossbar。下文的 Omega 内容只保留为早期探索记录。
+广播；普通 Bênes 网络只保证一一置换，无法直接表达这一点。跨组 route 的**编码与
+数据通路接入**仍然延期；作为临时基线，固定 16×16 byte crossbar 已有独立参考
+RTL（`vsp_lane_gather`），供需要跨组置换的负载映射先行取证。下文的 Omega 内容
+只保留为早期探索记录。
 
 ## `simd_route` 操作
 
@@ -45,6 +46,18 @@ crossbar。下文的 Omega 内容只保留为早期探索记录。
 | `ROUTE_OP_BROADCAST` | 所有输出读取 `broadcast_index_i` 指定的输入 lane |
 | `ROUTE_OP_SLIDE_UP` | 数据向高编号 lane 移动，低端缺口从 `lower_i` 获取 |
 | `ROUTE_OP_SLIDE_DOWN` | 数据向低编号 lane 移动，高端缺口从 `upper_i` 获取 |
+
+内部 EXEC profile v0 已给这条本地路径分配单字 `fmt=0xd`。它固定执行
+`PASS_A/BYTE`，可写回 VRF、导出窄结果或在 route 后做 SIMD4 reduction；GATHER 的
+四个 2-bit source index 全部放在同一 32-bit word。SLIDE 在该编码中把相邻组
+boundary 固定为零，所以只有 zero-fill 语义。assembler 示例：
+
+```text
+EXEC_ROUTE op=gather va=1 vd=2 i0=3 i1=2 i2=1 i3=0
+```
+
+这条编码已经沿 uword predecode、canonical expander、controller 和 group writeback
+跑通；它不控制下文独立的 16×16 跨组模块。
 
 `slide_amount_i=0` 是恒等映射；`slide_amount_i=LANES` 完整传入相邻 SIMD group。更大的数超出这个局部网络覆盖范围并报告 `illegal_o`。
 
@@ -86,12 +99,47 @@ mask：
 crossbar 共享选择网络，也可以根据时序结果分拍执行；这一选择仍然开放。
 跨 group 的 packet 拼接、余数保留和网络流控仍属于上级 VSP 互连问题。
 
-## 跨组 lane gather `[延期议题；以下含历史探索]`
+## 临时基线：`vsp_lane_gather` `[里程碑基线]`
 
-当前决策是不实现、不编码跨组 route，并让它与 EXEC 控制闭环解耦。组内 4×4 route
-继续可用。若负载测量支持恢复该工作，首个实现基线改为 16×16 byte crossbar；索引
-来源、资源预留、错误行为和流水仍需届时另行闭合。以下 register-gather 语义与
-Omega 比较保留用于追溯问题，不代表当前路线或已选拓扑。
+固定全 crossbar 已实现为独立参考 RTL，默认 `LANES=16 / DATA_W=8`，位于
+`rtl/interconnect/`，**不接入数据通路**。选它而不是先做 Bênes/Omega 的理由就是
+动态路由的成本位置：全 crossbar 没有 route-setting，索引位直接驱动 mux，运行时
+索引不产生任何额外控制状态或冲突协议；代价是 `O(LANES²)` 的 mux 面积（16 lane
+下为 16 个 16:1 byte mux）。因此“动态难做”在这个拓扑上不成立，难做的是分级网络。
+
+它是纯 gather：`out[lane] = in[index[lane]]`，重复索引合法，任何输出都不会被写
+两次。除动态索引外提供一组静态图样，用 4-bit `mode_i` 编码，避免为常见固定置换
+交付 `LANES × INDEX_W` 位索引：
+
+| mode | 含义 | 图像用途 |
+|---:|---|---|
+| 0 `IDENTITY` | 恒等 | 旁路 |
+| 1 `GATHER` | 使用 `index_i` 的动态映射 | LUT/gamma、双线性取样、任意重排 |
+| 2 `BROADCAST` | 全部输出读 `amount_i` 指定 lane | 系数/像素广播 |
+| 3 `ROTATE_UP` | 循环右移 `amount_i` | stencil 邻域 |
+| 4 `ROTATE_DOWN` | 循环左移 `amount_i` | stencil 邻域 |
+| 5 `REVERSE` | 整向量镜像 | 水平翻转 |
+| 6 `TRANSPOSE` | 方形 tile 转置（仅 `LANES` 为完全平方数） | 列访问、可分离滤波第二 pass |
+| 7 `DEINTERLEAVE` | 偶 lane 入低半、奇 lane 入高半 | 2 通道拆分、水平 2× 降采样 |
+| 8 `INTERLEAVE` | `DEINTERLEAVE` 的逆 | 通道合并、上采样 |
+| 9–15 | 保留 | 后续路由方案 |
+
+`wrap_mask_o` 标记 rotate 中源已绕过向量末端的输出 lane。消费端把这些 lane 屏蔽
+掉即得到零填充 shift，因此 16-lane 逻辑向量内的 stencil 不再需要相邻组 boundary
+端口。它不是执行 mask。保留 mode 与越界 `amount_i` 报告 `illegal_o` 且不交付数据；
+动态索引越界（仅在 `LANES` 非二次幂时可能）沿用 `simd_crossbar` 语义，只把该输出
+lane 置零。RVV `vrgather` 的越界返零与这里的 `illegal_o` 不能静默等同，跨组
+out-of-range 的最终选择仍是开放项。
+
+明确未定义、因此该模块目前不能声称的部分：宽逻辑向量如何 stripe 到各 group 的
+VRF row、索引来自 VRF 还是立即数、资源预留与 group ownership、写回事务，以及
+分级/流水与面积。它是可替换的临时基线，不是已选拓扑。
+
+## 跨组 lane gather 语义 `[延期议题；以下含历史探索]`
+
+跨组 route 的 **encoding 与 controller 接入**仍不在当前路线内；profile v0 的
+`fmt=0xd` 只编码组内 4×4 route。以下 register-gather 语义与 Omega 比较保留用于
+追溯问题，不代表已选拓扑。
 
 跨组路由不再候选为与 MEMORY 并列的独立 command class，也不再预设以 SIMD4 row
 为端口颗粒。当前用一个 register-gather action 描述目标语义；它不是已经编码的
@@ -162,8 +210,9 @@ FFT/小波是这里的主要负载依据：它们的 butterfly 在 stride 跨过
 路由替换这些往返，降低内存压力。
 
 当前 RTL 状态：组内 4×4 crossbar（`simd_crossbar`/`simd_route`）已实现并验证；
-没有跨组 route RTL，也没有相关编码。参数化 Bênes 网络（`benes_network`）与上述
-Omega 方案只作为网络研究材料保留，不接入数据通路。
+16×16 固定 crossbar（`vsp_lane_gather`）已作为独立临时基线实现并验证，但未接入
+数据通路，也没有相关编码。参数化 Bênes 网络（`benes_network`）与上述 Omega 方案
+只作为网络研究材料保留，不接入数据通路。
 
 ## Broadcast 边界
 

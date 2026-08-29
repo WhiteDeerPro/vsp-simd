@@ -26,6 +26,7 @@ RTL_CROSSBAR := rtl/permute/simd_crossbar.sv
 RTL_ROUTE := rtl/permute/simd_route.sv
 RTL_COMPACT := rtl/permute/simd_compact.sv
 RTL_BENES := rtl/interconnect/benes_network.sv
+RTL_LANE_GATHER := rtl/interconnect/vsp_lane_gather.sv
 RTL_ISSUE_DISPATCH := rtl/cluster/simd_issue_dispatch.sv
 RTL_ISSUE_QUEUE := rtl/cluster/simd_issue_queue.sv
 RTL_CLUSTER_ISSUE_FRONTEND := rtl/cluster/simd_cluster_issue_frontend.sv
@@ -79,6 +80,10 @@ CLUSTER_VRF_ARBITER_RTL := $(RTL_CLUSTER_VRF_ARBITER)
 UOP_LEGAL_RTL := $(RTL_PKG) $(RTL_UOP_LEGAL)
 VECTOR_MEMORY_ENGINE_RTL := $(RTL_VSP_PKG) $(RTL_VECTOR_MEMORY_ENGINE)
 ROUTE_RTL := $(RTL_PKG) $(RTL_CROSSBAR) $(RTL_ROUTE)
+# The wide gather stage reuses the existing crossbar fabric and deliberately
+# does not pull in simd_pkg: it defines its own mode encodings and is not a
+# datapath operation.
+LANE_GATHER_RTL := $(RTL_CROSSBAR) $(RTL_LANE_GATHER)
 COMPACT_RTL := $(RTL_COMPACT)
 MASK_RTL := $(RTL_PKG) $(RTL_MASK_ALU)
 DYNAMIC_RTL := $(RTL_PKG) $(ELEMENT_RTL)

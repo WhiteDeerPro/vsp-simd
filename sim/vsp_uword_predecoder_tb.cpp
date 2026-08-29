@@ -47,7 +47,9 @@ void expect(bool condition, const std::string& message) {
   if (!condition) fail(message);
 }
 
-bool exec_major(uint8_t major) { return major >= 0x1 && major <= 0xa; }
+bool exec_major(uint8_t major) {
+  return (major >= 0x1 && major <= 0xa) || major == 0xd;
+}
 
 bool major_defined(uint32_t word) {
   const uint8_t major = static_cast<uint8_t>(word >> 28);
@@ -254,7 +256,7 @@ void test_structural_table(Vvsp_uword_predecoder& dut) {
     int length;
     const char* name;
   };
-  const std::array<ExecCase, 16> cases = {{
+  const std::array<ExecCase, 17> cases = {{
       {0x10000000U, 1, "ALU register"},
       {0x10000020U, 2, "ALU immediate"},
       {0x20000000U, 1, "CMP register"},
@@ -270,6 +272,7 @@ void test_structural_table(Vvsp_uword_predecoder& dut) {
       {0x80000000U, 1, "WADD_WSUB"},
       {0x90000000U, 1, "COMPACT"},
       {0xa0000000U, 1, "MRF_LOGIC"},
+      {0xd0000000U, 1, "ROUTE"},
       {0xf0000000U, 1, "undefined major"},
   }};
 
@@ -303,7 +306,7 @@ void test_structural_table(Vvsp_uword_predecoder& dut) {
     }
   }
 
-  for (uint32_t major : {0U, 0xdU, 0xeU, 0xfU}) {
+  for (uint32_t major : {0U, 0xeU, 0xfU}) {
     run_case(dut, {(major << 28) | 0x0fffffffU, 0x80000000U, 0, 0},
              2, "undefined major forward progress " + std::to_string(major));
   }

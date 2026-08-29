@@ -38,7 +38,7 @@
   class/response/group-mask/exact-resource/canonical-payload/legal/error；背压时所有
   字段稳定。当前 hook 是参考 adapter 接口，不是 encoded parser。
 - `vsp_exec_uword_expander` 组合解析内部实验 profile v0 的 32-bit base 与可选
-  32-bit scalar-immediate extension，覆盖当前全部非 route EXEC function；它复用
+  32-bit scalar-immediate extension，覆盖当前 EXEC function 与 SIMD4-local route；它复用
   `simd_uop_legal`，对非法项输出确定 cause 并把所有 canonical 副作用归零。具体
   位域见 [EXEC uword profile v0](exec-uword-profile-v0.md)。
 - `vsp_uword_predecoder` 组合扫描一个默认 4-word 的连续 uword bundle，划分完整
@@ -73,7 +73,8 @@ stage、class router 和 terminal feedback 接到 queue head。当前 program fr
 | `0x1..0xa` | `EXEC` | 由 EXEC format 的 extension 规则决定 1 或 2 |
 | `0xb` | `MEMORY` | `1 + header[27:26]`，即 1 至 4 |
 | `0xc` | `CONTROL` | `1 + header[27:26]`，即 1 至 4 |
-| `0x0, 0xd..0xf` | undefined | 固定 1，并留给后级形成有序错误记录 |
+| `0xd` | `EXEC/ROUTE` | 固定 1 |
+| `0x0, 0xe..0xf` | undefined | 固定 1，并留给后级形成有序错误记录 |
 
 EXEC 是否拥有 extension 由 `vsp_exec_uword_extension_required()` 唯一判定，canonical
 expander 复用同一函数。已经识别的 EXEC format 即使 sub-op、reserved bit 或地址

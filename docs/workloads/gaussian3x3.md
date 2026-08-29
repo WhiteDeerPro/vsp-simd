@@ -139,6 +139,10 @@ SLIDE_DOWN(1)   = [p[x+1], p[x+2], p[x+3], p[x+4]]
   明确是 byte-only，现有 RTL 不能直接采用此方案；
 - 增加混合宽度 intermediate VRF 或宽输入 MAC 路径。
 
+第一个方案已经实现并测量，结论见[可分离 Gaussian 与两次舍入代价](gaussian3x3-separable.md)：
+偏差 ≤1 LSB 且只在中间调内容上出现，指令收益 20% 但要求尚不存在的行缓冲，因此它
+不构成增加 HALF MUL/MAC 的理由。
+
 ### 四 lane 合作一个输出
 
 将九个 tap 分成 `4+4+1` 可以形成 dot-product 映射，但需要完整乘积的宽 reduction 和跨批次标量/宽累加。当前 `simd_reduce` 只接收窄执行结果，因此该映射暂不闭合。它适合作为后续比较负载，用来判断 `DOT4` 或独立 ARF wide reduction 是否值得增加。

@@ -20,6 +20,7 @@ constexpr uint32_t kFmtWide = 0x7;
 constexpr uint32_t kFmtWadd = 0x8;
 constexpr uint32_t kFmtCompact = 0x9;
 constexpr uint32_t kFmtMrf = 0xa;
+constexpr uint32_t kFmtRoute = 0xd;
 
 constexpr uint32_t kErrNone = 0x0;
 constexpr uint32_t kErrBadFormat = 0x1;
@@ -183,6 +184,16 @@ uint32_t enc_mrf(unsigned mask_op, unsigned ma, unsigned mb, unsigned md,
          (uint32_t(export_narrow) << 13) | reserved;
 }
 
+uint32_t enc_route(unsigned route_op, unsigned va, unsigned vd,
+                   unsigned mask, bool write_vrf, bool export_narrow,
+                   unsigned reduce, unsigned route_ctrl,
+                   unsigned reserved = 0) {
+  return (kFmtRoute << 28) | (route_op << 26) | (va << 22) | (vd << 18) |
+         (mask << 15) | (uint32_t(write_vrf) << 14) |
+         (uint32_t(export_narrow) << 13) | (reduce << 10) |
+         (route_ctrl << 2) | reserved;
+}
+
 struct Expected {
   uint32_t op = 0;
   uint32_t mode = 0;
@@ -203,6 +214,13 @@ struct Expected {
   bool reduce_enable = false;
   uint32_t reduce_op = 0;
   bool export_narrow = false;
+  bool route_enable = false;
+  uint32_t route_op = 0;
+  uint32_t route_index = 0;
+  uint32_t route_broadcast = 0;
+  uint32_t route_slide = 0;
+  uint32_t route_lower = 0;
+  uint32_t route_upper = 0;
   bool has_count = false;
 };
 
@@ -305,16 +323,19 @@ void expect_legal(Vvsp_exec_uword_expander& dut, const std::string& name,
   expect_eq(name + " result count", expected.has_count,
             dut.result_has_count_o);
 
-  // Profile v0 has no route encoding. Every legal format must produce the
-  // same complete canonical tie-off, not merely route_enable=0.
-  expect_eq(name + " route enable", 0, dut.route_enable_o);
-  expect_eq(name + " route op", 0, dut.route_op_o);
-  expect_eq(name + " route index", 0, dut.route_index_o);
-  expect_eq(name + " route broadcast", 0,
+  expect_eq(name + " route enable", expected.route_enable,
+            dut.route_enable_o);
+  expect_eq(name + " route op", expected.route_op, dut.route_op_o);
+  expect_eq(name + " route index", expected.route_index,
+            dut.route_index_o);
+  expect_eq(name + " route broadcast", expected.route_broadcast,
             dut.route_broadcast_index_o);
-  expect_eq(name + " route slide", 0, dut.route_slide_amount_o);
-  expect_eq(name + " route lower", 0, dut.route_lower_o);
-  expect_eq(name + " route upper", 0, dut.route_upper_o);
+  expect_eq(name + " route slide", expected.route_slide,
+            dut.route_slide_amount_o);
+  expect_eq(name + " route lower", expected.route_lower,
+            dut.route_lower_o);
+  expect_eq(name + " route upper", expected.route_upper,
+            dut.route_upper_o);
 }
 
 void expect_illegal(Vvsp_exec_uword_expander& dut, const std::string& name,
@@ -485,6 +506,46 @@ void test_golden_formats(Vvsp_exec_uword_expander& dut) {
   expected.export_narrow = true;
   expect_legal(dut, "fmtA MRF_LOGIC",
                enc_mrf(3, 2, 0, 1, 12, true, true, true),
+               false, 0, false, expected);
+
+  expected = {};
+  expected.op = kOpPassA;
+  expected.mode = kModeByte;
+  expected.src_a = 1;
+  expected.dst_vrf = 2;
+  expected.write_vrf = true;
+  expected.route_enable = true;
+  expected.route_op = 0;
+  expected.route_index = 0x1b;
+  expect_legal(dut, "fmtD ROUTE gather",
+               enc_route(0, 1, 2, 0, true, false, 0, 0x1b),
+               false, 0, false, expected);
+
+  expected = {};
+  expected.op = kOpPassA;
+  expected.mode = kModeByte;
+  expected.src_a = 3;
+  expected.export_narrow = true;
+  expected.route_enable = true;
+  expected.route_op = 1;
+  expected.route_broadcast = 2;
+  apply_mask(expected, 1);
+  apply_reduce(expected, 3);
+  expect_legal(dut, "fmtD ROUTE broadcast result",
+               enc_route(1, 3, 0, 1, false, true, 3, 2),
+               false, 0, false, expected);
+
+  expected = {};
+  expected.op = kOpPassA;
+  expected.mode = kModeByte;
+  expected.src_a = 4;
+  expected.dst_vrf = 5;
+  expected.write_vrf = true;
+  expected.route_enable = true;
+  expected.route_op = 2;
+  expected.route_slide = 4;
+  expect_legal(dut, "fmtD ROUTE zero-fill slide",
+               enc_route(2, 4, 5, 0, true, false, 0, 4),
                false, 0, false, expected);
 }
 
@@ -661,6 +722,18 @@ void test_illegal_and_priority(Vvsp_exec_uword_expander& dut) {
                  false, 0, false, true, kErrUnused);
   expect_illegal(dut, "MNOT has second source",
                  enc_mrf(3, 1, 2, 0, 0, false, false, false),
+                 false, 0, false, true, kErrUnused);
+  expect_illegal(dut, "ROUTE reserved bits",
+                 enc_route(0, 1, 2, 0, true, false, 0, 0x1b, 1),
+                 false, 0, false, true, kErrReserved);
+  expect_illegal(dut, "ROUTE broadcast unused control",
+                 enc_route(1, 1, 2, 0, true, false, 0, 0x42),
+                 false, 0, false, true, kErrUnused);
+  expect_illegal(dut, "ROUTE slide amount out of range",
+                 enc_route(3, 1, 2, 0, true, false, 0, 5),
+                 false, 0, false, true, kErrBadSubop);
+  expect_illegal(dut, "ROUTE disabled destination is nonzero",
+                 enc_route(0, 1, 2, 0, false, false, 0, 0x1b),
                  false, 0, false, true, kErrUnused);
 
   // Multi-error cases lock the documented cause priority rather than merely

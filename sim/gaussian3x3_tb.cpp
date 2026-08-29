@@ -1,5 +1,6 @@
 #include "Vsimd_datapath.h"
 #include "verilated.h"
+#include "vsp_image_io.h"
 
 #include <algorithm>
 #include <array>
@@ -7,9 +8,20 @@
 #include <cstdlib>
 #include <iostream>
 #include <random>
+#include <string>
 #include <vector>
 
 namespace {
+
+using vsp_image::Image;
+using vsp_image::pattern_checkerboard;
+using vsp_image::pattern_flat;
+using vsp_image::pattern_impulse;
+using vsp_image::pattern_noise;
+using vsp_image::pattern_ramp;
+using vsp_image::pattern_salt_pepper;
+using vsp_image::pattern_step;
+using vsp_image::pattern_zone_plate;
 
 constexpr unsigned kLanes = 4;
 
@@ -134,31 +146,20 @@ void write_mrf(Vsimd_datapath& dut, uint8_t address, uint8_t mask) {
   tick(dut);
 }
 
-uint8_t sample_zero_padded(const std::vector<uint8_t>& image, int width,
-                           int height, int x, int y) {
-  if (x < 0 || x >= width || y < 0 || y >= height) return 0;
-  return image[static_cast<size_t>(y * width + x)];
-}
-
-std::array<uint8_t, kLanes> load_group(const std::vector<uint8_t>& image,
-                                       int width, int height, int y,
+std::array<uint8_t, kLanes> load_group(const Image& image, int y,
                                        int first_x) {
   std::array<uint8_t, kLanes> group{};
   for (unsigned lane = 0; lane < kLanes; ++lane) {
-    group[lane] = sample_zero_padded(image, width, height,
-                                     first_x + static_cast<int>(lane), y);
+    group[lane] = image.at(first_x + static_cast<int>(lane), y);
   }
   return group;
 }
 
-RowBlock load_row_block(const std::vector<uint8_t>& image, int width,
-                        int height, int y, int first_x) {
+RowBlock load_row_block(const Image& image, int y, int first_x) {
   RowBlock row;
-  row.lower = load_group(image, width, height, y,
-                         first_x - static_cast<int>(kLanes));
-  row.center = load_group(image, width, height, y, first_x);
-  row.upper = load_group(image, width, height, y,
-                         first_x + static_cast<int>(kLanes));
+  row.lower = load_group(image, y, first_x - static_cast<int>(kLanes));
+  row.center = load_group(image, y, first_x);
+  row.upper = load_group(image, y, first_x + static_cast<int>(kLanes));
   return row;
 }
 
@@ -222,8 +223,7 @@ std::array<uint8_t, kLanes> read_vrf(Vsimd_datapath& dut,
   return unpack8(dut.narrow_result_o);
 }
 
-uint8_t gaussian_reference_pixel(const std::vector<uint8_t>& image,
-                                 int width, int height, int x, int y) {
+uint8_t gaussian_reference_pixel(const Image& image, int x, int y) {
   constexpr int weights[3][3] = {
       {1, 2, 1},
       {2, 4, 2},
@@ -233,46 +233,41 @@ uint8_t gaussian_reference_pixel(const std::vector<uint8_t>& image,
   unsigned sum = 0;
   for (int dy = -1; dy <= 1; ++dy) {
     for (int dx = -1; dx <= 1; ++dx) {
-      sum += weights[dy + 1][dx + 1] *
-             sample_zero_padded(image, width, height, x + dx, y + dy);
+      sum += weights[dy + 1][dx + 1] * image.at(x + dx, y + dy);
     }
   }
   return static_cast<uint8_t>((sum + 8) >> 4);
 }
 
-std::vector<uint8_t> gaussian_reference(const std::vector<uint8_t>& image,
-                                        int width, int height) {
-  std::vector<uint8_t> output(image.size());
-  for (int y = 0; y < height; ++y) {
-    for (int x = 0; x < width; ++x) {
-      output[static_cast<size_t>(y * width + x)] =
-          gaussian_reference_pixel(image, width, height, x, y);
+Image gaussian_reference(const Image& image) {
+  Image output = vsp_image::make_image(image.width, image.height);
+  for (int y = 0; y < image.height; ++y) {
+    for (int x = 0; x < image.width; ++x) {
+      output.ref(x, y) = gaussian_reference_pixel(image, x, y);
     }
   }
   return output;
 }
 
-std::vector<uint8_t> run_gaussian(Vsimd_datapath& dut,
-                                  const std::vector<uint8_t>& image,
-                                  int width, int height, Stats& stats) {
-  std::vector<uint8_t> output(image.size());
+Image run_gaussian(Vsimd_datapath& dut, const Image& image, Stats& stats) {
+  Image output = vsp_image::make_image(image.width, image.height);
 
-  for (int y = 0; y < height; ++y) {
-    for (int first_x = 0; first_x < width;
+  for (int y = 0; y < image.height; ++y) {
+    for (int first_x = 0; first_x < image.width;
          first_x += static_cast<int>(kLanes)) {
       const RowBlock above =
-          load_row_block(image, width, height, y - 1, first_x);
+          load_row_block(image, y - 1, first_x);
       const RowBlock center =
-          load_row_block(image, width, height, y, first_x);
+          load_row_block(image, y, first_x);
       const RowBlock below =
-          load_row_block(image, width, height, y + 1, first_x);
+          load_row_block(image, y + 1, first_x);
 
       write_vrf(dut, kRowAbove, above.center);
       write_vrf(dut, kRowCenter, center.center);
       write_vrf(dut, kRowBelow, below.center);
 
       const unsigned active_lanes =
-          std::min<unsigned>(kLanes, static_cast<unsigned>(width - first_x));
+          std::min<unsigned>(kLanes, static_cast<unsigned>(image.width - first_x));
       const uint8_t tail_mask =
           static_cast<uint8_t>((1u << active_lanes) - 1u);
       write_mrf(dut, kTailMask, tail_mask);
@@ -301,7 +296,7 @@ std::vector<uint8_t> run_gaussian(Vsimd_datapath& dut,
       issue_nclip(dut);
       const auto result = read_vrf(dut, kOutput);
       for (unsigned lane = 0; lane < active_lanes; ++lane) {
-        output[static_cast<size_t>(y * width + first_x + lane)] = result[lane];
+        output.ref(first_x + static_cast<int>(lane), y) = result[lane];
       }
 
       ++stats.blocks;
@@ -314,20 +309,21 @@ std::vector<uint8_t> run_gaussian(Vsimd_datapath& dut,
   return output;
 }
 
-void check_image(Vsimd_datapath& dut, const std::vector<uint8_t>& image,
-                 int width, int height, Stats& stats) {
-  const auto expected = gaussian_reference(image, width, height);
-  const auto actual = run_gaussian(dut, image, width, height, stats);
+void check_image(Vsimd_datapath& dut, const Image& image, Stats& stats,
+                 Image* captured = nullptr) {
+  const Image expected = gaussian_reference(image);
+  const Image actual = run_gaussian(dut, image, stats);
   for (size_t index = 0; index < image.size(); ++index) {
-    if (actual[index] != expected[index]) {
-      const int y = static_cast<int>(index) / width;
-      const int x = static_cast<int>(index) % width;
+    if (actual.pixels[index] != expected.pixels[index]) {
+      const int y = static_cast<int>(index) / image.width;
+      const int x = static_cast<int>(index) % image.width;
       std::cerr << "FAIL Gaussian image=" << stats.images << " x=" << x
-                << " y=" << y << " expected=" << unsigned(expected[index])
-                << " actual=" << unsigned(actual[index]) << '\n';
+                << " y=" << y << " expected=" << unsigned(expected.pixels[index])
+                << " actual=" << unsigned(actual.pixels[index]) << '\n';
       std::exit(1);
     }
   }
+  if (captured != nullptr) *captured = actual;
 }
 
 }  // namespace
@@ -339,18 +335,37 @@ int main(int argc, char** argv) {
 
   Stats stats;
 
-  check_image(dut, {0}, 1, 1, stats);
-  check_image(dut, std::vector<uint8_t>(7 * 5, 255), 7, 5, stats);
+  // Optional dump mode: emit pattern suite to a directory with properties CSV.
+  if ((argc > 2) && (std::string(argv[1]) == "--dump")) {
+    vsp_image::Writer writer(argv[2], "gaussian");
+    std::mt19937 rng(0x47555353u);
 
-  std::vector<uint8_t> impulse(9 * 7, 0);
-  impulse[3 * 9 + 4] = 255;
-  check_image(dut, impulse, 9, 7, stats);
+    struct Named { const char* name; Image image; };
+    std::vector<Named> patterns;
+    patterns.push_back({"ramp", pattern_ramp(64, 48)});
+    patterns.push_back({"zone_plate", pattern_zone_plate(64, 48)});
+    patterns.push_back({"step_diagonal", pattern_step(64, 48, 2)});
+    patterns.push_back({"checker4", pattern_checkerboard(64, 48, 4)});
+    patterns.push_back({"impulse", pattern_impulse(64, 48)});
+    patterns.push_back({"noise", pattern_noise(64, 48, rng)});
+    patterns.push_back({"salt_pepper_10", pattern_salt_pepper(64, 48, 10, rng)});
 
-  std::vector<uint8_t> ramp(13 * 4);
-  for (size_t index = 0; index < ramp.size(); ++index) {
-    ramp[index] = static_cast<uint8_t>((index * 37 + 11) & 0xff);
+    for (auto& pattern : patterns) {
+      Image output;
+      check_image(dut, pattern.image, stats, &output);
+      writer.emit(pattern.name, "input", pattern.image);
+      writer.emit(pattern.name, "output", output);
+    }
+
+    dut.final();
+    std::printf("dumped %llu Gaussian images to %s\n",
+                static_cast<unsigned long long>(stats.images), argv[2]);
+    return 0;
   }
-  check_image(dut, ramp, 13, 4, stats);
+
+  check_image(dut, pattern_flat(9, 7, 0), stats);
+  check_image(dut, pattern_impulse(9, 7), stats);
+  check_image(dut, pattern_ramp(13, 4), stats);
 
   std::mt19937 rng(0x47555353u);
   std::uniform_int_distribution<int> width_distribution(1, 31);
@@ -358,9 +373,7 @@ int main(int argc, char** argv) {
   for (unsigned iteration = 0; iteration < 250; ++iteration) {
     const int width = width_distribution(rng);
     const int height = height_distribution(rng);
-    std::vector<uint8_t> image(static_cast<size_t>(width * height));
-    for (auto& pixel : image) pixel = static_cast<uint8_t>(rng());
-    check_image(dut, image, width, height, stats);
+    check_image(dut, pattern_noise(width, height, rng), stats);
   }
 
   dut.final();

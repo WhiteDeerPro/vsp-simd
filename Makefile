@@ -115,6 +115,18 @@ GROUP_WRAPPER_TB  := $(abspath sim/simd_group_wrapper_tb.cpp)
 GAUSSIAN_TOP := simd_datapath
 GAUSSIAN_OBJ := $(BUILD_DIR)/gaussian_obj_dir
 GAUSSIAN_TB  := $(abspath sim/gaussian3x3_tb.cpp)
+SEPARABLE_TOP := simd_datapath
+SEPARABLE_OBJ := $(BUILD_DIR)/gaussian_separable_obj_dir
+SEPARABLE_TB  := $(abspath sim/gaussian3x3_separable_tb.cpp)
+SOBEL_TOP := simd_datapath
+SOBEL_OBJ := $(BUILD_DIR)/sobel_obj_dir
+SOBEL_TB  := $(abspath sim/sobel3x3_tb.cpp)
+MEDIAN_TOP := simd_datapath
+MEDIAN_OBJ := $(BUILD_DIR)/median_obj_dir
+MEDIAN_TB  := $(abspath sim/median3x3_tb.cpp)
+LANE_GATHER_TOP := vsp_lane_gather
+LANE_GATHER_OBJ := $(BUILD_DIR)/vsp_lane_gather_obj_dir
+LANE_GATHER_TB  := $(abspath sim/vsp_lane_gather_tb.cpp)
 MUL32_MICRO_TB := sim/mul32_microcode_tb.cpp
 MUL32_MICRO_BIN := $(BUILD_DIR)/mul32_microcode_tb
 
@@ -241,6 +253,15 @@ lint:
 		-GLANES=8 $(ROUTE_RTL)
 	$(VERILATOR) --lint-only -Wall -Wno-fatal --top-module $(ROUTE_TOP) \
 		-GLANES=16 $(ROUTE_RTL)
+	$(VERILATOR) --lint-only -Wall -Wno-fatal \
+		--top-module $(LANE_GATHER_TOP) $(LANE_GATHER_RTL)
+	$(VERILATOR) --lint-only -Wall -Wno-fatal \
+		--top-module $(LANE_GATHER_TOP) -GLANES=8 $(LANE_GATHER_RTL)
+	$(VERILATOR) --lint-only -Wall -Wno-fatal \
+		--top-module $(LANE_GATHER_TOP) -GLANES=12 $(LANE_GATHER_RTL)
+	$(VERILATOR) --lint-only -Wall -Wno-fatal \
+		--top-module $(LANE_GATHER_TOP) -GLANES=64 -GMODE_W=5 \
+		$(LANE_GATHER_RTL)
 	$(VERILATOR) --lint-only -Wall -Wno-fatal --top-module $(COMPACT_TOP) \
 		-GLANES=8 $(COMPACT_RTL)
 	$(VERILATOR) --lint-only -Wall -Wno-fatal --top-module $(MASK_TOP) \
@@ -525,6 +546,13 @@ $(COMPACT_OBJ)/V$(COMPACT_TOP): $(COMPACT_RTL) $(COMPACT_TB) $(BUILD_META) | $(B
 		$(COMPACT_RTL) $(COMPACT_TB)
 	$(MAKE) -C $(COMPACT_OBJ) -f V$(COMPACT_TOP).mk
 
+$(LANE_GATHER_OBJ)/V$(LANE_GATHER_TOP): $(LANE_GATHER_RTL) $(LANE_GATHER_TB) \
+		$(BUILD_META) | $(BUILD_DIR)
+	$(VERILATOR) -Wall -Wno-fatal --cc --exe \
+		--top-module $(LANE_GATHER_TOP) --Mdir $(LANE_GATHER_OBJ) \
+		$(LANE_GATHER_RTL) $(LANE_GATHER_TB)
+	$(MAKE) -C $(LANE_GATHER_OBJ) -f V$(LANE_GATHER_TOP).mk
+
 $(MASK_OBJ)/V$(MASK_TOP): $(MASK_RTL) $(MASK_TB) $(BUILD_META) | $(BUILD_DIR)
 	$(VERILATOR) -Wall -Wno-fatal --cc --exe --top-module $(MASK_TOP) \
 		-GLANES=8 --Mdir $(MASK_OBJ) $(MASK_RTL) $(MASK_TB)
@@ -563,6 +591,22 @@ $(GAUSSIAN_OBJ)/V$(GAUSSIAN_TOP): $(DATAPATH_RTL) $(GAUSSIAN_TB) $(BUILD_META) |
 		--Mdir $(GAUSSIAN_OBJ) $(DATAPATH_RTL) $(GAUSSIAN_TB)
 	$(MAKE) -C $(GAUSSIAN_OBJ) -f V$(GAUSSIAN_TOP).mk
 
+$(SOBEL_OBJ)/V$(SOBEL_TOP): $(DATAPATH_RTL) $(SOBEL_TB) $(BUILD_META) | $(BUILD_DIR)
+	$(VERILATOR) -Wall -Wno-fatal --cc --exe --top-module $(SOBEL_TOP) \
+		--Mdir $(SOBEL_OBJ) $(DATAPATH_RTL) $(SOBEL_TB)
+	$(MAKE) -C $(SOBEL_OBJ) -f V$(SOBEL_TOP).mk
+
+$(SEPARABLE_OBJ)/V$(SEPARABLE_TOP): $(DATAPATH_RTL) $(SEPARABLE_TB) \
+		$(BUILD_META) | $(BUILD_DIR)
+	$(VERILATOR) -Wall -Wno-fatal --cc --exe --top-module $(SEPARABLE_TOP) \
+		--Mdir $(SEPARABLE_OBJ) $(DATAPATH_RTL) $(SEPARABLE_TB)
+	$(MAKE) -C $(SEPARABLE_OBJ) -f V$(SEPARABLE_TOP).mk
+
+$(MEDIAN_OBJ)/V$(MEDIAN_TOP): $(DATAPATH_RTL) $(MEDIAN_TB) $(BUILD_META) | $(BUILD_DIR)
+	$(VERILATOR) -Wall -Wno-fatal --cc --exe --top-module $(MEDIAN_TOP) \
+		--Mdir $(MEDIAN_OBJ) $(DATAPATH_RTL) $(MEDIAN_TB)
+	$(MAKE) -C $(MEDIAN_OBJ) -f V$(MEDIAN_TOP).mk
+
 $(MUL32_MICRO_BIN): $(MUL32_MICRO_TB) $(BUILD_META) | $(BUILD_DIR)
 	$(CXX) -std=c++17 -O2 -Wall -Wextra -pedantic $< -o $@
 
@@ -589,13 +633,17 @@ test: $(OBJ_DIR)/V$(TOP) $(BENES_OBJ)/V$(BENES_TOP) \
 		$(CLUSTER_CONTROLLER_WRAPPER_OBJ)/V$(CLUSTER_CONTROLLER_WRAPPER_TOP) \
 		$(UOP_LEGAL_OBJ)/V$(UOP_LEGAL_TOP) \
 		$(ROUTE_OBJ)/V$(ROUTE_TOP) \
+		$(LANE_GATHER_OBJ)/V$(LANE_GATHER_TOP) \
 		$(COMPACT_OBJ)/V$(COMPACT_TOP) \
 		$(MASK_OBJ)/V$(MASK_TOP) \
 		$(DYNAMIC_OBJ)/V$(DYNAMIC_TOP) \
 		$(REDUCE_OBJ)/V$(REDUCE_TOP) $(SAD_OBJ)/V$(SAD_TOP) \
 		$(DATAPATH_OBJ)/V$(DATAPATH_TOP) \
 		$(GROUP_WRAPPER_OBJ)/V$(GROUP_WRAPPER_TOP) \
-		$(GAUSSIAN_OBJ)/V$(GAUSSIAN_TOP) $(MUL32_MICRO_BIN)
+		$(GAUSSIAN_OBJ)/V$(GAUSSIAN_TOP) \
+		$(SOBEL_OBJ)/V$(SOBEL_TOP) \
+		$(SEPARABLE_OBJ)/V$(SEPARABLE_TOP) \
+		$(MEDIAN_OBJ)/V$(MEDIAN_TOP) $(MUL32_MICRO_BIN)
 	$(OBJ_DIR)/V$(TOP)
 	$(BENES_OBJ)/V$(BENES_TOP)
 	$(ISSUE_DISPATCH_OBJ)/V$(ISSUE_DISPATCH_TOP)
@@ -621,6 +669,7 @@ test: $(OBJ_DIR)/V$(TOP) $(BENES_OBJ)/V$(BENES_TOP) \
 	$(CLUSTER_CONTROLLER_WRAPPER_OBJ)/V$(CLUSTER_CONTROLLER_WRAPPER_TOP)
 	$(UOP_LEGAL_OBJ)/V$(UOP_LEGAL_TOP)
 	$(ROUTE_OBJ)/V$(ROUTE_TOP)
+	$(LANE_GATHER_OBJ)/V$(LANE_GATHER_TOP)
 	$(COMPACT_OBJ)/V$(COMPACT_TOP)
 	$(MASK_OBJ)/V$(MASK_TOP)
 	$(DYNAMIC_OBJ)/V$(DYNAMIC_TOP)
@@ -629,6 +678,9 @@ test: $(OBJ_DIR)/V$(TOP) $(BENES_OBJ)/V$(BENES_TOP) \
 	$(DATAPATH_OBJ)/V$(DATAPATH_TOP)
 	$(GROUP_WRAPPER_OBJ)/V$(GROUP_WRAPPER_TOP)
 	$(GAUSSIAN_OBJ)/V$(GAUSSIAN_TOP)
+	$(SOBEL_OBJ)/V$(SOBEL_TOP)
+	$(SEPARABLE_OBJ)/V$(SEPARABLE_TOP)
+	$(MEDIAN_OBJ)/V$(MEDIAN_TOP)
 	$(MUL32_MICRO_BIN)
 
 clean:

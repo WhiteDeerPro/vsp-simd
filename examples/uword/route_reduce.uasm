@@ -1,0 +1,14 @@
+# One-word SIMD4-local route instructions.  Every line advances the byte PC
+# by four; group/context/tag remain resolved action sideband.
+
+entry:
+EXEC_ROUTE op=gather va=1 vd=2 i0=3 i1=2 i2=1 i3=0
+EXEC_ROUTE op=broadcast va=2 vd=3 lane=1
+EXEC_ROUTE op=slide_up va=3 vd=4 amount=1
+
+# This pseudo-op reuses PASS_A + the existing scalar result channel.  It does
+# not write a vector row; the completion carries value and winning lane.
+EXEC_REDUCE op=min_u va=4
+EXEC_REDUCE op=max_u va=4
+
+CONTROL_END
