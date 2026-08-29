@@ -163,6 +163,10 @@ response 保存成 bundle 等待下游；所以 4-word 只是单次 response/fet
 不证明能够持续每拍供应 4 words 或 3 actions。真实 I-side SRAM/cache pipeline、bank/
 端口、miss/refill 和吞吐仲裁都尚未实现。
 
+另有独立 `vsp_ordered_ifetch_model` 为这个 I-side 候选合同验证 address metadata、
+fault、固定延迟和 FIFO ordered response；它尚未连接 program source，且不是 cache。
+I/D 分层预期见[内存模型边界](../architecture/memory-hierarchy.md)。
+
 assembler 最多保存一条三 word 未完成 tail，把下一 bundle 的前缀作为 opaque
 extension/body 补齐，而不重新按 header 分类。完整 record 依序串行输出；最终 tail
 不足时输出一次 `record_truncated`，其中 structural count 与 present count 分开。

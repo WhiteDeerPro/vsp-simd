@@ -44,6 +44,11 @@ digraph vsp_current_integration {
       fillcolor="#fff7dc",
       color="#b58b23"
     ];
+    ifetch_model [
+      label="standalone ordered I-side model\naddr-space + fault cause\nnot yet bound to program source",
+      fillcolor="#fff7dc",
+      color="#b58b23"
+    ];
     pc_source [
       label="linear byte-PC source\n1 fetch request outstanding\nup to 4 words; PC += 4 × count"
     ];
@@ -60,6 +65,12 @@ digraph vsp_current_integration {
     launch -> pc_source [label="start"];
     launch -> adapter [label="envelope"];
     pc_source -> control_store [dir=both, label="ordered req/rsp"];
+    pc_source -> ifetch_model [
+      dir=both,
+      style=dashed,
+      color="#b58b23",
+      label="candidate provider adapter"
+    ];
     pc_source -> framer [label="bundle"];
     framer -> holding [label="record slot 0"];
     holding -> adapter;
@@ -206,15 +217,27 @@ digraph vsp_current_integration {
     binding_gap -> strict_controller [style=dashed, color="#b58b23"];
   }
 
-  scalar_gap [
-    label="sequencer scalar/address state engine\nnot implemented:\nscalar RF/ALU, loop/redirect, scalar L/S,\nreduction-to-scalar and per-record group-mask state",
+  state_engine [
+    label="standalone sequencer state engine\nper-context 32-bit state RF\nSMOVI / SADD / SADDI + base query",
+    shape=box,
+    style="rounded,filled",
+    fillcolor="#fff7dc",
+    color="#b58b23"
+  ];
+  control_gap [
+    label="still missing:\nMEMORY-uword semantic decode and base snapshot,\nloop/redirect, scalar L/S, reduction-to-state,\nper-record group-mask state",
     shape=note,
     style="filled,dashed",
     fillcolor="#fff0f0",
     color="#b45b5b"
   ];
-  scalar_gap -> decoded_memory [style=dashed, color="#b45b5b", label="future base register"];
-  scalar_gap -> pc_source [style=dashed, color="#b45b5b", label="future redirect"];
+  state_engine -> decoded_memory [
+    style=dashed,
+    color="#b58b23",
+    label="base query not yet bound"
+  ];
+  control_gap -> state_engine [style=dashed, color="#b45b5b"];
+  control_gap -> pc_source [style=dashed, color="#b45b5b", label="future redirect"];
 
   legend [
     shape=note,

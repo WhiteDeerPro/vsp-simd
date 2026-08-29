@@ -13,7 +13,7 @@
 | decoded MEMORY execution | 已实现参考入口 |
 | encoded MEMORY semantic decode | 未实现；program path 当前有序拒绝 |
 | CONTROL | 只实现 canonical final `END` |
-| scalar RF / scalar ALU | 未实现 |
+| sequencer address-state RF / adder | 已实现独立 decoded reference；尚未接 program path |
 | loop / branch / redirect | 未实现 |
 | call/return、SP/RA | 未实现 |
 | scalar LOAD/STORE | 未实现 |
@@ -38,30 +38,35 @@ mask 或 `SET_GMASK`。
 这些需求不推导出通用 CPU。标量状态可以从属于 VSP sequencer，只服务 action
 生成、地址形成和 program control；SIMD4 group 仍不取指、不执行地址、不处理中断。
 
-## 3. 最小候选集合 `[候选]`
+## 3. 第一版已实现集合 `[RTL事实]`
 
-建议先保留一个参数化的 32-bit scalar/address RF；若软件工具希望使用 32 个逻辑编号，
-可以暴露 32 个逻辑寄存器，但不立即赋予 ABI 的 SP/RA/callee-save 角色。第一组操作为：
+`vsp_sequencer_state_engine` 内含 per-context、参数化的 32-bit state RF；默认每 context
+32 个逻辑寄存器。register 0 恒为零，但不赋予 SP/RA/callee-save 等 ABI 角色。
+当前操作为：
 
-| 类别 | 候选操作 | 用途 |
+| 类别 | 已实现操作 | 用途 |
 |---|---|---|
 | 常量/复制 | `SMOVI` | 构造地址、stride 和 loop count |
 | 整数地址 | `SADD`、`SADDI` | base/offset/stride；负 immediate 已覆盖 SUBI |
-| 发射状态 | `SET_GMASK` | 为后续 action 捕获 group mask |
-| 计数控制 | `LOOP`、`LOOP_END` | 串行化的零开销计数循环 |
-| 终止 | `END` | 等待强静止并完成 launch |
-| 向量访存 | `VLOAD/VSTORE [sbase+simm]` | 形成 descriptor，实际 beat 仍由 vector memory engine 执行 |
 
-第一阶段不加入 flags、任意条件 branch、CALL/RET、scalar memory、乘除法、CSR、特权态
-和中断。这些只有在 workload 或系统集成给出接收者后再讨论。
+加法按 state width 模回绕，不产生 flags 或 overflow exception。decoded command 在
+handshake 时写状态，每项 accepted command 恰好产生一项可背压 completion；非法 op、
+context 或实际使用的 register 产生零副作用错误 completion。一个组合 base query
+供未来 MEMORY decoder 在 action admission 时快照值。
+
+当前没有 `SET_GMASK`、`LOOP/LOOP_END`、任意条件 branch、CALL/RET、scalar memory、
+乘除法、CSR、特权态和中断。`END` 仍由既有 CONTROL path 实现，不在 state engine 内。
+`VLOAD/VSTORE [sbase+simm]` 仍是下一步 MEMORY semantic decode 的目标，不是已实现
+encoding。
 
 ## 4. 建议落地顺序 `[候选]`
 
-1. MEMORY semantic decoder：先允许 record 携带完整 base eaddr、offset、row、span 与
-   address context，接通现有 decoded descriptor。
-2. scalar/address RF 与 `SMOVI/SADD(I)/SET_GMASK`：action admission 时快照 resolved
-   address 和 mask，避免年轻标量更新改变在途 action。
-3. MEMORY base-register form：descriptor 改为读取 scalar base，AGU 仍只接收已解析值。
+1. MEMORY semantic decoder：定义 record 的 address-state base register、signed offset、
+   row、span、address context 与 group mask；admission 时读取 base 并形成现有 decoded
+   descriptor。
+2. 把已实现的 `SMOVI/SADD(I)` decoded state command 接入 CONTROL/class routing，并让
+   dependency metadata 保证 state RAW；memory engine 仍只接收已快照的 resolved eaddr。
+3. 根据实际多 group 程序加入 per-context `SET_GMASK`，同样在 action admission 时快照。
 4. 串行化 loop redirect：遇到 control-flow record 停止年轻 action，清除已预取的年轻
    word/framer state，再从目标 PC 重取。
 5. 有负载证据后增加 reduction/count → scalar RF 与条件 branch。

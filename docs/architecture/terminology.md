@@ -55,6 +55,8 @@ HALF/WORD 的 element-level 语义需要由微码组合或后续 action 定义�
 | vector memory engine | 把一项 vector load/store command 分解成 memory beat 与 group-local VRF subrequest |
 | VRF arbiter | 在多个 client 和 cluster VRF endpoint 之间选择 request 并保持返回归属 |
 | sequencer | 提供 action、循环状态和标量参数的上级控制单元；SIMD group 不自行取指 |
+| sequencer state engine | 保存 per-context 地址、stride 和 count 等 32-bit 状态并执行简单加法；不持有 PC、不发 memory request，也不是独立 scalar CPU |
+| I-cache role / D-cache role | 独立服务 program-fetch 与 data-memory 逻辑端口的候选缓存职责；当前只有协议模型，尚无 cache RTL、容量或行宽决定 |
 
 `Group` 和 `Cluster` 只在已经给出上述限定的局部上下文中简写。面向软件的描述优先谈
 vector operation、element 和 register，不暴露不必要的物理分组。
@@ -74,6 +76,7 @@ vector operation、element 和 register，不暴露不必要的物理分组。
 | sequencer/control word (`uword`) | 候选的紧凑内部控制存储格式；不是已定义的 16/32-bit ISA instruction |
 | control store | 保存内部 uword stream 的逻辑存储；当前 RTL 是可编程行为模型，不表示 I-cache、物理 SRAM 或软件可见 instruction memory |
 | program source | 按 byte PC 从 control store 顺序请求 uword bundle 的控制模块；当前只支持一个半开区间，不含 branch、loop 或异常重启 |
+| ordered I-side fetch model | read-only uword bundle 的 simulation-only endpoint；带 byte PC、address metadata、fault 和 FIFO ordered response，不表示 I-cache 已实现 |
 | uword bundle | 同拍交给内部组合扫描逻辑的一组连续 32-bit uword stream word；不是 cache line、IFetch response 或软件 instruction bundle |
 | uword record | stream 中由一个 header 和零至多个 opaque body word 组成的结构记录；当前 EXEC record 也称 EXEC packet |
 | bundle predecoder | 只判定 uword record 边界、major 是否已定义和 `EXEC/MEMORY/CONTROL` class 的内部组合逻辑；不做完整 admission legality、资源派生或 class-specific decode |

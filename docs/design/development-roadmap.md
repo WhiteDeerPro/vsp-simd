@@ -63,6 +63,12 @@
 - `vsp_ordered_dmem_model` 仿真 endpoint：byte array、write strobe、地址空间/范围
   fault、固定延迟、四项 FIFO ordered outstanding、满队列同拍替换与 response
   backpressure 已验证；它不是物理 SRAM/cache/MMU；
+- `vsp_ordered_ifetch_model` 仿真 endpoint：read-only word backing、byte-PC、最多四 word
+  packed response、地址空间/fault、固定延迟和 FIFO ordered outstanding 已验证；它与
+  dmem 模型是两个独立逻辑端口，尚未接入 strict program wrapper，也不是 I-cache；
+- `vsp_sequencer_state_engine` decoded reference：per-context 32-bit state RF、恒零
+  register 0、`SMOVI/SADD/SADDI`、modulo arithmetic、可背压单项 completion 与
+  combinational base query 已验证；尚未接 CONTROL/MEMORY uword semantic decode；
 - `simd_cluster_exec` 的 group-addressed VRF state-read/write child 路径，以及
   `vsp_cluster_vrf_arbiter` 的多 client read/write 仲裁和返回归属保持；
 - `vsp_cluster_memory_wrapper` decoded reference integration：vector memory engine 经 shared
@@ -79,12 +85,13 @@
   closure 解读为三发射或 encoded LOAD/STORE 已实现；
 - 全量 lint/test 基线。
 
-当前优先级转向 MEMORY semantic decode 与 scalar/address state，并把 multi-record
+当前优先级转向 MEMORY semantic decode 与 address-state binding，并把 multi-record
 framer、action envelope、浅层依赖窗口和各 class engine 组成并发控制链；随后补充
 实际 admission legality/resource metadata、动态 owner 状态与 sequencer
 loop/redirect。跨组 route 已从这条执行闭环中解耦并延期。
-物理 memory hierarchy 仍在 `dmem_*` 逻辑边界
-之外。在出现新的阻塞负载证据
+物理 memory hierarchy 仍在独立 I-side/D-side 逻辑边界之外；当前只新增了可执行
+protocol model，没有实现 I-cache/D-cache。候选分层见
+[I-side / D-side 内存模型边界](../architecture/memory-hierarchy.md)。在出现新的阻塞负载证据
 前，暂缓增加 lane arithmetic feature。
 
 ## M1：SIMD4 transaction wrapper `[已实现参考]`

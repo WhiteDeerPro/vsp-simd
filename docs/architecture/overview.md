@@ -51,7 +51,7 @@ instruction IFetch 是不同边界。
 | `exec_context` | 命令所有权、完成回送和调度身份 |
 | `addr_context` | 地址服务使用的 opaque translation/domain handle |
 | `dmem_*` | LOAD/STORE data-memory 逻辑口 |
-| `ifetch_*` | 未来 architectural instruction fetch 逻辑口；当前没有对应 RTL；内部 uword program-source request 不使用该名称 |
+| `ifetch_*` | I-side read-only fetch 逻辑口；当前只有 standalone ordered uword-fetch 仿真模型，program source 仍直接使用 control-store request，尚不表示 architectural IFetch 或 I-cache 已实现 |
 
 `addr_space` 决定 `eaddr` 属于 `LOCAL`、`PHYSICAL` 或 `TRANSLATED`；不再使用
 单独、可与 address-space 语义矛盾的 `translation_bypass` 控制位。
@@ -153,10 +153,11 @@ decoded STORE → `CONTROL.END`，包括
 完成背压、owner/decode error、EXEC child reject、result staging 和 memory fault；
 这不表示 local SRAM RTL、最终 MEMORY ISA 或完整 sequencer 已完成。当前工作
 计划继续实现 MEMORY semantic decode、三 record admission metadata/queue-head
-integration、scalar/address state、动态 owner/resource 状态和 loop/redirect；
+integration、已实现 address-state reference 的 class binding、动态 owner/resource 状态
+和 loop/redirect；
 control-store/byte-PC/multi-framer/slot-0 action adapter 已有 strict reference closure。
-随后再根据结果决定物理 memory
-hierarchy、DMA、跨组交换与
+独立 I-side/D-side protocol model 及其预期 cache 边界见
+[内存模型边界](memory-hierarchy.md)。随后再根据结果决定物理 memory hierarchy、DMA、跨组交换与
 进一步 lane feature 的顺序。见
 [实验路线](../design/development-roadmap.md)。
 

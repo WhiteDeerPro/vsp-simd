@@ -1,0 +1,140 @@
+// Candidate I-side / D-side hierarchy. Dashed nodes are extension roles, not
+// claims that a physical cache, MMU, or shared-memory fabric exists today.
+digraph vsp_memory_hierarchy {
+  graph [
+    rankdir=LR,
+    bgcolor="#ffffff",
+    fontname="DejaVu Sans",
+    fontsize=18,
+    label="VSP logical I-side / D-side memory boundaries",
+    labelloc=t,
+    nodesep=0.42,
+    ranksep=0.72,
+    pad=0.20,
+    splines=polyline
+  ];
+
+  node [
+    shape=box,
+    style="rounded,filled",
+    color="#4f6f8f",
+    fillcolor="#eaf4ff",
+    fontname="DejaVu Sans",
+    fontsize=10,
+    margin="0.12,0.08"
+  ];
+  edge [
+    color="#2f6f9f",
+    fontcolor="#34495e",
+    fontname="DejaVu Sans",
+    fontsize=9,
+    arrowsize=0.68
+  ];
+
+  program_source [
+    label="uword program source\nbyte PC + word count\ncurrently 1 outstanding"
+  ];
+  ifetch_model [
+    label="ordered I-side fetch model\nread-only words + ordered responses\nexecutable protocol reference",
+    fillcolor="#fff7dc",
+    color="#b58b23"
+  ];
+  icache [
+    label="future I-cache role\ncross-line split/fill/reassembly\ninvalidate / instruction visibility",
+    style="rounded,dashed,filled",
+    fillcolor="#f6f6f6",
+    color="#999999"
+  ];
+
+  state_engine [
+    label="sequencer state engine\nper-context 32-bit address state\nSMOVI / SADD / SADDI",
+    fillcolor="#fff7dc",
+    color="#b58b23"
+  ];
+  memory_decode [
+    label="future MEMORY semantic decoder\nsnapshot sbase + signed offset",
+    style="rounded,dashed,filled",
+    fillcolor="#f6f6f6",
+    color="#999999"
+  ];
+  vector_memory [
+    label="vector memory engine\nspan planner + unit-stride AGU\ncurrently 1 dmem beat outstanding"
+  ];
+  dmem_model [
+    label="ordered D-side memory model\nLOAD / STORE + strobe + ack\nexecutable protocol reference",
+    fillcolor="#fff7dc",
+    color="#b58b23"
+  ];
+  dcache [
+    label="future D-cache role\nline fill/write policy\nclean / invalidate / ownership",
+    style="rounded,dashed,filled",
+    fillcolor="#f6f6f6",
+    color="#999999"
+  ];
+
+  lower_i [
+    label="I miss/fill client",
+    style="rounded,dashed,filled",
+    fillcolor="#f6f6f6",
+    color="#999999"
+  ];
+  lower_d [
+    label="D miss/writeback client",
+    style="rounded,dashed,filled",
+    fillcolor="#f6f6f6",
+    color="#999999"
+  ];
+  arbiter [
+    label="future bounded-fair lower-port arbiter\nclient ownership held through response",
+    style="rounded,dashed,filled",
+    fillcolor="#f6f6f6",
+    color="#999999"
+  ];
+  address_service [
+    label="future per-side address services\ntranslation + protection\nshared TLB/PTW remains possible",
+    style="rounded,dashed,filled",
+    fillcolor="#f6f6f6",
+    color="#999999"
+  ];
+  memory [
+    label="physical local SRAM / SoC memory\nDMA is another explicit client",
+    style="rounded,dashed,filled",
+    fillcolor="#f6f6f6",
+    color="#999999"
+  ];
+
+  program_source -> ifetch_model [
+    dir=both,
+    style=dashed,
+    color="#b58b23",
+    label="candidate provider adapter; not yet bound"
+  ];
+  program_source -> address_service [dir=both, style=dashed, color="#999999",
+                                     label="I effective address"];
+  address_service -> icache [dir=both, style=dashed, color="#999999",
+                             label="I translated/protected"];
+  icache -> lower_i [dir=both, style=dashed, color="#999999"];
+
+  state_engine -> memory_decode [style=dashed, color="#b58b23",
+                                 label="base query; not yet bound"];
+  memory_decode -> vector_memory [style=dashed, color="#999999",
+                                  label="resolved descriptor"];
+  vector_memory -> dmem_model [dir=both, color="#b58b23",
+                               label="current model contract"];
+  vector_memory -> address_service [dir=both, style=dashed, color="#999999",
+                                    label="D effective address"];
+  address_service -> dcache [dir=both, style=dashed, color="#999999",
+                             label="D translated/protected"];
+  dcache -> lower_d [dir=both, style=dashed, color="#999999"];
+
+  lower_i -> arbiter [dir=both, style=dashed, color="#999999"];
+  lower_d -> arbiter [dir=both, style=dashed, color="#999999"];
+  arbiter -> memory [dir=both, style=dashed, color="#999999"];
+
+  note [
+    shape=note,
+    label="Fetch bundle width != I-cache line\nDmem beat width != D-cache line\nI/D logical split != two mandatory physical memories",
+    fillcolor="#ffffff",
+    color="#9aa7b3"
+  ];
+}

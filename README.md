@@ -24,9 +24,11 @@ VSP / SoC 子系统（未来）
     ├── byte-PC program source / control-store model / bundle assembler（独立参考 RTL 已实现）
     ├── multi-record framer / slot-0 action adapter / strict program wrapper（已接通）
     ├── ordered action window（参考 RTL 已验证，尚未接入 strict program path）
+    ├── sequencer address-state engine（decoded 参考 RTL；尚未接入 program path）
+    ├── ordered I-side fetch 仿真模型（simulation only）
     ├── ordered dmem 仿真模型（可配置 FIFO outstanding；simulation only）
     ├── lane route（组内 crossbar 与单字 uword 已接通；跨组 route 延期）
-    └── MEMORY semantic decode、admission metadata、scalar/address state、
+    └── MEMORY semantic decode、address-state binding、admission metadata、
         动态 owner/resource 与 loop/redirect（待实现）
 ```
 
@@ -98,6 +100,12 @@ VSP / SoC 子系统（未来）
 - `vsp_ordered_dmem_model`：byte-addressed 仿真 endpoint，覆盖 write strobe、
   range/address-space fault、response backpressure 和严格有序的可配置 outstanding
   queue；它不是物理 SRAM/cache/MMU；
+- `vsp_ordered_ifetch_model`：read-only I-side 仿真 endpoint，覆盖 byte-PC、1–4 word
+  bundle、address-space/fault、response backpressure 和严格有序的可配置 outstanding
+  queue；它尚未接 program source，也不是 I-cache；
+- `vsp_sequencer_state_engine`：per-context 32-bit address state、恒零 register 0、
+  `SMOVI/SADD/SADDI`、可背压 completion 和 base query；它不持有 PC 或 memory port，
+  尚未接 CONTROL/MEMORY semantic decode；
 - `vsp_cluster_vrf_arbiter`：在多个 VRF-only client 与 cluster 的单组 group VRF
   state-read/write 端点之间做 RR 仲裁，一次保留一个 subrequest owner；
 - Verilator lint 与自检仿真。
@@ -128,7 +136,7 @@ DMA，不表示整个存储路径已闭合。
 它区分 execution context 与 address context，并携带
 `LOCAL/PHYSICAL/TRANSLATED` address-space 类别；这只定义可插入未来
 翻译/路由 adapter 的有序 data-memory 逻辑口，当前没有 MMU、TLB、
-PTW、cache 或取指逻辑。
+PTW 或 cache；只有独立的 I-side protocol model，不是 architectural IFetch。
 
 术语上，当前内部信号名为 `op_i`/`exec_op_i`；6-bit `simd_op_e`
 只是 canonical `EXEC` 的 function，不是完整 opcode。项目尚未定义
@@ -171,6 +179,7 @@ make test
 只运行本次新增路径，或查看工具生成的 byte-PC listing：
 
 ```bash
+make test-vsp-sequencer-state-engine test-vsp-ordered-ifetch-model
 make test-vsp-uword-asm test-vsp-uword-program-frontend
 python3 tools/vsp_uword_asm.py examples/uword/pc_smoke.uasm \
   -o /tmp/vsp-pc-smoke.hex --base-pc 0x20 \
@@ -190,6 +199,7 @@ make BUILD_DIR=/tmp/vsp-build clean
 文档从[文档导航](docs/README.md)开始。当前控制主线：
 
 - [架构范围工作稿](docs/architecture/overview.md)
+- [I-side / D-side 内存模型边界](docs/architecture/memory-hierarchy.md)
 - [SIMD4 集群控制工作稿](docs/design/cluster-control.md)
 - [队列、微指令与译码候选](docs/design/instruction-delivery.md)
 - [Internal EXEC uword profile v0](docs/design/exec-uword-profile-v0.md)

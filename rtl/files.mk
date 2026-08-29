@@ -8,6 +8,7 @@ RTL_VSP_PKG := rtl/pkg/vsp_pkg.sv
 RTL_VSP_ACTION_PKG := rtl/pkg/vsp_action_pkg.sv
 RTL_VSP_EXEC_UWORD_PKG := rtl/pkg/vsp_exec_uword_pkg.sv
 RTL_VSP_UWORD_PKG := rtl/pkg/vsp_uword_pkg.sv
+RTL_VSP_SEQUENCER_STATE_PKG := rtl/pkg/vsp_sequencer_state_pkg.sv
 
 RTL_LANE := rtl/units/simd_lane.sv
 RTL_PARTITIONED_ADDSUB := rtl/units/simd_partitioned_addsub.sv
@@ -43,6 +44,8 @@ RTL_VSP_UWORD_ACTION_ADAPTER := rtl/control/vsp_uword_action_adapter.sv
 RTL_VSP_UWORD_CLUSTER_PROGRAM_WRAPPER := \
 		rtl/control/vsp_uword_cluster_program_wrapper.sv
 RTL_VSP_ORDERED_ACTION_WINDOW := rtl/control/vsp_ordered_action_window.sv
+RTL_VSP_SEQUENCER_STATE_ENGINE := \
+		rtl/control/vsp_sequencer_state_engine.sv
 RTL_VSP_DECODED_ACTION_CONTROLLER := \
 		rtl/cluster/vsp_decoded_action_controller.sv
 RTL_CLUSTER_RESULT_COLLECTOR := rtl/cluster/simd_cluster_result_collector.sv
@@ -83,6 +86,8 @@ VSP_UWORD_PROGRAM_FRONTEND_RTL := $(RTL_VSP_ACTION_PKG) \
 		$(RTL_VSP_UWORD_PROGRAM_FRONTEND)
 VSP_ORDERED_ACTION_WINDOW_RTL := $(RTL_VSP_ACTION_PKG) \
 		$(RTL_VSP_ORDERED_ACTION_WINDOW)
+VSP_SEQUENCER_STATE_ENGINE_RTL := $(RTL_VSP_SEQUENCER_STATE_PKG) \
+		$(RTL_VSP_SEQUENCER_STATE_ENGINE)
 VSP_DECODED_ACTION_CONTROLLER_RTL := $(RTL_VSP_ACTION_PKG) \
 		$(RTL_VSP_DECODED_ACTION_CONTROLLER)
 CLUSTER_RESULT_COLLECTOR_RTL := $(RTL_CLUSTER_RESULT_COLLECTOR)

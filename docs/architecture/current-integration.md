@@ -27,6 +27,12 @@ Graphviz 源文件为 [`current-integration.dot`](current-integration.dot)。
 也已有四项窗口、两个 EXEC view 和一个 side view，但 strict wrapper 仍只消费 slot 0。
 window、late-decode holding stage 与 class engines 尚未组成并发 program path。
 
+另有两个已验证但尚未绑定到 strict program path 的 reference：
+`vsp_ordered_ifetch_model` 为独立 I-side bundle endpoint；
+`vsp_sequencer_state_engine` 提供 per-context 32-bit 地址状态与 base query。前者仍需
+launch address metadata/fault adapter，后者仍需 MEMORY semantic decoder 在 admission
+时读取并快照 base，不能把“模块存在”写成 encoded MEMORY 已经可执行。
+
 ## 2. PC 为什么有时表现为 `+16` `[RTL事实]`
 
 PC 是 control-word stream 的 **byte fetch cursor**。每个 32-bit word 都占 4 byte，
@@ -99,6 +105,16 @@ stop-on-first、partial-commit 的可观察边界，不能只把深度参数调�
 它不是物理 SRAM、cache、MMU 或 DMA。默认模型 depth=4 是为了验证一般的无 ID 有序
 合同；当前 vector memory engine 实际只会占用其中一项。
 
+与它独立的 `sim/models/vsp_ordered_ifetch_model.sv` 对 read-only program bundle
+提供同类 executable contract：byte PC、1–4 word packed response、address-space/fault、
+固定延迟和 FIFO ordered outstanding。当前 program source 仍是单 outstanding，并直接
+连接 behavioral control store；I-side 模型尚未接入 wrapper。两套模型不共享 ready、
+response queue 或 outstanding domain。
+
+I-cache/D-cache 的预期边界、共享物理端口的位置和一致性待办见
+[I-side / D-side 内存模型边界](memory-hierarchy.md)。fetch bundle 的 16-byte 上限不是
+I-cache line，4-byte dmem beat 也不是 D-cache line。
+
 ## 5. 地址服务的后续边界 `[候选]`
 
 建议保持以下分层：
@@ -118,18 +134,20 @@ MEMORY semantic decode / scalar-address state
 page。control-store fetch 与 data-memory 也应保持两个逻辑前端；即使它们最后共享
 SRAM/cache，合流位置也是下游仲裁，不是让 data AGU 修改 PC。
 
-## 6. 标量/控制侧完成度 `[RTL事实 + 候选]`
+## 6. Sequencer 地址/控制侧完成度 `[RTL事实 + 候选]`
 
-当前没有 scalar RF、scalar ALU 或 scalar load/store。已有的 scalar-like 状态只有线性
-byte PC、launch envelope/tag、SIMD 广播立即数和向外返回的 reduction/count；后两者
-不会写入内部 scalar state。CONTROL profile 只定义最终 `END`。
+`vsp_sequencer_state_engine` 已实现一条独立 decoded reference：默认每 execution
+context 32 个 32-bit state register，register 0 恒零；支持 `SMOVI`、`SADD`、
+`SADDI`，按模 \(2^{32}\) 回绕；一项 registered completion 可背压；组合 base query
+供 MEMORY admission 快照。它不持有 PC，也不访问 dmem。
 
-第一阶段若要让程序自行推进地址和循环，更合适的是一个小型 **sequencer state
-engine**，而不是另一颗通用 CPU。候选最小集合为 `SMOVI`、`SADD`、`SADDI`、
-`SET_GMASK`、计数型 `LOOP/LOOP_END`、`END`，以及 MEMORY class 的
-`VLOAD/VSTORE [sbase+simm]`。它暂不需要 flags、任意条件分支、CALL/RET、SP/RA、
-scalar L/S、乘除法、CSR、特权态或中断入口。
+它尚未接 CONTROL-uword decoder、action controller 或 vector memory engine，因此
+encoded program 仍不能使用这些操作。当前也没有 `SET_GMASK`、loop/branch/redirect、
+scalar load/store、reduction/count 写 state、CALL/RET、CSR、特权态或中断入口。
+CONTROL profile 仍只定义最终 `END`。
 
-在加入 loop redirect 前，可以先做 MEMORY semantic decoder，以完整 immediate eaddr
-接通当前程序路径；随后加入 scalar/address state，再把 MEMORY base 改为寄存器引用。
-具体候选与非目标见[Sequencer 标量/地址状态](../design/sequencer-state.md)。
+下一步应先实现 MEMORY semantic decoder，并在 action admission 时把 state base、
+signed offset、address metadata 与 group mask 解析成现有 decoded descriptor。之后再按
+负载证据增加 group-mask state 和计数 loop；redirect 必须单独扩展 program source 并
+清理 framer/window 中的年轻记录。具体边界见
+[Sequencer 标量/地址状态](../design/sequencer-state.md)。

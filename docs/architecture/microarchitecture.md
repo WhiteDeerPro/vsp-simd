@@ -153,7 +153,9 @@ RF read -> optional route / operand mux -> lane execute -> optional reduce
 尚未实现的主要结构包括：
 
 - admission legality/cached resource metadata、queue-head canonical expansion、
-  标量寄存器和标量 ALU；EXEC frontend 已有独立参考 RTL，slot 仍是 opaque shadow；
+  以及 address-state engine 到 CONTROL/MEMORY decoder 的绑定；per-context 32-bit
+  state RF 与 `SMOVI/SADD/SADDI` 已有独立 decoded reference，EXEC frontend 的 slot
+  仍是 opaque shadow；
 - per-context/concurrent class scheduling、长期资源预留、动态 owner table、一般化
   barrier/admin 与 host completion；当前 strict controller 已提供单 active action 的
   class routing、ordered error/completion 汇聚和 `END`；
@@ -161,8 +163,8 @@ RF read -> optional route / operand mux -> lane execute -> optional reduce
   adapter 的集成与可选的多 outstanding、二维地址生成；vector-memory→shared VRF
   arbiter→wrapper 的 decoded reference wiring 已完成，当前 engine 仅支持 VRF，ARF 需先用
   `NSLICE/NCLIP` 转到 VRF 再 STORE；
-- MMU/TLB/PTW/cache/coherence 和 architectural IFetch；未来 IFetch 若存在，
-  使用独立于 `dmem_req/rsp` 的逻辑请求类；
+- MMU/TLB/PTW/cache/coherence 和 architectural IFetch；standalone ordered I-side
+  uword-fetch model 已与 dmem model 分开验证，但尚未接 program source 或实现 I-cache；
 - ARF+ARF、宽 ARF route 和宽 reduction；
 - 物理 bank 映射及 bank conflict 处理；
 - 完整 VSP 层级和最终指令编码。

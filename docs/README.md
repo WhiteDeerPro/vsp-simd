@@ -36,7 +36,8 @@ Q&A 代替这类记录。
 |---|---|---|
 | [统一术语表](architecture/terminology.md) | 当前命名约定 | RVV 对齐边界、物理拓扑、dispatch class、协议与 RTL 命名 |
 | [架构范围工作稿](architecture/overview.md) | 范围快照 + RTL 事实 + 开放问题 | VSP/SIMD4 边界、数据形状和当前能力 |
-| [当前控制与内存集成状态](architecture/current-integration.md) | RTL 接线事实 + 后续边界 | PC bundle、strict/decoded 两条闭环、向量取数、outstanding 与标量缺口 |
+| [当前控制与内存集成状态](architecture/current-integration.md) | RTL 接线事实 + 后续边界 | PC bundle、strict/decoded 两条闭环、向量取数、outstanding 与地址状态集成缺口 |
+| [I-side / D-side 内存模型边界](architecture/memory-hierarchy.md) | RTL 事实 + 候选分层 | program fetch、dmem、cache role、MMU 扩展点与地址状态 |
 | [数据通路](architecture/datapath.md) | RTL 事实 | VRF/ARF/MRF、并行控制、mask、立即数与提交 |
 | [微架构图](architecture/microarchitecture.md) | RTL 事实 | 单个 SIMD4 的读取、执行、合法性和写回 |
 | [寄存器文件](architecture/register-file.md) | RTL 事实 + 物理候选 | 逻辑端口、masked write 与 bank/SRAM 问题 |
@@ -50,6 +51,8 @@ Graphviz 源与生成图和说明文档放在一起：
   [SVG](architecture/microarchitecture.svg)
 - [控制与内存集成源](architecture/current-integration.dot) /
   [SVG](architecture/current-integration.svg)
+- [I-side / D-side 内存分层源](architecture/memory-hierarchy.dot) /
+  [SVG](architecture/memory-hierarchy.svg)
 - [宽窄数据流源](architecture/wide-narrow-dataflow.dot) /
   [SVG](architecture/wide-narrow-dataflow.svg)
 
