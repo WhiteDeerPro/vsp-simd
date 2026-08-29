@@ -78,12 +78,18 @@ vector operation、element 和 register，不暴露不必要的物理分组。
 | uword record | stream 中由一个 header 和零至多个 opaque body word 组成的结构记录；当前 EXEC record 也称 EXEC packet |
 | bundle predecoder | 只判定 uword record 边界、major 是否已定义和 `EXEC/MEMORY/CONTROL` class 的内部组合逻辑；不做完整 admission legality、资源派生或 class-specific decode |
 | bundle assembler | 保存 bundle 边界上的未完成 record，并依序输出完整或 EOF 截断 record 的有状态 framing 模块 |
+| multi-record framer | 跨 bundle 保存 tail，并以 packed-prefix 同时暴露若干完整 record 的 framing 模块；当前 strict wrapper 只消费其 slot 0 |
+| ordered action window | 保存已解析 action、按 group/shared dependency 选择候选并按序退休的浅窗口；当前为独立参考 RTL，不是 scalar issue engine |
+| action adapter | 把 uword record 与 launch envelope/context/tag 结合为 canonical action 的边界；结构 class 已识别不表示 class-specific semantic decode 已完成 |
 | uword byte PC | controller 内部 uword stream 的 byte address；当前每个 32-bit stream word（包括 extension/body）使地址增加 4，不等同于 SIMD4 的 architectural PC |
 | EXEC uword profile v0 | 当前用于实验的 `32-bit base + optional immediate extension` 内部 EXEC 表示；不包含 action envelope、MEMORY/CONTROL 或外部 ISA 承诺 |
 | micro-op (`uop`) | 已译码或部分译码、可供调度和执行消费的内部操作 |
 | function ID | canonical EXEC bundle 中的 `simd_op_e`；不是完整 opcode |
 | execution context | 顺序、所有权、调度和完成回送身份；当前不是 hardware thread，也没有独立 architectural PC |
 | address context | 交给未来 translation/protection adapter 的 opaque domain handle |
+| AGU | address-generation unit；把已解析 base/offset/beat index 变为 effective address，不负责 outstanding response correlation 或 retirement |
+| outstanding transaction | request 已被 endpoint 接受、对应 response 尚未完成的事务；当前 vector memory engine 限制为一个 dmem beat |
+| ordered dmem model | `dmem_req/rsp` 的 simulation-only byte-array endpoint；可接受多个无 ID request，但只按 request 顺序返回，不表示物理 SRAM/cache 已实现 |
 | request / response / completion | decoupled 协议中的请求、带数据返回和事务完成通知 |
 | subrequest / beat | 一个 command 向 group endpoint 或 memory endpoint 拆出的原子传输 |
 

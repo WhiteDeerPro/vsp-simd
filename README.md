@@ -22,8 +22,12 @@ VSP / SoC 子系统（未来）
     ├── VRF arbiter（参考 RTL 已实现）
     ├── 4-word uword bundle framing / class predecode（独立参考 RTL 已实现）
     ├── byte-PC program source / control-store model / bundle assembler（独立参考 RTL 已实现）
+    ├── multi-record framer / slot-0 action adapter / strict program wrapper（已接通）
+    ├── ordered action window（参考 RTL 已验证，尚未接入 strict program path）
+    ├── ordered dmem 仿真模型（可配置 FIFO outstanding；simulation only）
     ├── lane route（组内 crossbar 与单字 uword 已接通；跨组 route 延期）
-    └── action adapter、admission metadata、动态 owner/resource 与 loop/redirect（待实现）
+    └── MEMORY semantic decode、admission metadata、scalar/address state、
+        动态 owner/resource 与 loop/redirect（待实现）
 ```
 
 “搜索、凝视、分层、附着、抽象、联合、追踪”属于软件算法。硬件不预设这些语义，只提供能够忠实、高效编纂这些算法的通用原语。
@@ -91,6 +95,9 @@ VSP / SoC 子系统（未来）
 - 独立 `vsp_vector_memory_engine`：VRF-only，一个 active command、一个
   outstanding memory beat，按 group 升序在连续 4-byte beat 上执行
   LOAD/STORE，并报告 stop-on-first 的 partial masks/bytes；
+- `vsp_ordered_dmem_model`：byte-addressed 仿真 endpoint，覆盖 write strobe、
+  range/address-space fault、response backpressure 和严格有序的可配置 outstanding
+  queue；它不是物理 SRAM/cache/MMU；
 - `vsp_cluster_vrf_arbiter`：在多个 VRF-only client 与 cluster 的单组 group VRF
   state-read/write 端点之间做 RR 仲裁，一次保留一个 subrequest owner；
 - Verilator lint 与自检仿真。
@@ -102,11 +109,11 @@ state-read/write subrequest lane 使外部 engine 能传输 VRF row；它们不�
 `simd_issue_decode_stage` 已给出晚译码后的稳定 holding 边界，profile-v0 EXEC
 parser/expander 也已在 controller wrapper 的 action 入口接入。当前 class router
 验证的是一个保守的、全局单 active action 路径。`vsp_uword_predecoder` 已能在
-一个 4-word bundle 内划分 mixed uword record 并预判 dispatch class；新的
-`vsp_uword_program_frontend` 又增加了线性 byte PC、control-store 行为模型、跨
-bundle tail 和 EOF 截断处理。它尚未绑定 action envelope、class-specific semantic
-decode 或 queue admission，也不把 stream EOF 当成 `CONTROL.END`。
-admission legality/cached resource metadata 与 queue-head late-decode 重排尚未实现。
+一个 4-word bundle 内划分 mixed uword record 并预判 dispatch class；
+`vsp_uword_cluster_program_wrapper` 已把线性 byte PC、control-store、multi-record
+framer、launch envelope、slot-0 action adapter 和 strict EXEC/END controller 接通。
+它仍只消费 slot 0；MEMORY uword 当前有序拒绝，三 record admission metadata、
+ordered window/class-engine binding 与 queue-head late-decode 重排尚未接通。
 因此该 reference integration 可以验证程序顺序和完成合同，但还不是完整 sequencer，
 也不代表最终吞吐组织。
 跨组 lane 路由不再候选为与 MEMORY 并列的独立 command class。当前候选是寄存器形式的

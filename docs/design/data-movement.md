@@ -6,6 +6,9 @@
 > EXEC cluster，形成 decoded LOAD→EXEC→STORE 参考闭环。
 > 其外的 `vsp_cluster_controller_wrapper` 已增加 strict class router 和跨 class
 > 程序顺序：MEMORY descriptor 仍为 decoded，EXEC 使用 profile-v0 packet。
+> uword program wrapper 中的 MEMORY record 仍形成有序 decode rejection；encoded
+> MEMORY semantic decoder 尚未接通。`sim/models/vsp_ordered_dmem_model.sv` 已提供
+> 可配置 FIFO outstanding 的有序仿真 endpoint，但不代表物理 SRAM 已实现。
 > 动态 owner/resource controller、物理 local SRAM、MMU/cache 与 DMA 仍待实现。
 > 本文不规定总线宽度、SRAM 组织或 DMA 描述符格式。
 > 跨 lane 路由已从本文剥离：它不再是独立的数据搬运 class，而是 Vector ALU 内的
@@ -193,5 +196,11 @@ fault/partial detail 与 END。该 closure 仍是 blocking single-active referen
 cache/MMU adapter、packetizer/gearbox 和系统级 ingress/capture FIFO 也未集成；
 `dmem_*` 仍只是 effective-address 逻辑边界。ping-pong、计算/搬运重叠、
 多 outstanding、二维地址和一致性在真实 trace 与 SoC 边界出现后再评估。
+
+独立 `vsp_ordered_dmem_model` 已把该逻辑边界的 byte array、little-endian 读写、
+write strobe、地址空间/范围 fault、固定延迟和 FIFO ordered response 变成可执行模型。
+模型默认 depth=4，用于验证无 ID 时的严格顺序合同；当前 vector memory engine 仍只会
+产生一个 outstanding beat。乱序返回需要 transaction ID 与 requester scoreboard，
+不由 AGU 单独解决。
 
 实施顺序与验收条件见[集群实验路线的 M4](development-roadmap.md)。

@@ -1,0 +1,225 @@
+// Current integration map.  It distinguishes instantiated program paths,
+// decoded reference paths, standalone RTL, simulation models, and gaps.
+digraph vsp_current_integration {
+  graph [
+    rankdir=LR,
+    bgcolor="#ffffff",
+    fontname="DejaVu Sans",
+    fontsize=18,
+    label="Current VSP control and memory integration",
+    labelloc=t,
+    nodesep=0.40,
+    ranksep=0.72,
+    pad=0.20,
+    splines=polyline
+  ];
+
+  node [
+    shape=box,
+    style="rounded,filled",
+    color="#4f6f8f",
+    fillcolor="#eaf4ff",
+    fontname="DejaVu Sans",
+    fontsize=10,
+    margin="0.12,0.08"
+  ];
+  edge [
+    color="#2f6f9f",
+    fontcolor="#34495e",
+    fontname="DejaVu Sans",
+    fontsize=9,
+    arrowsize=0.68
+  ];
+
+  subgraph cluster_program {
+    label="Strict uword program closure (instantiated)";
+    color="#6d9dca";
+    style=rounded;
+
+    launch [
+      label="launch envelope\n[start_pc,end_pc)\ncontext + group mask + tag seed"
+    ];
+    control_store [
+      label="behavioral control store\nverification reference",
+      fillcolor="#fff7dc",
+      color="#b58b23"
+    ];
+    pc_source [
+      label="linear byte-PC source\n1 fetch request outstanding\nup to 4 words; PC += 4 × count"
+    ];
+    framer [
+      label="multi-record framer\n4 input words / up to 3 visible records\ncross-bundle tail + END cutoff"
+    ];
+    holding [
+      label="single action holding\nslot 0 only"
+    ];
+    adapter [
+      label="uword action adapter\nlaunch envelope + monotonically advancing tag"
+    ];
+
+    launch -> pc_source [label="start"];
+    launch -> adapter [label="envelope"];
+    pc_source -> control_store [dir=both, label="ordered req/rsp"];
+    pc_source -> framer [label="bundle"];
+    framer -> holding [label="record slot 0"];
+    holding -> adapter;
+  }
+
+  subgraph cluster_controller {
+    label="Strict single-active action path (instantiated)";
+    color="#75a986";
+    style=rounded;
+
+    action_select [
+      label="EXEC profile-v0 expansion\n+ action legality selection",
+      fillcolor="#ecf8ef",
+      color="#4e8f62"
+    ];
+    strict_controller [
+      label="strict class controller\nEXEC / MEMORY / CONTROL\nordered completion",
+      fillcolor="#ecf8ef",
+      color="#4e8f62"
+    ];
+    memory_reject [
+      label="MEMORY uword\nordered decode reject\n(no semantic decoder yet)",
+      fillcolor="#fff0f0",
+      color="#b45b5b"
+    ];
+    end_control [
+      label="canonical final CONTROL.END\nwait strong quiescence",
+      fillcolor="#ecf8ef",
+      color="#4e8f62"
+    ];
+    exec_cluster [
+      label="simd_cluster_exec\n2 queue / 2 issue-slot reference\nper-group ingress + wrappers\ntracker + result collector",
+      fillcolor="#ecf8ef",
+      color="#4e8f62"
+    ];
+
+    adapter -> action_select [label="ordered action"];
+    action_select -> strict_controller;
+    action_select -> memory_reject [color="#b45b5b", label="current program path"];
+    strict_controller -> exec_cluster [label="decoded EXEC"];
+    strict_controller -> end_control [label="CONTROL"];
+    exec_cluster -> strict_controller [
+      color="#8056a6",
+      fontcolor="#684686",
+      label="completion / result"
+    ];
+    end_control -> strict_controller [
+      color="#8056a6",
+      fontcolor="#684686",
+      label="END completion"
+    ];
+  }
+
+  subgraph cluster_memory {
+    label="Decoded vector-memory reference path";
+    color="#75a986";
+    style=rounded;
+
+    decoded_memory [
+      label="decoded MEMORY descriptor ingress\nbase + signed offset + span\nVRF row + group mask",
+      fillcolor="#ecf8ef",
+      color="#4e8f62"
+    ];
+    vector_memory [
+      label="vector memory engine\nspan planner / unit-stride AGU\nblocking transaction + parent retirement\n1 parent / 1 dmem beat outstanding",
+      fillcolor="#ecf8ef",
+      color="#4e8f62"
+    ];
+    vrf_arbiter [
+      label="VRF child arbiter\nread/write owner held to response",
+      fillcolor="#ecf8ef",
+      color="#4e8f62"
+    ];
+    dmem_boundary [
+      label="dmem effective-address boundary\nready/valid; no ID\nrequest-order response",
+      fillcolor="#f0edff",
+      color="#755eaa"
+    ];
+    dmem_model [
+      label="ordered dmem simulation model\nbyte array + strobes + faults\nconfigurable FIFO outstanding depth",
+      fillcolor="#fff7dc",
+      color="#b58b23"
+    ];
+    future_adapter [
+      label="future address-space / translation adapter\nTLB + protection + cache/local router",
+      style="rounded,dashed,filled",
+      fillcolor="#f6f6f6",
+      color="#999999"
+    ];
+    future_memory [
+      label="future physical local SRAM / cache / SoC memory\nDMA remains a separate producer/client",
+      style="rounded,dashed,filled",
+      fillcolor="#f6f6f6",
+      color="#999999"
+    ];
+
+    decoded_memory -> strict_controller [color="#4e8f62", label="reference input"];
+    strict_controller -> vector_memory [color="#4e8f62", label="decoded MEMORY"];
+    vector_memory -> strict_controller [
+      color="#8056a6",
+      fontcolor="#684686",
+      label="parent completion"
+    ];
+    vector_memory -> vrf_arbiter [dir=both, label="VRF child transaction"];
+    vrf_arbiter -> exec_cluster [dir=both, label="group VRF endpoint"];
+    vector_memory -> dmem_boundary [dir=both, label="one beat at a time"];
+    dmem_boundary -> dmem_model [dir=both, color="#b58b23", label="simulation"];
+    dmem_boundary -> future_adapter [dir=both, style=dashed, color="#999999"];
+    future_adapter -> future_memory [dir=both, style=dashed, color="#999999"];
+  }
+
+  subgraph cluster_parallel_candidate {
+    label="RTL references not integrated into the strict closure";
+    color="#c59a3a";
+    style="rounded,dashed";
+
+    admission_gap [
+      label="missing multi-record admission canonicalization\nresolved mask + RF/AGU dependency metadata",
+      style="rounded,dashed,filled",
+      fillcolor="#fff7dc",
+      color="#b58b23"
+    ];
+    action_window [
+      label="ordered action window\n4 entries; 2 EXEC views + 1 side view",
+      fillcolor="#fff7dc",
+      color="#b58b23"
+    ];
+    late_decode [
+      label="late-decode holding stage\nRTL exists; queue-head hook not bound",
+      fillcolor="#fff7dc",
+      color="#b58b23"
+    ];
+    binding_gap [
+      label="missing concurrent class-engine binding",
+      style="rounded,dashed,filled",
+      fillcolor="#fff7dc",
+      color="#b58b23"
+    ];
+
+    framer -> admission_gap [style=dashed, color="#b58b23", label="slots 0..2"];
+    admission_gap -> action_window [style=dashed, color="#b58b23"];
+    action_window -> late_decode [style=dashed, color="#b58b23"];
+    late_decode -> binding_gap [style=dashed, color="#b58b23"];
+    binding_gap -> strict_controller [style=dashed, color="#b58b23"];
+  }
+
+  scalar_gap [
+    label="sequencer scalar/address state engine\nnot implemented:\nscalar RF/ALU, loop/redirect, scalar L/S,\nreduction-to-scalar and per-record group-mask state",
+    shape=note,
+    style="filled,dashed",
+    fillcolor="#fff0f0",
+    color="#b45b5b"
+  ];
+  scalar_gap -> decoded_memory [style=dashed, color="#b45b5b", label="future base register"];
+  scalar_gap -> pc_source [style=dashed, color="#b45b5b", label="future redirect"];
+
+  legend [
+    shape=note,
+    label="Legend\nblue: instantiated uword transport\ngreen: instantiated decoded engine path\namber: verified reference/model, not in strict path\nred/gray dashed: missing or future boundary\npurple: completion/result return",
+    fillcolor="#ffffff",
+    color="#9aa7b3"
+  ];
+}

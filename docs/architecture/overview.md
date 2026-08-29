@@ -23,8 +23,9 @@ collector 组成可运行的 full-decoded 参考闭环。`simd_issue_decode_stag
 每 issue slot 一项、可背压的 late-decode holding 边界，但其 decode hook 仍由参考
 driver 提供；profile-v0 compact EXEC parser/expander 与 standalone uword bundle
 framing/class predecoder 已实现；独立 program frontend 又提供 control-store 行为模型、
-线性 byte PC 和跨 bundle assembler。admission legality/cached metadata、action-envelope
-binding 与 queue-head 接入尚未实现，见
+线性 byte PC 和跨 bundle assembler。另一路 strict program wrapper 已接入 multi-record
+framer、launch envelope、slot-0 action adapter 与 EXEC/END controller；三 record admission
+legality/cached metadata、ordered window/class-engine binding 与 queue-head 接入尚未实现，见
 [指令交付](../design/instruction-delivery.md)。
 `vsp_cluster_memory_wrapper` 已把 VRF-only blocking `vsp_vector_memory_engine` 经共享
 VRF arbiter 接到 wrapper/cluster state-read/write endpoint，形成 decoded
@@ -151,9 +152,10 @@ action controller 及 standalone uword bundle predecoder 已完成参考实现�
 decoded STORE → `CONTROL.END`，包括
 完成背压、owner/decode error、EXEC child reject、result staging 和 memory fault；
 这不表示 local SRAM RTL、最终 MEMORY ISA 或完整 sequencer 已完成。当前工作
-计划继续实现 program-record/action adapter、admission metadata/queue-head integration、
-动态 owner/resource 状态和 loop/redirect；control-store/byte-PC/bundle assembler 已有
-独立行为 reference。随后再根据结果决定物理 memory
+计划继续实现 MEMORY semantic decode、三 record admission metadata/queue-head
+integration、scalar/address state、动态 owner/resource 状态和 loop/redirect；
+control-store/byte-PC/multi-framer/slot-0 action adapter 已有 strict reference closure。
+随后再根据结果决定物理 memory
 hierarchy、DMA、跨组交换与
 进一步 lane feature 的顺序。见
 [实验路线](../design/development-roadmap.md)。

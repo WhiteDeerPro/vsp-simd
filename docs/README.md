@@ -36,6 +36,7 @@ Q&A 代替这类记录。
 |---|---|---|
 | [统一术语表](architecture/terminology.md) | 当前命名约定 | RVV 对齐边界、物理拓扑、dispatch class、协议与 RTL 命名 |
 | [架构范围工作稿](architecture/overview.md) | 范围快照 + RTL 事实 + 开放问题 | VSP/SIMD4 边界、数据形状和当前能力 |
+| [当前控制与内存集成状态](architecture/current-integration.md) | RTL 接线事实 + 后续边界 | PC bundle、strict/decoded 两条闭环、向量取数、outstanding 与标量缺口 |
 | [数据通路](architecture/datapath.md) | RTL 事实 | VRF/ARF/MRF、并行控制、mask、立即数与提交 |
 | [微架构图](architecture/microarchitecture.md) | RTL 事实 | 单个 SIMD4 的读取、执行、合法性和写回 |
 | [寄存器文件](architecture/register-file.md) | RTL 事实 + 物理候选 | 逻辑端口、masked write 与 bank/SRAM 问题 |
@@ -47,6 +48,8 @@ Graphviz 源与生成图和说明文档放在一起：
 
 - [SIMD4 微架构源](architecture/microarchitecture.dot) /
   [SVG](architecture/microarchitecture.svg)
+- [控制与内存集成源](architecture/current-integration.dot) /
+  [SVG](architecture/current-integration.svg)
 - [宽窄数据流源](architecture/wide-narrow-dataflow.dot) /
   [SVG](architecture/wide-narrow-dataflow.svg)
 
@@ -55,9 +58,10 @@ Graphviz 源与生成图和说明文档放在一起：
 | 文档 | 状态 | 内容 |
 |---|---|---|
 | [集群控制工作稿](design/cluster-control.md) | EXEC/MEMORY leaf integration + strict ordered action controller 参考 RTL | frontend、class routing、ingress、group wrapper、VRF subrequest 仲裁、completion/result、owner 与 END |
-| [队列与译码候选](design/instruction-delivery.md) | byte-PC program source、control-store model、跨 bundle assembler、decode holding、EXEC expander 与 action-stream class router 已实现参考；action adapter、admission metadata 与 queue-head 接入待办 | uword bundle、PC `+4`、queue、live-head、predecode、expander 与 CPU decoder 差异 |
+| [队列与译码候选](design/instruction-delivery.md) | byte-PC/multi-framer/slot-0 action adapter/strict EXEC-END closure 已接；ordered window 独立存在；并发 admission metadata、MEMORY decode 与 queue-head 接入待办 | uword bundle、PC `+4`、queue、live-head、predecode、expander 与 CPU decoder 差异 |
 | [Internal EXEC uword profile v0](design/exec-uword-profile-v0.md) | 内部实验编码 + RTL 映射 | 32-bit base、optional immediate extension、canonical EXEC 与非法 cause |
 | [数据准备与 DMA 边界](design/data-movement.md) | decoded VRF LOAD/STORE cluster 闭环已实现，物理 memory 集成待办 | MEMORY LOAD/STORE、shared VRF arbiter、data-memory 逻辑口、local SRAM 与 DMA |
+| [Sequencer 标量/地址状态](design/sequencer-state.md) | 当前能力审计 + 候选 | 最小 scalar/address state、MEMORY base 与 loop/redirect 落地顺序 |
 | [集群实验路线](design/development-roadmap.md) | EXEC/memory integration 与 strict single-active controller 已实现 + sequencer/control-state 计划 | wrapper、cluster、controller、延期 route、DMA |
 
 这里的 decoder 属于 sequencer 到执行 group 之间的内部控制层，不意味着 SIMD4

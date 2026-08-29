@@ -22,7 +22,14 @@ module vsp_vector_memory_engine #(
   // This baseline has no response epoch with which to reject a pre-reset beat.
   input  logic rst_ni,
 
-  // One canonical VSP MEMORY parent action. exec_context identifies the
+  // One canonical VSP MEMORY parent action.  This reference module currently
+  // combines three separable roles: span/group planning, unit-stride effective
+  // address generation, and blocking request/response retirement.  The AGU
+  // arithmetic does not itself require single-outstanding behavior; the FSM
+  // below chooses that profile because the dmem return has no transaction ID
+  // and no beat scoreboard is present.
+  //
+  // exec_context identifies the
   // sequencer/owner and is deliberately independent of addr_context, which is
   // an opaque handle for a future translation adapter. The engine only forms
   // and advances effective addresses; it does not translate them.

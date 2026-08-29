@@ -1,7 +1,8 @@
 # 当前 SIMD 微架构图
 
-本页描述当前 RTL 已经实现的行为微架构，不规定指令位宽、编码、物理 SRAM
-bank、流水级数或未来 VSP 的控制层级。
+本页描述单个 SIMD4 的行为数据通路，不规定指令位宽、编码、物理 SRAM bank、
+流水级数或未来 VSP 的控制层级。上级控制、PC 与 memory 的实际接线另见
+[当前控制与内存集成状态](current-integration.md)。
 
 ## 总体数据通路
 
@@ -16,9 +17,9 @@ side-effect gate。`simd_cluster_issue_frontend` 位于图外的 cluster 控制
 dispatcher。`simd_cluster_exec` 又在其外加入 per-group ingress、四个 wrapper、
 tracker、reject buffer 和 result collector，形成 full-decoded EXEC 参考闭环。
 profile-v0 canonical expander 与 strict class router 已在更外层的 controller wrapper
-接入；standalone bundle framing/class predecoder、byte-PC source、control-store model
-和跨 bundle assembler 也已实现，admission legality/resource metadata、action adapter
-和 queue-head late-decode 集成仍未实现。
+接入；byte-PC source、control-store model、multi-record framer、slot-0 action adapter
+与 strict EXEC/END program wrapper 也已接通。三 record admission legality/resource
+metadata、ordered action window/class-engine binding 和 queue-head late-decode 集成仍未接通。
 已经实现的 `simd_group_wrapper` 也位于本叶数据
 通路图外，负责 decoded EXEC、state-write 与 VRF state-read ready/valid、状态访问
 仲裁和独立返回缓存，见
@@ -37,8 +38,9 @@ action 入口、profile-v0 EXEC 展开、strict program ordering、统一 comple
 `CONTROL.END`；它仍未接物理 local SRAM 或 DMA。
 `dmem_req/rsp` 是无 ID 的单飞行有序 data-memory 逻辑口；它携带
 address-space/address-context 与 fault cause，但 engine 内没有 MMU、TLB、
-PTW 或 cache。端到端 testbench 在该逻辑口外模拟 local memory；它也不是 IFetch
-端口。
+PTW 或 cache。`sim/models/vsp_ordered_dmem_model.sv` 为该逻辑口提供 byte-addressed、
+严格顺序的可配置 outstanding 仿真 endpoint；它不属于物理 memory hierarchy，也
+不是 IFetch 端口。
 
 当前 SIMD4 没有取指。controller reference 中的 byte PC 只顺序读取内部 uword
 control store，不改变这项边界。上级已有 `simd_issue_decode_stage` 作为晚译码 holding

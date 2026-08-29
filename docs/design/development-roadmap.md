@@ -60,6 +60,9 @@
 - 独立 VRF-only `vsp_vector_memory_engine`：single active parent/single
   outstanding memory beat、稀疏 group-mask 连续 beat 映射、LOAD/STORE 子事务与
   stop-on-first partial completion；
+- `vsp_ordered_dmem_model` 仿真 endpoint：byte array、write strobe、地址空间/范围
+  fault、固定延迟、四项 FIFO ordered outstanding、满队列同拍替换与 response
+  backpressure 已验证；它不是物理 SRAM/cache/MMU；
 - `simd_cluster_exec` 的 group-addressed VRF state-read/write child 路径，以及
   `vsp_cluster_vrf_arbiter` 的多 client read/write 仲裁和返回归属保持；
 - `vsp_cluster_memory_wrapper` decoded reference integration：vector memory engine 经 shared
@@ -76,9 +79,10 @@
   closure 解读为三发射或 encoded LOAD/STORE 已实现；
 - 全量 lint/test 基线。
 
-当前优先级转向把 multi-record framer、action envelope、浅层依赖窗口和各 class
-engine 组成并发控制链，并补充实际 admission legality/resource metadata、动态
-owner 状态与 sequencer loop/redirect；跨组 route 已从这条执行闭环中解耦并延期。
+当前优先级转向 MEMORY semantic decode 与 scalar/address state，并把 multi-record
+framer、action envelope、浅层依赖窗口和各 class engine 组成并发控制链；随后补充
+实际 admission legality/resource metadata、动态 owner 状态与 sequencer
+loop/redirect。跨组 route 已从这条执行闭环中解耦并延期。
 物理 memory hierarchy 仍在 `dmem_*` 逻辑边界
 之外。在出现新的阻塞负载证据
 前，暂缓增加 lane arithmetic feature。
