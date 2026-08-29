@@ -41,10 +41,22 @@
 - `vsp_uword_predecoder`：默认并行扫描 4 个连续 32-bit uword stream word，按结构长度
   划分完整 record、预判 dispatch class，并报告待续接尾 record；当前是无状态组合
   reference，不含 assembler、envelope 或 class-specific semantic decode；
+- `vsp_uword_multi_framer`：默认接收 4 个连续 stream word，并以 packed-prefix
+  ready/accept 最多交付 3 条 record；两个宽度独立，4 word 不等于 4 record。它支持
+  跨 bundle 拼接、同拍 dequeue/refill、EOF truncation，以及按 record 边界发现
+  `CONTROL.END` 后的 sticky fetch stop；显式 stream abort 可在 fetch fault 时清掉
+  incomplete tail 而不伪造 EOF，且不会撤销已识别 END；
 - `vsp_uword_program_frontend` reference：可编程 control-store 行为模型、半开
   `[start_pc,end_pc)` 的线性 byte PC source，以及跨 bundle/EOF 的有状态 record
   assembler；每个 32-bit base/extension/body 地址 `+4`，完整 PC 越界返回 fault；
-  当前尚未接 action envelope、class-specific decoder 或 queue；
+  当前 control-store/program-source 是 single-outstanding reference，4-word response
+  宽度不证明可持续每拍供应 4 words/3 actions；尚未实现真实 I-side SRAM/cache
+  pipeline；
+- `vsp_ordered_action_window`：默认四项深度、三项 admission、两个 EXEC 候选和一个
+  non-EXEC side 候选（含 MEMORY、CONTROL 与 ordered reject）；支持 group-local
+  顺序、shared dependency bit、split
+  group 子集推进、乱序 child completion 与按序 retirement。四项只是短暂对齐、背压
+  和依赖窗口，不是分支预测队列；side 也不是已经实现的 scalar ALU；
 - 独立 VRF-only `vsp_vector_memory_engine`：single active parent/single
   outstanding memory beat、稀疏 group-mask 连续 beat 映射、LOAD/STORE 子事务与
   stop-on-first partial completion；
@@ -56,11 +68,18 @@
   `EXEC/MEMORY/CONTROL` 分派、owner/context 检查、严格跨 class 顺序、统一
   completion，以及等待 queue/tracker/memory/arbiter 强静止的 `END`；decoded LOAD →
   profile-v0 encoded EXEC → decoded STORE → CONTROL.END 回归已通过；
+- `vsp_uword_action_adapter` 与 `vsp_uword_cluster_program_wrapper`：从 behavioral
+  control store 的 byte PC 经 4-word multi-record framing 接到严格 EXEC/END controller；
+  launch envelope/tag、opaque body、unknown CONTROL、EOF/truncated、early/final END、
+  fetch-fault abort/restart 和真实 EXEC result 已闭环。该 wrapper 只消费 framer slot 0，
+  controller 仍是 global single-active；MEMORY uword 当前有序 decode-reject，不能把该
+  closure 解读为三发射或 encoded LOAD/STORE 已实现；
 - 全量 lint/test 基线。
 
-当前优先级转向 program record 到 action stream 的 adapter、admission
-legality/cached metadata、queue-head integration、动态 owner/resource 状态和
-sequencer loop/redirect；跨组 route 已从这条执行闭环中解耦并延期。物理 memory hierarchy 仍在 `dmem_*` 逻辑边界
+当前优先级转向把 multi-record framer、action envelope、浅层依赖窗口和各 class
+engine 组成并发控制链，并补充实际 admission legality/resource metadata、动态
+owner 状态与 sequencer loop/redirect；跨组 route 已从这条执行闭环中解耦并延期。
+物理 memory hierarchy 仍在 `dmem_*` 逻辑边界
 之外。在出现新的阻塞负载证据
 前，暂缓增加 lane arithmetic feature。
 
@@ -142,10 +161,17 @@ frontend/dispatcher/tracker 随机测试继续覆盖 mask overlap、表满和多
 - `simd_issue_decode_stage` 已实现每 issue slot 的 decoded holding、provenance、
   class/response/resource/canonical 元数据与同拍 retire/refill；EXEC
   expander 已实现并接到 controller action 入口；bundle framing/class predecode、
-  byte-PC source 和跨 bundle assembler 也有 standalone reference。待实现
-  action-envelope adapter、admission legality、
-  class/resource metadata，并替换当前 `hook_*` 后接入 queue ownership；字段分层见
+  byte-PC source、跨 bundle multi-record framer 和 action-envelope adapter 也有
+  reference。待实现实际 admission legality/class-resource metadata，并替换当前
+  `hook_*` 后接入 queue ownership；字段分层见
   [指令交付](instruction-delivery.md)；
+- 独立 `vsp_ordered_action_window` 已验证默认 `3 admit / 2 EXEC + 1 side / 4 depth`：
+  group mask 重叠、共享依赖、split/non-split、乱序 completion、按序 retirement 和
+  END cutoff。它尚未接到真实 EXEC/MEMORY/CONTROL engine，不能据此声称当前顶层
+  已达到三发射；
+- strict `vsp_uword_cluster_program_wrapper` 已把 slot-0 record/action adapter 接到现有
+  controller，作为 PC→EXEC/END 的可执行保序证明；它与上述 action window 仍是两条
+  不同 reference，下一步才是把三项 admission 和实际依赖 metadata 接到多 engine；
 - 接入 late expander 时，把 reference frontend 当前内部的 dispatch terminal/pop
   改为 expander/最终合法性/class routing 之后回传，避免 opaque entry 被提前退休；
 - `vsp_decoded_action_controller` 已提供一个全局 single-active 的 class router：
@@ -197,6 +223,9 @@ ack 时目标 inflight 必须为零。
 - 已实现 `vsp_cluster_controller_wrapper`，在上一层接收一个 ordered action stream，
   将 encoded EXEC、decoded MEMORY 与 `CONTROL.END` 统一分派和退休；动态
   owner/resource state、queue-head predecode 和多 active action 仍在后续；
+- encoded program closure 目前只驱动 EXEC 与 final END；其 MEMORY record 明确走
+  ordered decode reject。现有 decoded LOAD/STORE 闭环仍证明 memory engine 合同，但
+  不等于 MEMORY uword semantic decoder 已完成；
 - queue 仍只保存 descriptor/metadata，真实 transfer data 走 child/data path；
 - `dmem_req/rsp` 保持无 ID 的单飞行有序 data-memory 逻辑口；
   fault cause/eaddr 返回 parent completion；当前没有 MMU、TLB、PTW、

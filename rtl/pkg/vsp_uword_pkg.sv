@@ -12,6 +12,18 @@ package vsp_uword_pkg;
   localparam logic [VSP_UWORD_MAJOR_W-1:0] VSP_UWORD_MAJOR_MEMORY = 4'hb;
   localparam logic [VSP_UWORD_MAJOR_W-1:0] VSP_UWORD_MAJOR_CONTROL = 4'hc;
 
+  // The current stream profile gives END one canonical, body-free CONTROL
+  // header.  Keep recognition here so every stateful framer applies the same
+  // rule after finding a record boundary; an opaque body word with this value
+  // is not an END record.
+  localparam logic [VSP_UWORD_W-1:0] VSP_UWORD_CONTROL_END =
+      {VSP_UWORD_MAJOR_CONTROL, 28'h0000000};
+
+  function automatic logic vsp_uword_is_control_end(
+      input logic [VSP_UWORD_W-1:0] header);
+    vsp_uword_is_control_end = header == VSP_UWORD_CONTROL_END;
+  endfunction
+
   // 2'b11 is deliberately outside vsp_action_class_e.  Undefined headers are
   // still framed as one-word records so a later ordered error path can retire
   // them without losing the boundary of every following record.

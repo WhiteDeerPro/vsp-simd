@@ -1,11 +1,12 @@
 # 队列、微指令与译码器候选设计
 
-> 状态：uword bundle framing/class predecoder、有状态 bundle assembler、顺序 byte-PC
-> program source、EXEC cluster integration、late-decode holding stage、EXEC-uword
-> profile-v0 canonical expander，以及 strict ordered class router 已有参考 RTL；
-> expander/router 已在 action-stream wrapper 接通。program source 尚未接 action
-> envelope/class-specific decoder；admission legality/cached metadata 与 queue-head
-> integration 尚未实现。
+> 状态：uword bundle framing/class predecoder、单 record assembler、三 record framer、
+> 顺序 byte-PC program source、浅层 ordered action window、EXEC cluster integration、
+> late-decode holding stage、EXEC-uword profile-v0 canonical expander，以及 strict ordered
+> class router 已有参考 RTL。严格 PC→EXEC/END program closure 已接通；多 record
+> framer 与 action window 的三项并发路径仍是独立吞吐/依赖边界，尚未替换 strict
+> single-active action-stream 路径。MEMORY semantic decode、完整 admission metadata 与
+> 并发 queue-head integration 仍未完成。
 > 本文用于比较实现路径，不拥有
 > 最终外部指令格式或控制器组织的决策权。
 
@@ -44,23 +45,43 @@
 - `vsp_uword_predecoder` 组合扫描一个默认 4-word 的连续 uword bundle，划分完整
   record、预判 `EXEC/MEMORY/CONTROL` class，并把未完成尾 record 作为续接提示输出；
   它不保存跨 bundle 状态，不检查 class 内语义，也不绑定 action envelope。
+- `vsp_uword_multi_framer` 在同一 framing 规则上增加跨 bundle 状态和最多三个
+  packed-prefix record 输出。默认 `BUNDLE_WORDS=4`、`ADMIT_SLOTS=3` 是彼此独立的
+  参数：前者表示一次交付四个 32-bit stream word，不表示一定取得四条 record；后者
+  对应当前候选吞吐的两个 EXEC admission 加一个 MEMORY/CONTROL side admission。
+  framer 按 record 边界识别 `CONTROL.END`、阻止更年轻 fetch/record，并继续保留 EOF
+  truncated 与 discontinuity 诊断。
 - `vsp_uword_control_store`、`vsp_uword_program_source` 与
   `vsp_uword_bundle_assembler` 已组成一个独立 program frontend reference：从非零
   byte PC 启动，按至多四个连续 32-bit word 请求，保存跨 bundle tail，并把完整或
   EOF 截断 record 串行为 stall-stable ready/valid 输出。这个 frontend 不解释
   `CONTROL.END`，也未接 action controller。
+- `vsp_ordered_action_window` 是独立的四项浅窗口 reference，默认每拍接纳三项、观察
+  两个 EXEC 候选和一个 non-EXEC side 候选；后者覆盖 MEMORY、CONTROL 与有序
+  reject。它按 group child 与共享
+  dependency metadata 阻止相关操作，允许 split action 的无冲突 group 独立推进、
+  completion 乱序到达，并以最多三项 packed prefix 按序 retirement。四项深度用于
+  短暂 record 对齐、背压吸收和依赖观察，不是 branch-prediction 深队列；当前也没有 branch predictor、
+  redirect epoch 或投机恢复。side 候选只是 class-router 结构端口，不是已实现的
+  scalar ALU 发射槽。
 - `vsp_decoded_action_controller` 已按 `EXEC/MEMORY/CONTROL` 分流一条统一 action
   流，并用统一 completion 保持严格程序顺序；`vsp_cluster_controller_wrapper`
   已把 profile-v0 EXEC expander、decoded MEMORY 和最小 `CONTROL.END` 接到这条路径。
   该路径全局只保留一个 active action，尚未复用 per-context queue/head scheduler。
+- `vsp_uword_action_adapter` 与 `vsp_uword_cluster_program_wrapper` 已把 behavioral
+  control store、byte-PC source、multi-record framer、launch envelope、profile-v0 EXEC
+  和 final `CONTROL.END` 接到上述 strict controller。当前 closure 只消费 framer 的
+  slot 0，并在 controller 完成前保持一项 action；MEMORY record 只产生 ordered decode
+  reject，不会被零填充为 memory command。因此它证明 PC→EXEC/END 的严格保序闭环，
+  不证明三项 admission 或 action window 已接入执行端。
 
 因此现在可以准确地说：full-decoded reference profile 已能执行和退休 EXEC，
-decode holding 协议、EXEC canonical expansion、跨 class 严格顺序和 `END` 也已验证。
-尚缺的是 action-envelope binding、MEMORY/CONTROL semantic decode、
-admission legality/cached metadata，以及把 program frontend、expander、late-decode
-stage、class router 和 terminal feedback 接到 queue head。当前 program frontend
-只解决线性 PC 交付、跨 bundle record framing 与早期 class 分流；action-stream 接法
-证明控制合同可闭环，不等于 hybrid queue 控制链或完整 sequencer 已完成。
+decode holding 协议、EXEC canonical expansion、跨 class 严格顺序、multi-record
+framing，以及一个独立的浅层依赖窗口都已有验证。尚缺的是 MEMORY/CONTROL semantic
+decode、真实 shared-resource metadata，以及把三 record admission、ordered window、
+late decode 和各 class engine 组成同一条并发控制链。严格 action-stream 接法只证明
+PC→record→EXEC/END 的保序合同能够闭环，不等于三发射 sequencer 已完成；当前
+MEMORY 可执行路径仍由 decoded reference 入口验证，而不是从 uword stream 驱动。
 
 ### 1.1 Uword bundle framing 与 class predecode `[RTL事实 + 内部实验]`
 
@@ -75,6 +96,11 @@ stage、class router 和 terminal feedback 接到 queue head。当前 program fr
 | `0xc` | `CONTROL` | `1 + header[27:26]`，即 1 至 4 |
 | `0xd` | `EXEC/ROUTE` | 固定 1 |
 | `0x0, 0xe..0xf` | undefined | 固定 1，并留给后级形成有序错误记录 |
+
+这里的 `4 × 32-bit` 是 fetch/bundle 的 stream-word 数，不是每拍四条 instruction 或
+四条 record。四个 word 可能组成四条单字 EXEC，也可能只组成一条四字 MEMORY，或
+由一个跨 bundle tail、若干完整 record 和下一个 tail 共同占用。因而 fetch 宽度应
+覆盖目标发射需求，但不能直接等同于发射槽数量。
 
 EXEC 是否拥有 extension 由 `vsp_exec_uword_extension_required()` 唯一判定，canonical
 expander 复用同一函数。已经识别的 EXEC format 即使 sub-op、reserved bit 或地址
@@ -95,11 +121,19 @@ assembler 边界负责 ready/valid、跨 bundle 补齐、结束/discontinuity �
 当前 `vsp_uword_bundle_assembler` 已实现其中的线性 stream reference，尚无 epoch 或
 redirect/flush。
 
-这些 record 仍缺 `context/tag/group_mask`、静态 legality、scheduling metadata 和
-class-specific canonical payload，不能直接接 `vsp_decoded_action_controller`。此外，
-当前 stateful assembler 已把一个 bundle 中的多条 record 串行为单 ready/valid 输出，
-可以匹配 issue queue 的单 admission lane；两者之间仍需 action envelope、静态
-legality/cached metadata 和有序错误合同。
+单输出 `vsp_uword_bundle_assembler` 仍服务既有 program frontend；新增
+`vsp_uword_multi_framer` 则保存同样的跨 bundle tail，并把最多 `ADMIT_SLOTS=3` 条完整
+record 作为 packed prefix 暴露。逐 slot `ready` 只能接受从最老 slot 开始的连续前缀，
+`record_accept` 是非前缀 ready 输入下的权威结果；消费旧前缀和接收下一 bundle 可以
+同拍发生。它会扫描全部已缓存 record 寻找 canonical END，所以即使 END 位于当前三个
+输出槽之后也能先拉高 sticky `stop_fetch`；opaque body 中相同的 32-bit 值不会被误认。
+`stream_abort` 为 fetch fault/外部取消清掉 incomplete tail、EOF、连续 PC 和 discard
+状态，但不伪造成功 EOF、不清 sticky protocol error，也不撤销已经识别的 END halt。
+
+这些 record 仍缺实际 workload 派生的依赖/资源 metadata 和 class-specific canonical
+payload。默认三项 admission 是“两个 EXEC 候选 + 一个 MEMORY/CONTROL side 候选”的
+吞吐目标，不是三条任意 class 都能送往任意 engine 的对称超标量端口，也不表示 side
+路径已有 scalar ALU。
 
 ### 1.2 线性 program frontend `[RTL事实 + 里程碑基线]`
 
@@ -124,7 +158,10 @@ body 都占一个 32-bit stream word，因此相邻 word 地址恒为 `+4`；bun
 
 control store 是未复位的数据数组和单响应行为模型。它的逻辑 request/response 边界
 与 data-memory `dmem_*` 分开；未来可在该边界外替换物理 SRAM、translation 或
-I-cache-like 供应结构。当前实现不声称已有这些单元。
+I-cache-like 供应结构。program source 当前只允许一个 outstanding request，并把完整
+response 保存成 bundle 等待下游；所以 4-word 只是单次 response/fetch bundle 宽度，
+不证明能够持续每拍供应 4 words 或 3 actions。真实 I-side SRAM/cache pipeline、bank/
+端口、miss/refill 和吞吐仲裁都尚未实现。
 
 assembler 最多保存一条三 word 未完成 tail，把下一 bundle 的前缀作为 opaque
 extension/body 补齐，而不重新按 header 分类。完整 record 依序串行输出；最终 tail
@@ -140,6 +177,59 @@ assembler。它目前能产生 profile-v0 ALU RR/RI、opaque MEMORY/CONTROL、
 `CONTROL_END` 和 raw word，并可输出 byte-PC listing 与 symbol JSON。ALU builder
 拒绝它能静态识别的 profile-v0 mode/reduction/unused-field 非法组合；故意构造非法
 record 时使用 raw word。外部 instruction 宽度和软件 ABI 仍未选择。
+
+### 1.3 浅层 ordered action window `[RTL事实 + 尚未接入并发闭环]`
+
+`vsp_ordered_action_window` 默认 `WINDOW_DEPTH=4`、`ADMIT_LANES=3`、
+`EXEC_SLOTS=2`、`SIDE_SLOTS=1`。三条 admission lane 按输入年龄压紧进入窗口并分配
+sequence ID；两个 EXEC view 与一个 side view 分别寻找最老的可发射候选。side view
+覆盖全部 non-EXEC class：正常的 MEMORY/CONTROL 以及需要送往有序错误路径的
+undefined class。它是未来 memory/controller/scalar engine 的统一结构边界，不证明
+标量运算单元已经实现。
+
+窗口当前采用两层保守依赖：重叠 group 的未完成 child 阻止年轻 action 使用同一
+group；`dep_read/dep_write` 位描述跨 group 的共享资源 RAW/WAR/WAW 关系。`split_ok`
+允许一条 action 只向当前 ready 且未被更老 action 占用的 group 子集推进；非 split
+action 仍须完整目标 mask 同拍接受。child completion 可按 sequence 和 group mask
+乱序回到窗口，但对外 retirement 始终是最多三项的连续 sequence 前缀。
+serializing/END 在到达年龄头部前不发射，END admission 会拒绝同批更年轻 record
+并保持 fetch halt。
+重复、未知 sequence、未发射 group 或形状错误的 completion 仍会被 ready/valid
+边界消费，以免错误报告反向堵死 engine；它们不修改完成状态，并置 sticky protocol error。
+
+四项深度目前只给 4-word fetch、三项 admission、engine backpressure 和短距离依赖
+提供一个小的解耦空间。它没有预测分支产生的未决路径，也没有 rename、speculative
+issue、epoch 或错误路径回滚，因此不能按 CPU branch-prediction instruction queue
+解释。深度和吞吐参数仍需用代表性 trace 决定。
+
+### 1.4 Strict executable program closure `[RTL事实 + 保守基线]`
+
+`vsp_uword_cluster_program_wrapper` 当前闭合以下路径：
+
+```text
+behavioral control store
+    -> single-outstanding byte-PC program source
+    -> 4-word multi-record framer
+    -> slot-0 action holding / vsp_uword_action_adapter
+    -> strict vsp_cluster_controller_wrapper
+    -> EXEC group completion/result or ordered error
+    -> final CONTROL.END retirement
+```
+
+launch 捕获 `context/group_mask/tag_seed`，后续每个被 controller 接受的 record 递增 tag。
+adapter 检查 EXEC base/extension 结构、undefined/truncated record，以及 canonical
+`CONTROL.END`。END 只有位于 `[start_pc,end_pc)` 的最终一个 word 才合法；early END
+先停止向 framer 输入更年轻 record，再以 ordered control reject 失败并排空 source。
+EOF 没有 END、截断 EXEC、未知 CONTROL 和 fetch fault 都形成可观察的 program failure；
+fetch fault 通过 `stream_abort` 清除 incomplete tail，允许下一次 launch 重新开始。opaque
+MEMORY body 中出现 `0xC0000000` 不会被当作 END。
+
+这个 wrapper 刻意只令 `record_ready[0]` 有效，并在一项 action holding 与全局
+single-active controller 后推进。尽管 framer 参数仍为 `ADMIT_SLOTS=3`，closure 的
+实测吞吐上限不是三 action/cycle；其目的只是证明 record boundary、envelope、ordered
+reject、EXEC writeback/result 和 END 生命周期可以从 PC 串到退休。它也没有接
+`vsp_ordered_action_window`，没有 MEMORY uword semantic decoder、branch/loop、真实
+I-cache 或持续四 word/cycle 的供给结构。
 
 ## 2. 区分三种表示 `[分析模型]`
 
@@ -532,11 +622,13 @@ barrier 语义的实测复杂度。
   tracker、decode holding stage，以及闭合 queue/dispatch/ingress/wrapper/
   result/reject 的 `simd_cluster_exec`；
 - 当前已有 standalone bundle framing/class predecoder、byte-PC program source、跨
-  bundle stateful assembler、strict single-active class
+  bundle stateful assembler/multi-record framer、strict single-active class
   router、ordered error/completion、最小 `CONTROL.END` 和已接入的 VRF-only memory
-  engine；仍没有 program-record 到 action-stream 的接线、admission legality/resource
-  predecode、action-envelope adapter、queue-head integration、动态 owner/resource state、
-  一般化 barrier、loop/redirect 或 host completion；当前 control store 只是行为模型；
+  engine；`vsp_uword_cluster_program_wrapper` 已把 program record 经 action adapter 接到
+  strict EXEC/END 路径，但只消费 slot 0，MEMORY uword 仍作 ordered reject。仍没有
+  multi-record→ordered-window→多 engine 的并发接线、真实 admission resource
+  predecode、queue-head integration、动态 owner/resource state、一般化 barrier、
+  loop/redirect 或 host completion；当前 control store 只是行为模型；
 - action-stream wrapper 的 EXEC 输入是已收齐的 `base + optional extension` packet；
   `extension_required_diag` 不是跨拍 refill handshake。该 wrapper 的 exact-resource
   metadata 在 global non-overlap profile 中为零，不能作为 resource predecode 已完成
