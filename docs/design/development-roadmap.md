@@ -274,12 +274,15 @@ assembler→predecoder→expander→controller→group writeback 回归。profil
 route-setting 的理由是成本位置——全 crossbar 无需 route 求解，动态索引不引入控制
 状态或冲突协议，代价只是 `O(N²)` mux。它先服务负载映射取证，可被后续方案替换。
 
-已完成一项新的架构研究：在一个对齐的 4-group domain 内，复用 4×4 word multicast
+已完成架构研究与 standalone reference：在一个对齐的 4-group domain 内，复用
+4×4 word multicast
 与 local byte selector，可把任意 16-byte register gather 分成固定四次迭代，不需要
 Bênes route-setting 或 conflict retry。用户给出的 source-local 反对角线构造成立；
 对当前 VSP，word-first、destination-local 次序控制更简单，也应列入综合候选。它们都
-需要 source/index snapshot、result staging、四组原子资源预留和并行 masked commit；
-不是已经接入的四级吞吐流水。详细证明、成本边界及 memory trade-off 见
+需要 source/index snapshot、result staging、四组原子资源预留和并行 masked commit。
+当前 `vsp_word_first_gather_phase` 与 `vsp_four_pass_gather_engine` 已验证前两项及
+valid/ready 背压，但尚未连接 group VRF，也不是已经接入的四级吞吐流水。详细证明、
+成本边界及 memory trade-off 见
 [路由](../architecture/routing.md)。
 
 仍未定义、因此接入继续延期的部分：canonical dynamic-index action、group-local VRF

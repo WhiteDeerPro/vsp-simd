@@ -28,7 +28,7 @@ VSP / SoC 子系统（未来）
     ├── sequencer address-state engine（已接入 strict slot-0 program path）
     ├── ordered I-side fetch 仿真模型（simulation only）
     ├── ordered dmem 仿真模型（可配置 FIFO outstanding；simulation only）
-    ├── lane route（组内 crossbar 与单字 uword 已接通；跨组 route 延期）
+    ├── lane route（组内 crossbar/uword 已接通；4-group gather engine 已独立验证）
     └── admission metadata、动态 owner/resource、并发 action-window binding
         与 loop/redirect（待实现）
 ```
@@ -50,6 +50,11 @@ VSP / SoC 子系统（未来）
 - `vsp_lane_gather`：默认 16 lane 的固定全 crossbar 临时基线，纯 gather，
   动态索引之外提供 identity/broadcast/rotate/reverse/transpose/deinterleave/
   interleave 静态图样与 rotate wrap 报告；已独立验证，不接入数据通路；
+- `vsp_word_first_gather_phase` 与 `vsp_four_pass_gather_engine`：在对齐的
+  4-group route domain 中快照 16-byte source、16-byte index 和 16-bit mask，以
+  4×4 32-bit multicast word crossbar 和目的侧 byte selector 固定四次完成动态
+  register gather；支持重复 index、full-byte OOB 写零、结果背压与 identity 保持，
+  尚未接入 VRF/编码；
 - SIMD group 内的一份直接 crossbar，支持重复索引的 gather、lane broadcast 与 permutation；
 - 单字 `EXEC_ROUTE` 编制与 `fmt=0xd` canonical expansion，已沿严格 action 控制链
   驱动每个 SIMD4 的本地 crossbar；
@@ -133,7 +138,9 @@ sequencer，也不代表最终吞吐组织。
 gather：`DR[lane] = SR[IR[lane]]`，其中索引向量 IR 由 VRF 提供，允许一对一置换
 与广播，不支持 scatter（同一操作内不会出现多通道写同一通道）。它属于 Vector ALU
 内的一个 routing 级；`vsp_lane_gather` 已按固定 16×16 crossbar 提供临时基线 RTL，
-但 stripe、索引来源、资源预留和写回事务未定义，因此尚未接入数据通路。
+word-first four-pass engine 也已提供 snapshot/result transaction reference；但并行
+VRF capture/commit、资源预留和 canonical dynamic-index action 未定义，因此尚未接入
+数据通路。
 这与已经接通的 SIMD4-local `fmt=0xd` ROUTE 是两个不同层次。
 
 `vsp_vector_memory_engine` 已接入 reference class router，但尚未接入 local SRAM 或

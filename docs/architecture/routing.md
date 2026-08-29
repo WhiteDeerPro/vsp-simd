@@ -135,7 +135,7 @@ out-of-range 的最终选择仍是开放项。
 VRF row、索引来自 VRF 还是立即数、资源预留与 group ownership、写回事务，以及
 分级/流水与面积。它是可替换的临时基线，不是已选拓扑。
 
-## 候选：4-group 固定四次迭代 gather `[研究结论，RTL 未实现]`
+## 候选：4-group 固定四次迭代 gather `[standalone RTL 已实现，cluster 未接入]`
 
 这里的目标仍是 byte-lane register gather，不是 indexed memory load：四个相邻
 SIMD4 group 各提供一个 32-bit VRF row，共同形成 16-byte source、16-byte index 和
@@ -233,6 +233,22 @@ mux、per-group 独立 route control 和 cluster writeback owner，可能把长�
 到普通 ALU。首个 standalone reference 更适合在共享 engine 内使用 captured rows 和
 小型 byte selector，行为闭合后再比较共享 local crossbar 是否真的省面积。
 
+当前 reference 已按这个边界落地：
+
+- `vsp_word_first_gather_phase`：组合实现一次 word-first pass，输入完整 128-bit source、
+  128-bit full-byte index、16-bit active mask 和 2-bit phase，每次返回四个目的 group
+  各自选中的一个 byte、write-enable 与 OOB；
+- `vsp_four_pass_gather_engine`：在 command handshake 时快照 source/index/mask/identity，
+  连续执行 phase 0–3，在内部形成 128-bit result，并通过 decoupled response 返回
+  write-mask 与 OOB-mask；response 背压期间全部状态保持稳定。
+
+它们没有接入 VRF、canonical action 或现有 cluster completion；因此验证的是 route core
+与事务边界，不把“capture + four passes + commit”缩写成一条已经可发射的四周期指令。
+当前 engine 是 single-outstanding：command capture 后四个 RUN edge 产生 response；在
+result 永远 ready 时，下一 command 在随后一个 edge 接受，所以 reference 的 command
+initiation interval 是 5，而组合网络被占用的 route passes 仍是 4。后续若需要 II=4，
+可在不改 phase 语义的前提下增加 response queue 或 phase3/new-command overlap。
+
 ### 不能只比较“768 对 1920”
 
 按 1-bit 2:1 mux 等价数粗估，且忽略寄存器、选择译码、长线、RF 端口和时钟功耗：
@@ -251,6 +267,37 @@ holding，四次迭代方案需要约 128-bit source、128-bit full-byte index�
 用同一工艺目标比较 post-route Fmax、面积、每 action 能量、VRF 占用周期和 initiation
 interval，当前不删除 `vsp_lane_gather`。
 
+### 与 Omega/Bênes 的区别：network stage 不是 route pass
+
+Omega、Bênes 和这个 four-pass hierarchy 都能画成多级 mux，但不能据此统称为相同的
+`N log N` 网络。以 `N=16` 个 8-bit endpoint 为例，下表按每个 2×2 switch 含两个
+8-bit 2:1 mux 估算：
+
+| 结构 | 空间级/时间次数 | bit-level 2:1 mux | 单次支持的 mapping |
+|---|---:|---:|---|
+| 标准 Omega | 4 个 network stages | `32*2*8 = 512` | unique-path、blocking permutation 子集 |
+| 标准 Bênes | 7 个 network stages | `56*2*8 = 896` | 求得 switch setting 后的任意 permutation |
+| flat byte gather crossbar | 1 traversal | `16*15*8 = 1920` | 任意 gather/multicast |
+| word-first reference | 同一网络复用 4 passes | `480` | 任意 4-group×4-byte gather |
+
+Omega 的 destination bit 可以逐级 self-route，但只消除了全局 route-setting，不会消除
+内部 link contention；不兼容的同时请求仍需拆分、仲裁或返回 accepted mask。Bênes 对
+一一 permutation 是 rearrangeably non-blocking，但需要先计算整网 switch setting；标准
+straight/cross 2×2 switch 不复制输入，重复 index 或全广播不能单遍完成。若增加 copy、
+buffer 或 arbitration，已不再是上述简单 `N log N` 成本模型。
+
+word-first reference 则用 output-driven multicast word mux，index 高两位直接选 word、
+低两位直接选 byte，没有 path search。这里的“四”是同一硬件被时间复用四次；Omega
+的“四级”和 Bênes 的“七级”是空间组合级，可以整拍穿越，也可以插寄存器形成 pipeline，
+但流水不会改变某个 mapping 是否会阻塞或是否允许复制。
+
+在本项目真正关心的四个 32-bit group port 上，差异更直接：4×4 full word crossbar 是
+12 个 32-bit 2:1 mux；4-port Bênes 也是 `3 stages * 2 switches * 2 outputs = 12` 个
+32-bit mux。后者组合更深、需要 setting 且不支持 multicast，所以这个小 domain 没有
+采用 Bênes/Omega 的面积理由。一般 `M group × L lane` 的 word/local full-crossbar
+hierarchy 也仍含 `M²` word connectivity；它不是全局扩展到任意规模时的 `N log N`
+答案，而是用固定小 domain 和多次 pass 换掉动态 conflict handling。
+
 ### Transaction 与资源合同
 
 要把“四次 route”变成可调用 engine，至少需要以下合同：
@@ -268,9 +315,10 @@ interval，当前不删除 `vsp_lane_gather`。
 5. action completion 只在所有目标 group 的最终 commit 都被接收后产生。任何阶段的
    downstream backpressure 必须保持 phase、snapshot、result 和 tag 稳定。
 
-当前 2R1W、per-lane write-mask 的 group VRF 具备所需叶端能力；缺的是 cluster 级
-并行 capture/commit、multi-cycle engine、资源预留和动态 index action 字段。编码不应
-先挤进现有 `fmt=0xd`：它只包含一组对所有 group 相同的四个 immediate local index。
+当前 2R1W、per-lane write-mask 的 group VRF 具备所需叶端能力；multi-cycle standalone
+engine 已有，缺的是 cluster 级并行 capture/commit、资源预留和动态 index action 字段。
+编码不应先挤进现有 `fmt=0xd`：它只包含一组对所有 group 相同的四个 immediate local
+index。
 
 ### Register route、memory fallback 与 indexed memory gather
 
@@ -323,11 +371,11 @@ D-side memory hierarchy
   -> 未来独立 indexed gather/scatter AGU/coalescer/reorder path
 ```
 
-先保留 flat `vsp_lane_gather`，再实现纯组合 phase reference，对
+已保留 flat `vsp_lane_gather`，并完成 word-first phase/engine 的行为验证。下一步对
 `source-local anti-diagonal`、`word-first destination-local` 和直接 time-muxed byte mux
-做等价验证与综合 A/B。只有真实 trace 显示跨 route-domain gather 频繁，才扩大 network；
-否则让编译器用 packet exchange、scratch row 或 SRAM layout 组合，避免全 cluster
-`O(group_count^2)` word crossbar。
+做综合 A/B，再设计 parallel VRF capture/commit wrapper。只有真实 trace 显示跨
+route-domain gather 频繁，才扩大 network；否则让编译器用 packet exchange、scratch
+row 或 SRAM layout 组合，避免全 cluster `O(group_count^2)` word crossbar。
 
 资料对照：RVV 也把
 [register gather 与 indexed memory load/store](https://docs.riscv.org/reference/isa/extensions/vector/_attachments/riscv-v-spec.pdf)
@@ -338,7 +386,10 @@ D-side memory hierarchy
 address generation 的吞吐限制；AraXL 的
 [层级互连研究](https://arxiv.org/abs/2501.10301)说明 lane 数扩大后物理布线会主导；近期
 [短向量 permutation unit 实现](https://arxiv.org/abs/2505.07112)也表明 flat crossbar
-在具体工艺下未必不可接受，所以最终选择仍应来自综合，而不是只看渐近式。
+在具体工艺下未必不可接受，所以最终选择仍应来自综合，而不是只看渐近式。Omega 的
+stage/unique-path 定义可追溯到
+[Lawrie 1975](https://doi.org/10.1109/T-C.1975.224157)，Bênes 的 rearrangeable network
+性质见[原始工作](https://doi.org/10.1002/j.1538-7305.1964.tb04103.x)。
 
 ## 跨组 lane gather 语义 `[延期议题；以下含历史探索]`
 

@@ -103,8 +103,9 @@ SIMD 执行子单元 / 协处理器：
 当前规模的 lane index，因此无需在 SRF 中塞入超宽逐 lane 控制字。index 必须以完整
 byte 做范围检查，不能只截低位。4-group iterative gather 候选会在 admission 时同时
 读取并快照 source row 与 index row，再在 engine 内收集 128-bit result，避免分拍写回
-污染重叠源。跨组并行 commit 和资源预留尚未实现；当前 16×16 full crossbar 仍只是
-独立功能基线，新的四次迭代结构也只是综合候选，均未接入寄存器数据通路。
+污染重叠源。word-first phase 与 four-pass snapshot engine 已有 standalone RTL；跨组
+并行 capture/commit 和资源预留尚未实现。当前 16×16 full crossbar 与四次迭代结构均
+未接入寄存器数据通路，仍需综合 A/B。
 
 ## 局部路由网络的位置
 

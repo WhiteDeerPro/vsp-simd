@@ -28,6 +28,10 @@ RTL_ROUTE := rtl/permute/simd_route.sv
 RTL_COMPACT := rtl/permute/simd_compact.sv
 RTL_BENES := rtl/interconnect/benes_network.sv
 RTL_LANE_GATHER := rtl/interconnect/vsp_lane_gather.sv
+RTL_WORD_FIRST_GATHER_PHASE := \
+		rtl/interconnect/vsp_word_first_gather_phase.sv
+RTL_FOUR_PASS_GATHER_ENGINE := \
+		rtl/cluster/vsp_four_pass_gather_engine.sv
 RTL_ISSUE_DISPATCH := rtl/cluster/simd_issue_dispatch.sv
 RTL_ISSUE_QUEUE := rtl/cluster/simd_issue_queue.sv
 RTL_CLUSTER_ISSUE_FRONTEND := rtl/cluster/simd_cluster_issue_frontend.sv
@@ -108,6 +112,10 @@ ROUTE_RTL := $(RTL_PKG) $(RTL_CROSSBAR) $(RTL_ROUTE)
 # does not pull in simd_pkg: it defines its own mode encodings and is not a
 # datapath operation.
 LANE_GATHER_RTL := $(RTL_CROSSBAR) $(RTL_LANE_GATHER)
+WORD_FIRST_GATHER_PHASE_RTL := $(RTL_CROSSBAR) \
+		$(RTL_WORD_FIRST_GATHER_PHASE)
+FOUR_PASS_GATHER_ENGINE_RTL := $(WORD_FIRST_GATHER_PHASE_RTL) \
+		$(RTL_FOUR_PASS_GATHER_ENGINE)
 COMPACT_RTL := $(RTL_COMPACT)
 MASK_RTL := $(RTL_PKG) $(RTL_MASK_ALU)
 DYNAMIC_RTL := $(RTL_PKG) $(ELEMENT_RTL)

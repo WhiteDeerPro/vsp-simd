@@ -167,6 +167,14 @@ MEDIAN_TB  := $(abspath sim/median3x3_tb.cpp)
 LANE_GATHER_TOP := vsp_lane_gather
 LANE_GATHER_OBJ := $(BUILD_DIR)/vsp_lane_gather_obj_dir
 LANE_GATHER_TB  := $(abspath sim/vsp_lane_gather_tb.cpp)
+WORD_FIRST_GATHER_PHASE_TOP := vsp_word_first_gather_phase
+WORD_FIRST_GATHER_PHASE_OBJ := $(BUILD_DIR)/word_first_gather_phase_obj_dir
+WORD_FIRST_GATHER_PHASE_TB := \
+	$(abspath sim/vsp_word_first_gather_phase_tb.cpp)
+FOUR_PASS_GATHER_ENGINE_TOP := vsp_four_pass_gather_engine
+FOUR_PASS_GATHER_ENGINE_OBJ := $(BUILD_DIR)/four_pass_gather_engine_obj_dir
+FOUR_PASS_GATHER_ENGINE_TB := \
+	$(abspath sim/vsp_four_pass_gather_engine_tb.cpp)
 MUL32_MICRO_TB := sim/mul32_microcode_tb.cpp
 MUL32_MICRO_BIN := $(BUILD_DIR)/mul32_microcode_tb
 
@@ -182,7 +190,8 @@ MUL32_MICRO_BIN := $(BUILD_DIR)/mul32_microcode_tb
 	test-cluster-exec-tracker-credit \
 	test-vsp-ordered-dmem-model test-vsp-ordered-ifetch-model \
 	test-vsp-sequencer-state-engine test-cluster-vrf-arbiter \
-	test-cluster-memory-wrapper clean
+	test-cluster-memory-wrapper test-vsp-word-first-gather-phase \
+	test-vsp-four-pass-gather-engine clean
 
 all: test
 
@@ -355,6 +364,12 @@ lint:
 	$(VERILATOR) --lint-only -Wall -Wno-fatal \
 		--top-module $(LANE_GATHER_TOP) -GLANES=64 -GMODE_W=5 \
 		$(LANE_GATHER_RTL)
+	$(VERILATOR) --lint-only -Wall -Wno-fatal \
+		--top-module $(WORD_FIRST_GATHER_PHASE_TOP) \
+		$(WORD_FIRST_GATHER_PHASE_RTL)
+	$(VERILATOR) --lint-only -Wall -Wno-fatal \
+		--top-module $(FOUR_PASS_GATHER_ENGINE_TOP) \
+		$(FOUR_PASS_GATHER_ENGINE_RTL)
 	$(VERILATOR) --lint-only -Wall -Wno-fatal --top-module $(COMPACT_TOP) \
 		-GLANES=8 $(COMPACT_RTL)
 	$(VERILATOR) --lint-only -Wall -Wno-fatal --top-module $(MASK_TOP) \
@@ -764,6 +779,34 @@ $(LANE_GATHER_OBJ)/V$(LANE_GATHER_TOP): $(LANE_GATHER_RTL) $(LANE_GATHER_TB) \
 		$(LANE_GATHER_RTL) $(LANE_GATHER_TB)
 	$(MAKE) -C $(LANE_GATHER_OBJ) -f V$(LANE_GATHER_TOP).mk
 
+$(WORD_FIRST_GATHER_PHASE_OBJ)/V$(WORD_FIRST_GATHER_PHASE_TOP): \
+		$(WORD_FIRST_GATHER_PHASE_RTL) $(WORD_FIRST_GATHER_PHASE_TB) \
+		$(BUILD_META) | $(BUILD_DIR)
+	$(VERILATOR) -Wall -Wno-fatal --cc --exe \
+		--top-module $(WORD_FIRST_GATHER_PHASE_TOP) \
+		--Mdir $(WORD_FIRST_GATHER_PHASE_OBJ) \
+		$(WORD_FIRST_GATHER_PHASE_RTL) $(WORD_FIRST_GATHER_PHASE_TB)
+	$(MAKE) -C $(WORD_FIRST_GATHER_PHASE_OBJ) \
+		-f V$(WORD_FIRST_GATHER_PHASE_TOP).mk
+
+test-vsp-word-first-gather-phase: \
+		$(WORD_FIRST_GATHER_PHASE_OBJ)/V$(WORD_FIRST_GATHER_PHASE_TOP)
+	$(WORD_FIRST_GATHER_PHASE_OBJ)/V$(WORD_FIRST_GATHER_PHASE_TOP)
+
+$(FOUR_PASS_GATHER_ENGINE_OBJ)/V$(FOUR_PASS_GATHER_ENGINE_TOP): \
+		$(FOUR_PASS_GATHER_ENGINE_RTL) $(FOUR_PASS_GATHER_ENGINE_TB) \
+		$(BUILD_META) | $(BUILD_DIR)
+	$(VERILATOR) -Wall -Wno-fatal --cc --exe \
+		--top-module $(FOUR_PASS_GATHER_ENGINE_TOP) \
+		--Mdir $(FOUR_PASS_GATHER_ENGINE_OBJ) \
+		$(FOUR_PASS_GATHER_ENGINE_RTL) $(FOUR_PASS_GATHER_ENGINE_TB)
+	$(MAKE) -C $(FOUR_PASS_GATHER_ENGINE_OBJ) \
+		-f V$(FOUR_PASS_GATHER_ENGINE_TOP).mk
+
+test-vsp-four-pass-gather-engine: \
+		$(FOUR_PASS_GATHER_ENGINE_OBJ)/V$(FOUR_PASS_GATHER_ENGINE_TOP)
+	$(FOUR_PASS_GATHER_ENGINE_OBJ)/V$(FOUR_PASS_GATHER_ENGINE_TOP)
+
 $(MASK_OBJ)/V$(MASK_TOP): $(MASK_RTL) $(MASK_TB) $(BUILD_META) | $(BUILD_DIR)
 	$(VERILATOR) -Wall -Wno-fatal --cc --exe --top-module $(MASK_TOP) \
 		-GLANES=8 --Mdir $(MASK_OBJ) $(MASK_RTL) $(MASK_TB)
@@ -854,6 +897,8 @@ test: $(OBJ_DIR)/V$(TOP) $(BENES_OBJ)/V$(BENES_TOP) \
 		$(UOP_LEGAL_OBJ)/V$(UOP_LEGAL_TOP) \
 		$(ROUTE_OBJ)/V$(ROUTE_TOP) \
 		$(LANE_GATHER_OBJ)/V$(LANE_GATHER_TOP) \
+		$(WORD_FIRST_GATHER_PHASE_OBJ)/V$(WORD_FIRST_GATHER_PHASE_TOP) \
+		$(FOUR_PASS_GATHER_ENGINE_OBJ)/V$(FOUR_PASS_GATHER_ENGINE_TOP) \
 		$(COMPACT_OBJ)/V$(COMPACT_TOP) \
 		$(MASK_OBJ)/V$(MASK_TOP) \
 		$(DYNAMIC_OBJ)/V$(DYNAMIC_TOP) \
@@ -898,6 +943,8 @@ test: $(OBJ_DIR)/V$(TOP) $(BENES_OBJ)/V$(BENES_TOP) \
 	$(UOP_LEGAL_OBJ)/V$(UOP_LEGAL_TOP)
 	$(ROUTE_OBJ)/V$(ROUTE_TOP)
 	$(LANE_GATHER_OBJ)/V$(LANE_GATHER_TOP)
+	$(WORD_FIRST_GATHER_PHASE_OBJ)/V$(WORD_FIRST_GATHER_PHASE_TOP)
+	$(FOUR_PASS_GATHER_ENGINE_OBJ)/V$(FOUR_PASS_GATHER_ENGINE_TOP)
 	$(COMPACT_OBJ)/V$(COMPACT_TOP)
 	$(MASK_OBJ)/V$(MASK_TOP)
 	$(DYNAMIC_OBJ)/V$(DYNAMIC_TOP)
