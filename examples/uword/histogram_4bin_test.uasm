@@ -1,0 +1,46 @@
+# Exact 4-bin histogram predicate for one 16-byte load.
+#
+# For every byte lane:
+#   bin_id = x >> 6
+#   diff   = absdiff(bin_id, k)
+#   neq    = min(diff, 1)
+#   eq     = 1 - neq
+#
+# EXEC_REDUCE returns one count per selected SIMD4 group. The sequencer or
+# host combines the per-group completions when a count over all 16 lanes is
+# required. This program does not assume a memory-scatter implementation.
+
+entry:
+SMOVI rd=1 imm=0x1000
+VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0
+
+# v1 = bin_id, v2 = byte vector filled with one.
+EXEC_ALU_RI op=shr_u mode=byte va=0 vd=1 imm=6
+EXEC_ALU_RR op=xor mode=byte va=1 vb=1 vd=2
+EXEC_ALU_RI op=add mode=byte va=2 vd=2 imm=1
+
+# Bin 0: k = 0.
+EXEC_ALU_RI op=absdiff_u mode=byte va=1 vd=3 imm=0
+EXEC_ALU_RI op=min_u mode=byte va=3 vd=4 imm=1
+EXEC_ALU_RR op=sub mode=byte va=2 vb=4 vd=5
+EXEC_REDUCE op=sum_u va=5
+
+# Bin 1: k = 1.
+EXEC_ALU_RI op=absdiff_u mode=byte va=1 vd=3 imm=1
+EXEC_ALU_RI op=min_u mode=byte va=3 vd=4 imm=1
+EXEC_ALU_RR op=sub mode=byte va=2 vb=4 vd=5
+EXEC_REDUCE op=sum_u va=5
+
+# Bin 2: k = 2.
+EXEC_ALU_RI op=absdiff_u mode=byte va=1 vd=3 imm=2
+EXEC_ALU_RI op=min_u mode=byte va=3 vd=4 imm=1
+EXEC_ALU_RR op=sub mode=byte va=2 vb=4 vd=5
+EXEC_REDUCE op=sum_u va=5
+
+# Bin 3: k = 3.
+EXEC_ALU_RI op=absdiff_u mode=byte va=1 vd=3 imm=3
+EXEC_ALU_RI op=min_u mode=byte va=3 vd=4 imm=1
+EXEC_ALU_RR op=sub mode=byte va=2 vb=4 vd=5
+EXEC_REDUCE op=sum_u va=5
+
+CONTROL_END
