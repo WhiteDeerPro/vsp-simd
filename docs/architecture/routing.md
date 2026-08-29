@@ -135,6 +135,211 @@ out-of-range 的最终选择仍是开放项。
 VRF row、索引来自 VRF 还是立即数、资源预留与 group ownership、写回事务，以及
 分级/流水与面积。它是可替换的临时基线，不是已选拓扑。
 
+## 候选：4-group 固定四次迭代 gather `[研究结论，RTL 未实现]`
+
+这里的目标仍是 byte-lane register gather，不是 indexed memory load：四个相邻
+SIMD4 group 各提供一个 32-bit VRF row，共同形成 16-byte source、16-byte index 和
+16-byte destination view。这个“4-group route domain”只是候选物理共享范围，不增加
+新的编程模型术语。语义先写成：
+
+```text
+for i in 0..15:
+    if destination_active[i]:
+        destination[i] = index[i] < 16 ? source[index[i]] : 0
+```
+
+重复 index 合法并形成 multicast/broadcast；每个 destination byte 只有一个 producer，
+因此不是 scatter。index 可由 VRF 的第二读操作数提供。为了让超范围值不会被低四位
+截断后回绕，首版即使只访问 16 个 byte，也应保存并检查完整的 8-bit index。
+
+### 源侧 local route 后接 word multicast：原算法成立
+
+令 `source[c][d]` 表示源 group `c` 的 byte `d`，目标
+`destination[j][t]` 的 index 可拆成 `(c[j][t], d[j][t])`。四次迭代的 phase `p`
+选择：
+
+```text
+t[j] = (j + p) mod 4
+local_select[c[j]][t[j]] = d[j]
+word_select[j] = c[j]
+byte_write_enable[j] = 1 << t[j]
+```
+
+`j -> t[j]` 在每个 phase 是双射。因此，同一个源侧 local crossbar 的同一个输出
+byte 位置不会同时被要求选择两个不同的 `d`；local crossbar 可以把该 phase 所需的
+不同 byte 放到 packet 的不同位置。后级 4×4、32-bit word crossbar 的每个输出独立
+选择输入，允许多个输出重复选择同一个输入 packet。目的 group 只写自己的 one-hot
+byte。四个 phase 又使每个 `(j,t)` 恰好出现一次，所以任意
+`index in [0,16)^16`，包括全广播，都能完成。
+
+这里“不同 `t`”解决的是**同一个源 packet 位置的控制冲突**，不是不同 group 之间的
+VRF 写冲突。证明还依赖两个明确条件：
+
+- 源侧 4×4 byte network 是 output-selects-input 的 gather crossbar，允许重复选择；
+- 4×4 word network 同样是 multicast crossbar。当前 `simd_crossbar` 满足这两个
+  条件；只含 straight/cross 2×2 switch 的 `benes_network` 不提供复制，不能替代它。
+
+在“每个目的 group 每次只写一个 byte”的题设下，每个目的有四个 byte，四次迭代既是
+上界也是下界。它应称为 **fixed-four-pass iterative gather**，不是天然的四级流水线：
+只实例化一套网络时，route core 的 latency 和 initiation interval 都至少为四个
+route cycle；operand capture、最终 commit 和 completion backpressure 还在这四次之外。
+
+这个反对角线证明适合恰好 `M=L=4`。推广到 `M` 个 group、每组 `L` 个 byte 时，原
+`t=(j+p) mod L` 构造只有在 `M<=L` 时无条件保证同 phase 的 `t` 不重复；`M>L`
+不能直接声称仍为 `L` 次。可以把目的分成至多 `L` 个 group 的 batch，安全代价为
+`ceil(M/L)*L` 次，但上级 word crossbar 仍会随 `M^2` 增长。
+
+### 更适合 VSP 的次序：word multicast 后接目的侧 local route
+
+原方案正确，但不是唯一的两级次序。对当前 VSP 更自然的优先候选是：
+
+```text
+four source-row snapshots
+          |
+          v
+4x4 32-bit word multicast crossbar
+          |
+          v
+four destination-local byte selectors / 4x4 routes
+          |
+          v
+128-bit result staging -> parallel masked VRF commit
+```
+
+phase `p=0..3` 直接让所有目的 group 处理本地 offset `t=p`：
+
+```text
+idx = index_snapshot[j][p]
+word_select[j] = idx[3:2]
+destination_local_select[j][p] = idx[1:0]
+result[j][p] = selected_source_word[j][idx[1:0]]
+```
+
+每个目的 group 的 local selector 独立，因此多个目的即使选择同一个 source word、同一个
+byte 位置，也不会产生源侧 local-control 冲突。对一般 `M x L` 结构，只要上级是
+`M x M` multicast word crossbar，这个次序可固定用 `L` 次完成；但 `M x M` 的布线
+成本仍使它更适合小型物理 domain，而不是全 cluster 任意 byte gather。
+
+这个次序还有两项实现优势：
+
+- 它与现有“外来 source-A word 进入 group-local route”的方向一致，控制由每个目的
+  index row 就地派生，不需要把四个目的的需求转置成源侧 local controls；
+- 若以后允许一个目的 group 在同一 phase 写入所有来自同一 source group 的 byte，
+  常见 mapping 可按目的中的 distinct source-group 数在 1–4 次完成；首版仍可保留
+  固定四次以换取简单 completion 和调度。
+
+是否物理复用当前 `simd_route` 仍需综合判断。直接复用要求增加 external source-A
+mux、per-group 独立 route control 和 cluster writeback owner，可能把长组合路径耦合
+到普通 ALU。首个 standalone reference 更适合在共享 engine 内使用 captured rows 和
+小型 byte selector，行为闭合后再比较共享 local crossbar 是否真的省面积。
+
+### 不能只比较“768 对 1920”
+
+按 1-bit 2:1 mux 等价数粗估，且忽略寄存器、选择译码、长线、RF 端口和时钟功耗：
+
+| datapath 候选 | 粗略 mux 数 | route passes | 说明 |
+|---|---:|---:|---|
+| flat 16×16 byte crossbar | `16*8*15 = 1920` | 1 | 当前独立 reference |
+| 源侧 4×4 byte + 4×4 word | `4*4*8*3 + 4*32*3 = 768` | 4 | 用户给出的两级结构 |
+| word-first + 每目的一个 4:1 byte selector | `4*32*3 + 4*8*3 = 480` | 4 | 等价于四个 time-muxed 16:1 byte mux |
+
+因此，两级结构的主要吸引力是**复用已经需要的 local route 与 group-word exchange**，
+以及以后允许 multi-byte write 的扩展空间；若专门为 gather 新造全部网络，它并非门数
+最小。另一方面，mux 数也不是物理结论：flat reference 没有 source/index/result
+holding，四次迭代方案需要约 128-bit source、128-bit full-byte index、128-bit result
+及 mask staging，并会让 word network 每次搬运 128 bit 而只提交 32 bit。这些实现必须
+用同一工艺目标比较 post-route Fmax、面积、每 action 能量、VRF 占用周期和 initiation
+interval，当前不删除 `vsp_lane_gather`。
+
+### Transaction 与资源合同
+
+要把“四次 route”变成可调用 engine，至少需要以下合同：
+
+1. admission 原子预留完整、对齐的四个 source/destination group，以及一个
+   route-domain shared resource；该 action 仍属于 `EXEC`，不新增 dispatch class；
+2. 同拍读取 source row 与 index row，完整快照后才开始迭代。这样既不持续占用 VRF
+   read port，也避免 `vd==vs` 或 `vd==vi` 时早期写破坏后续读取；第一版 profile 仍可
+   暂时禁止 overlap，直到 hazard metadata 覆盖完成；
+3. destination-inactive byte 保持旧值；active 且 index 越界的 byte 写零，二者不能
+   共用“禁止写”处理；
+4. 优先在 engine 内收齐 128-bit result，再通过四个 group 的并行 masked write path
+   commit。当前 `vsp_cluster_vrf_arbiter` 是单 group、single-outstanding client，若逐组
+   走该口，四次 route 会膨胀为串行 child transactions，不能继续称固定四次服务；
+5. action completion 只在所有目标 group 的最终 commit 都被接收后产生。任何阶段的
+   downstream backpressure 必须保持 phase、snapshot、result 和 tag 稳定。
+
+当前 2R1W、per-lane write-mask 的 group VRF 具备所需叶端能力；缺的是 cluster 级
+并行 capture/commit、multi-cycle engine、资源预留和动态 index action 字段。编码不应
+先挤进现有 `fmt=0xd`：它只包含一组对所有 group 相同的四个 immediate local index。
+
+### Register route、memory fallback 与 indexed memory gather
+
+“memory route”至少包含两件不同的事，不能与 register gather 混成一种操作：
+
+1. **scratchpad/SRAM staging**：数据已经在 VRF，但借共享存储的写地址与读地址完成
+   跨 domain 搬运或重排；
+2. **indexed memory gather**：数据还在 D-side address space，逐元素计算
+   `base + byte_offset[i]` 后取入 VRF。
+
+加上直接 register route 后，三类机制解决不同范围的问题：
+
+| 路径 | 数据起点 | 延迟/故障 | 适合情况 |
+|---|---|---|---|
+| SIMD4 local route | 本组 VRF | 单拍组合，无 memory fault | 静态小重排、broadcast、slide |
+| 4-group iterative register gather | 四组 VRF snapshot | 固定 route passes，无 TLB/cache fault | FFT/小波/transpose/邻域数据已驻留且会复用 |
+| SRAM staging 或 packet exchange | 其他 route domain | 多 action，可预测但消耗端口/带宽 | 低频跨 domain 重排、编译器布局兜底 |
+| indexed memory gather | D-side memory | 可变；需 AGU/TLB/cache/outstanding/reorder | 数据未入 VRF、索引跨大范围稀疏工作集 |
+
+把已经在 VRF 的值先 STORE、改地址、再 LOAD 会增加 memory traffic、端口占用和可变
+等待。对一个已经驻留的 16-byte tile，至少会额外穿过存储边界 16-byte 写和 16-byte
+读；若希望在写入时完成任意 byte scatter，还会把问题转成 SRAM bank conflict、逐 byte
+write-enable 或多拍仲裁。因此它不应替代 domain 内的 register gather，只应作为跨
+domain、跨容量层级或低频路径。它的优势是复用现有共享 SRAM 和地址通路，网络规模不随
+cluster 全局互连平方增长，并能自然形成较长数据生命周期的 rendezvous point。
+
+反之，若 16 个 index 只命中大地址空间中的少数元素，先连续加载整个覆盖范围也可能更
+浪费；这时需要未来独立的 indexed-memory engine。它的语义是
+`address[i] = base + byte_offset[i]`，不是 register gather；它节省无用数据传输，但必须
+接受 TLB/cache miss、bank conflict、返回乱序和 fault completion 带来的可变服务时间。
+
+一个有价值的混合优化是由 memory side 先按 SRAM/cache line 合并请求：若 index 都在
+同一个小 block，连续取 block 到 staging，再用 register gather 排列进 VRF；跨多个
+block 时仍由 memory engine 保存 element tag、fault 和 response merge 状态。两类 engine
+可以共享 VRF writeback arbiter 或小型 byte selector，但不应共享同一个架构操作语义。
+
+### 当前层级建议
+
+```text
+SIMD4 group
+  -> 现有 4x4 local route，1 cycle，immediate/static pattern
+
+aligned 4-group route domain
+  -> 候选 iterative register gather，dynamic VRF index，4 route passes
+
+execution cluster with several route domains
+  -> point-to-point word/packet exchange + staging；不承诺全局任意 byte gather
+
+D-side memory hierarchy
+  -> 未来独立 indexed gather/scatter AGU/coalescer/reorder path
+```
+
+先保留 flat `vsp_lane_gather`，再实现纯组合 phase reference，对
+`source-local anti-diagonal`、`word-first destination-local` 和直接 time-muxed byte mux
+做等价验证与综合 A/B。只有真实 trace 显示跨 route-domain gather 频繁，才扩大 network；
+否则让编译器用 packet exchange、scratch row 或 SRAM layout 组合，避免全 cluster
+`O(group_count^2)` word crossbar。
+
+资料对照：RVV 也把
+[register gather 与 indexed memory load/store](https://docs.riscv.org/reference/isa/extensions/vector/_attachments/riscv-v-spec.pdf)
+分成不同操作族；Ara 把
+[VLSU、全连接 permutation unit 与 lane execution](https://github.com/pulp-platform/ara/blob/main/docs/source/modules/ara.md)
+分开；Saturn 的
+[VLSU 手册](https://saturn-vectors.org/)展示了 DSP 型 conventional memory 对 indexed
+address generation 的吞吐限制；AraXL 的
+[层级互连研究](https://arxiv.org/abs/2501.10301)说明 lane 数扩大后物理布线会主导；近期
+[短向量 permutation unit 实现](https://arxiv.org/abs/2505.07112)也表明 flat crossbar
+在具体工艺下未必不可接受，所以最终选择仍应来自综合，而不是只看渐近式。
+
 ## 跨组 lane gather 语义 `[延期议题；以下含历史探索]`
 
 跨组 route 的 **encoding 与 controller 接入**仍不在当前路线内；profile v0 的
@@ -153,9 +358,10 @@ DR[lane] = SR[IR[lane]]
 `SR`、`IR` 和 `DR` 是逻辑源、索引和目的视图；它们如何 stripe 到各 SIMD group 的
 group-local VRF row 尚未定义。索引候选由 VRF 提供，因此可以是运行时计算结果。
 8-bit index 能编码 0..255，但一个具体网络只有 `N` 个 source lane，实际合法范围至多
-是 `0..min(255,N-1)`；当前 16-lane 候选只能访问 0..15。跨组 out-of-range 是返回零
-还是形成错误仍是开放项：RVV `vrgather` 返回零，而当前 local `simd_crossbar` 的
-非法索引路径报告 `illegal_o`，两者不能静默等同。
+是 `0..min(255,N-1)`；当前 16-lane 候选只能访问 0..15。上面的 four-pass reference
+选择 RVV-like 的 out-of-range 写零，便于与 flat reference 做行为等价；真正接入 profile
+时仍需把这一规则写进 canonical action。当前 local `simd_crossbar` 的非法索引路径报告
+`illegal_o`，两者不能静默等同。
 
 ### 语义边界：只做 gather
 

@@ -156,7 +156,7 @@ DR[lane] = SR[IR[lane]]
 ```
 
 索引向量 `IR` 由 VRF 提供，允许一对一置换与广播，不支持 scatter；同一条操作内
-不会出现多个源竞争写同一目的。因此调度只需两个 mask：
+不会出现多个源竞争写同一目的。完整模型可派生两个 mask：
 
 ```text
 src_group_mask       本次 gather 读取的源 group
@@ -164,9 +164,11 @@ dst_group_mask       写入的目的 group
 resource_group_mask  src_group_mask | dst_group_mask
 ```
 
-cluster scheduler 需在 action 原子接受前解析三者以完成资源预留。当前跨组 route 已
-从控制闭环中延期；若以后重启，先以固定 16-lane 的 16×16 byte crossbar 为数据通路
-基线，再依据负载决定 index 派生和流水。拓扑探索记录在
+cluster scheduler 需在 action 原子接受前解析三者以完成资源预留；4-group 动态
+index reference 的第一版可以更保守地原子占用完整、对齐的四组 route domain，避免
+在 index capture 前猜测 source mask。当前跨组 route 已从控制闭环中延期；若以后
+重启，应保留既有 16×16 flat byte crossbar 作功能基线，并与固定四次迭代的
+group-word/local-route 候选做等价和综合 A/B。拓扑探索记录在
 [路由](../architecture/routing.md)，本页不重复。
 
 超出单条 gather 寻址范围的逻辑向量由 sequencer 拆成多次操作；多次操作不提供整个

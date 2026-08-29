@@ -100,9 +100,11 @@ SIMD 执行子单元 / 协处理器：
 ```
 
 跨组 gather 若采用动态索引，VRF 中的索引向量是候选来源：一个 byte lane 足以保存
-当前规模的 lane index，因此无需在 SRF 中塞入超宽逐 lane 控制字。但索引来源、
-跨组写回事务和资源预留尚未决定；当前 16×16 full crossbar 只是独立验证的临时
-基线，未接入寄存器数据通路。
+当前规模的 lane index，因此无需在 SRF 中塞入超宽逐 lane 控制字。index 必须以完整
+byte 做范围检查，不能只截低位。4-group iterative gather 候选会在 admission 时同时
+读取并快照 source row 与 index row，再在 engine 内收集 128-bit result，避免分拍写回
+污染重叠源。跨组并行 commit 和资源预留尚未实现；当前 16×16 full crossbar 仍只是
+独立功能基线，新的四次迭代结构也只是综合候选，均未接入寄存器数据通路。
 
 ## 局部路由网络的位置
 
@@ -119,8 +121,9 @@ baseline 避免把它无条件串在每条普通 ALU 路径上；最终是否需
 个 2×2 switch。它能实现任意排列，但有两个性质使它不适合承载动态 gather：控制字
 不是"每个输出选择哪个输入"，需要由目标排列反求合法路由；普通交换单元也不提供
 复制语义。Omega/Bênes 仍只是拓扑研究对象；当前没有选择 Omega 作为跨组实现。
-跨组接入已延期，临时功能基线是能直接实现 `dst[i]=src[index[i]]` 的 16×16 full
-crossbar，理由和非声明范围见[路由](routing.md)。
+跨组接入已延期。临时功能基线是能直接实现 `dst[i]=src[index[i]]` 的 16×16 full
+crossbar；4-group word/local 层次和 time-muxed byte selector 是新的多拍候选，理由和
+非声明范围见[路由](routing.md)。
 
 ## 尚未决定
 
