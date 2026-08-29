@@ -38,11 +38,11 @@ profile v0 覆盖当前 EXEC function，包括：
 - WIDEN、WADD/WSUB、RSHIFT_RND、NCLIP 和 NSLICE；
 - COMPRESS/EXPAND；
 - MRF boolean operation；
-- SIMD4-local GATHER/BROADCAST/zero-fill SLIDE；
+- VRF-indexed byte-lane vector GATHER；
 - 显式 RF writeback、narrow export 和 byte reduction 的合法组合。
 
-local route 使用固定 `PASS_A/BYTE` 语义。MEMORY、CONTROL 与跨组 16-lane gather
-不属于本 profile。
+vector route 使用固定 `PASS_A/BYTE/GATHER` 语义；数据与 index 分别读取 VRF-A/B。
+MEMORY、CONTROL 以及 route 的具体 cluster 拓扑不属于本 profile。
 
 ## 2. 与 action envelope 的边界
 
@@ -421,37 +421,32 @@ count result 由 function 自动产生，不占 base 字段。reduction 仍只�
 
 ```text
 31:28  fmt = 0xd
-27:26  route_op
-25:22  va
+27:26  reserved = 0
+25:22  vs（source-data VRF row）
 21:18  vd
-17:15  mask_sel
-14     write_vrf
-13     export_narrow
-12:10  red
-9:2    route_ctrl
-1:0    reserved = 0
+17:10  reserved = 0
+9:6    vi（byte-index VRF row）
+5:0    reserved = 0
 ```
 
-ROUTE 固定展开成 `SIMD_OP_PASS_A / ELEM_MODE_BYTE / route_enable=1`，只控制每个
-SIMD4 内已经存在的 source-A 4×4 crossbar：
+ROUTE 是纯寄存器形式的向量 gather：数据来自 `vs`，每个目的 byte 的 8-bit
+索引来自 `vi`，结果写入 `vd`。它固定展开成
+`SIMD_OP_PASS_A / ELEM_MODE_BYTE / write_vrf=1 / route_enable=1 /
+ROUTE_OP_GATHER`，canonical `src_a=vs`、`src_b=vi`。旧的 immediate
+`route_index/broadcast_index/slide_amount` 输出全部为零；广播和 slide 由程序构造
+重复或偏移的 VRF 索引向量表达，不再占用指令位。
 
-| `route_op` | `route_ctrl` | canonical route |
-|---:|---|---|
-| `0` | 四个 2-bit index；lane `n` 使用 `[2n+1:2n]` | `GATHER` |
-| `1` | `[1:0]` 为 source lane，`[7:2]=0` | `BROADCAST` |
-| `2` | `[2:0]` 为 amount `0..4`，`[7:3]=0` | `SLIDE_UP` |
-| `3` | `[2:0]` 为 amount `0..4`，`[7:3]=0` | `SLIDE_DOWN` |
-
-SLIDE 的 `route_lower/route_upper` 在本 profile 固定为零，因此是组内 zero-fill
-语义；跨组 boundary operand 不塞进控制字。`PASS_A + write_vrf` 是独立搬运，
-`export_narrow` 与 `red` 则观察 route 后的结果。其他 ALU 与 route 的融合形式暂不
-编码，可先用 ROUTE 临时行再执行下一条 ALU。
+首版不编码 MRF selector、narrow export 或 reduction。目的 group 的有效性来自
+resolved `action_group_mask` sideband；该 sideband 不塞进本字。当前 cluster 接入用
+同一 mask 选择 source/index capture 与 destination commit，并把每个选中 group 整组
+展开为四个 active byte；活动目的的越界索引或指向 inactive source 的索引写确定零，
+inactive 目的不写回。独立 source/destination mask 与更细 predicate 不属于 v0 编码。
 
 示例：
 
 ```text
-EXEC_ROUTE op=gather va=1 vd=2 i0=3 i1=2 i2=1 i3=0
-=> 0xd048406c
+EXEC_ROUTE vs=1 vi=3 vd=2
+=> 0xd04800c0
 ```
 
 ## 5. Canonical expansion
@@ -465,12 +460,12 @@ format 中出现的字段必须规范成零，不继承上一条 entry 的值。
 |---|---|
 | `dispatch_class` | `EXEC` |
 | `route_enable` | ROUTE 为 `1`，其他 format 为 `0` |
-| `route_op/index/broadcast/slide` | ROUTE 由 `route_op/route_ctrl` 派生，其他 format 全零 |
+| `route_op/index/broadcast/slide` | ROUTE 固定 `GATHER`，所有 immediate route control 为零 |
 | `route_lower/route_upper` | 不来自 uword；本 profile 始终输出零 |
-| `mask_enable/mask_addr` | 由 `mask_sel` 派生；MRF_LOGIC 固定 mask disabled |
-| `reduce_enable/reduce_op` | 由 `red` 派生 |
+| `mask_enable/mask_addr` | 通常由 `mask_sel` 派生；ROUTE 与 MRF_LOGIC 固定 disabled |
+| `reduce_enable/reduce_op` | 通常由 `red` 派生；ROUTE 固定 disabled |
 | `use_imm/imm` | 由 `bimm` 或 MAC_RI 派生；WADD_WSUB 使用 inline align |
-| `write_vrf/write_arf/write_mrf` | 由各 format 的显式 write bit 与 operation family 派生 |
+| `write_vrf/write_arf/write_mrf` | 通常由显式 write bit 与 operation family 派生；ROUTE 隐含写 VRF |
 | `elem_mode` | ALU/CMP/SELECT/COMPACT 使用字段；其他 format 固定 BYTE |
 
 format-specific sub-op 先映射成 `simd_op_e`，然后复用
@@ -512,7 +507,7 @@ resource 不属于编码。predecoder/expander 至少根据 format 与 modifier 
 
 - 使用的 VRF-A、VRF-B、ARF 和两个 MRF read port；
 - VRF/ARF/MRF write port；
-- SIMD4-local route fabric；
+- cluster vector-route fabric（ROUTE 同时读取 VRF-A/B）；
 - reduction 与 group-result buffer；
 - immediate extension dependency。
 
@@ -574,8 +569,6 @@ VRF/ARF/MRF、不产生 partial multicast；只有 error completion 获得可靠
     - ABS/PASS 的 `vb` 非零；
     - MNOT 的 `mb` 非零；
     - disabled write 的 destination 非零；
-    - BROADCAST/SLIDE 未使用的 `route_ctrl` 高位非零；
-    - SLIDE amount 超过 SIMD4 支持的 `0..4`；
 12. cached predecode 与 selected-head canonical expansion 对 format、result 或 resource
     的解释不一致。
 
@@ -626,13 +619,21 @@ packet 的格式需求，不能作为“先提交 base、下一拍再补 extensi
 
 ## 8. 延期边界
 
-### 跨组 route
+### ROUTE 的 cluster 执行路径
 
-profile v0 的 ROUTE 只覆盖每个 SIMD4 内的 4×4 source-A crossbar。独立的默认
-16×16 `vsp_lane_gather` 尚未连接四个 group 的 VRF 读取、staging、写回、ownership、
-资源预留和 completion，因此没有可执行编码。它以后仍应进入 EXEC，而不是增加新的
-dispatch class；届时需要与本地 ROUTE 明确区分，并保持外层 `0xb/0xc`
-MEMORY/CONTROL framing 不冲突。
+profile v0 已给 VRF-indexed ROUTE 分配 `fmt=0xd` 并归入 EXEC；cluster wrapper 已将
+这项 canonical action 接到 blocking `vsp_cluster_register_route_engine`。默认
+16-byte route domain 通过 shared VRF arbiter 串行捕获选中 group 的 `vs`/`vi` row，
+完整 snapshot 进入 gather，再逐组 masked commit；最后一个 write 完成后才产生 EXEC
+completion。wrapper 在启动前排空既有 ordinary EXEC/MEMORY/VRF transaction；pending
+route 阻止新 MEMORY，route busy 阻止新 ordinary EXEC/MEMORY，所以 snapshot/commit
+互斥不只依赖外层 strict controller。
+
+仍待完善的是并行 VRF capture/commit、独立 source/destination mask、细粒度 predicate、
+动态 owner state 与精确 resource/dependency metadata、multi-action scheduling；这些属于
+cluster transport/scheduler，不改变本 profile 的 bit layout。旧的 SIMD4-local
+immediate ROUTE 不再具有 profile-v0 编码；已有 4×4 `simd_route` 可以作为叶端实现
+资源保留。
 
 ### MEMORY 与 CONTROL
 

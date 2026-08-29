@@ -28,7 +28,7 @@
 | element width | 每项操作选择的 BYTE/HALF/WORD 宽度。它与 RVV 的 SEW 概念相近，但随 VSP action 直接携带，不是 `vtype` CSR 状态 |
 | mask / predicate | 决定哪些数据位置参与操作的条件。当前 MRF 按 physical byte lane 保存一位，不等同于 RVV 每 logical element 一位的 v0 mask |
 | vector load / store | 在 memory boundary 与 VRF 之间传输向量数据。当前实现是 blocking、顺序 beat，不表示已支持 RVV constant-stride 或 indexed memory operation |
-| lane gather | `DR[i] = SR[IR[i]]`；当前 `i` 是 physical byte lane，重复索引表达 broadcast/multicast，不是 memory gather |
+| lane gather | `DR[i] = SR[IR[i]]`；当前 `i` 是 route-domain-relative physical byte lane，重复索引表达 broadcast/multicast，不是 memory gather |
 | lane slide | 按相邻 physical byte lane 移动数据，并从边界输入或零补入 |
 | lane reduction | 将多个活动 physical byte lane 合成为 32-bit scalar result |
 | lane compress | 按 MRF 的 base-lane mask 稳定收集 physical byte lane |
@@ -47,7 +47,11 @@ HALF/WORD 的 element-level 语义需要由微码组合或后续 action 定义�
 |---|---|
 | physical lane | 最小 8-bit 数据通路 slice。HALF/WORD 是多个 slice 组成的 element，不是新增 lane |
 | SIMD group | 默认由 4 个 physical lane、group-local RF state 和执行路径组成的调度颗粒 |
+| group-local slot | 一个 integration wrapper 内用于选择 SIMD group endpoint 的紧凑序号，范围是 `0..GROUP_COUNT-1`，典型宽度为 `$clog2(GROUP_COUNT)`；它是 mux、arbiter 和 RF subrequest 的局部实现坐标，不是稳定的 group 身份，也不是 VROUTE 索引 |
+| SIMD4 static ID | 每个 SIMD4 group 的不可变 8-bit 拓扑身份，当前由 `SIMD4_BASE_ID + group-local slot` 形成，可覆盖 0..255；它用于集成、可观测性和后续拓扑元数据，不是 PC、context、`group_mask` bit position 或 VROUTE byte index |
 | execution cluster | 多个 SIMD group 的发射、所有权、共享资源和完成集成域；当前参考 profile 是四组，不是固定架构上限 |
+| route domain | 一次 register gather 共享同一 byte-index 坐标空间的一组 SIMD group；当前已接入 profile 以一个四组 cluster 作为一个 domain，共 16 个 byte slot |
+| route-domain-relative byte index | `vi` VRF row 中的 8-bit 元素；它选择当前 route domain 内的源 byte，默认映射为 `4 * group-local slot + lane offset`。当前四组 domain 的合法值为 0..15，16..255 不截断、不回绕，而按 invalid index 处理 |
 | Vector ALU / execution path | 执行逐元素算术、逻辑、局部 route 和 lane reduction 的路径 |
 | VRF row | 一个 SIMD group 内的 4×8-bit 物理寄存器片段，不等同于一个完整 RVV vector register |
 | accumulator register file (`ARF`) | VSP 特有的宽累加状态；当前每个 physical lane 保存一个 32-bit accumulator |
@@ -60,6 +64,12 @@ HALF/WORD 的 element-level 语义需要由微码组合或后续 action 定义�
 
 `Group` 和 `Cluster` 只在已经给出上述限定的局部上下文中简写。面向软件的描述优先谈
 vector operation、element 和 register，不暴露不必要的物理分组。
+
+这三个编号不能混用：group-local slot 选择当前 wrapper 内的 endpoint，SIMD4 static ID
+标识物理 group，route-domain-relative byte index 选择一次 VROUTE 可见的源 byte。例如
+当前四组 domain 中，byte index 6 表示 local slot 1 的 lane offset 2；它不表示 static
+ID 6。即使以后一个 route domain 由 static ID 不连续的 group 组成，VROUTE 索引仍按该
+domain 的局部 byte 排列解释。
 
 ## 4. 控制与事务协议
 
@@ -95,6 +105,16 @@ vector operation、element 和 register，不暴露不必要的物理分组。
 | ordered dmem model | `dmem_req/rsp` 的 simulation-only byte-array endpoint；可接受多个无 ID request，但只按 request 顺序返回，不表示物理 SRAM/cache 已实现 |
 | request / response / completion | decoupled 协议中的请求、带数据返回和事务完成通知 |
 | subrequest / beat | 一个 command 向 group endpoint 或 memory endpoint 拆出的原子传输 |
+
+当前 `EXEC` VROUTE 的 `group_mask` 是 action envelope 中已经解析的 group mask，不来自
+`fmt=0xd` 的指令字段，也不引用 MRF。首版把每个选中 bit 展开为该 SIMD4 group 的四个
+destination byte，并只捕获这些 group 的 `vs`/`vi` VRF row。未选中的目的 group 不写回
+并保留原 `vd`，其源 byte 也不进入本次 route domain 的有效源集合。选中的目的 byte 若
+索引为 16..255，或指向未选中的源 byte，则确定性写零并在 route engine 内形成
+invalid-element 诊断。当前 group endpoint 回显全一 read request mask，VRF 不保存 byte
+validity，因此没有选中 group 内的 tail-undisturbed predicate；OOB 只能形成零填充。
+统一 EXEC completion 也尚未暴露逐 byte invalid 诊断。这个 whole-group profile 是现有
+集成合同，不排除后续 action metadata/MRF path 增加独立 lane-active mask。
 
 协议细节中可以在首次定义后使用 parent command / child request 来说明层级，但概览和
 编程语义优先使用 command、subrequest、beat、client 和 endpoint，避免把实现树当成

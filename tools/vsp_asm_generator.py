@@ -151,31 +151,11 @@ class VSPAsmBuilder:
         """无符号最大值"""
         return self.alu("max_u", vd, va, vb, mode)
 
-    # === Route操作 ===
+    # === Vector route操作 ===
 
-    def route_gather(self, vd: int, va: int, i0: int, i1: int, i2: int, i3: int):
-        """Gather操作（SIMD4内）"""
-        self.lines.append(
-            f"EXEC_ROUTE op=gather va={va} vd={vd} "
-            f"i0={i0} i1={i1} i2={i2} i3={i3}")
-        return self
-
-    def route_broadcast(self, vd: int, va: int, lane: int):
-        """Broadcast操作"""
-        self.lines.append(
-            f"EXEC_ROUTE op=broadcast va={va} vd={vd} lane={lane}")
-        return self
-
-    def route_slide_up(self, vd: int, va: int, amount: int):
-        """向上滑动"""
-        self.lines.append(
-            f"EXEC_ROUTE op=slide_up va={va} vd={vd} amount={amount}")
-        return self
-
-    def route_slide_down(self, vd: int, va: int, amount: int):
-        """向下滑动"""
-        self.lines.append(
-            f"EXEC_ROUTE op=slide_down va={va} vd={vd} amount={amount}")
+    def vroute(self, vd: int, vs: int, vi: int):
+        """用VRF索引行vi对VRF数据行vs执行向量gather。"""
+        self.lines.append(f"EXEC_ROUTE vs={vs} vi={vi} vd={vd}")
         return self
 
     # === Reduction操作 ===
@@ -371,6 +351,8 @@ def generate_sliding_window_test():
     v_right = 2
     v_sum = 3
     v_result = 4
+    v_index_left = 5
+    v_index_right = 6
 
     builder.smovi(1, 0x1000)
     builder.blank()
@@ -380,13 +362,15 @@ def generate_sliding_window_test():
     builder.vload(v_center, base_reg=1, offset=0)
     builder.blank()
 
-    # 通过slide创建左右邻居
-    builder.comment("Create left neighbor via slide_down")
-    builder.route_slide_down(v_left, v_center, 1)
+    # 通过VRF索引向量创建左右邻居。索引行由调用者/加载阶段准备；
+    # 广播和slide不再占用立即数route编码。
+    builder.comment("VRF5/VRF6 contain the left/right gather indices")
+    builder.comment("Create left neighbor via the VRF5 index vector")
+    builder.vroute(v_left, v_center, v_index_left)
     builder.blank()
 
-    builder.comment("Create right neighbor via slide_up")
-    builder.route_slide_up(v_right, v_center, 1)
+    builder.comment("Create right neighbor via the VRF6 index vector")
+    builder.vroute(v_right, v_center, v_index_right)
     builder.blank()
 
     # 三路加法

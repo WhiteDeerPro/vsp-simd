@@ -337,6 +337,13 @@ int main(int argc, char** argv) {
   expect_eq("empty tracker after reset", 0, dut.tracker_occupancy_o);
   expect_eq("empty ingress after reset", 0, dut.group_ingress_valid_o);
   expect_eq("no protocol error after reset", 0, dut.protocol_error_o);
+  expect_eq("SIMD4 group0 static ID", 0, dut.simd4_id_o & 0xffu);
+  expect_eq("SIMD4 group1 static ID", 1,
+            (dut.simd4_id_o >> 8) & 0xffu);
+  expect_eq("SIMD4 group2 static ID", 2,
+            (dut.simd4_id_o >> 16) & 0xffu);
+  expect_eq("SIMD4 group3 static ID", 3,
+            (dut.simd4_id_o >> 24) & 0xffu);
 
   std::array<uint32_t, 4> expected_a{};
   std::array<uint32_t, 4> expected_sum{};

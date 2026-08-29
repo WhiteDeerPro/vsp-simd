@@ -28,7 +28,7 @@ VSP / SoC 子系统（未来）
     ├── sequencer address-state engine（已接入 strict slot-0 program path）
     ├── ordered I-side fetch 仿真模型（simulation only）
     ├── ordered dmem 仿真模型（可配置 FIFO outstanding；simulation only）
-    ├── lane route（组内 crossbar/uword 已接通；4-group gather engine 已独立验证）
+    ├── lane route（组内 crossbar；4-group/16-byte VRF-indexed VROUTE 已接入）
     └── admission metadata、动态 owner/resource、并发 action-window binding
         与 loop/redirect（待实现）
 ```
@@ -54,10 +54,11 @@ VSP / SoC 子系统（未来）
   4-group route domain 中快照 16-byte source、16-byte index 和 16-bit mask，以
   4×4 32-bit multicast word crossbar 和目的侧 byte selector 固定四次完成动态
   register gather；支持重复 index、full-byte OOB 写零、结果背压与 identity 保持，
-  尚未接入 VRF/编码；
+  作为未接入的多 pass 比较实现保留；
 - SIMD group 内的一份直接 crossbar，支持重复索引的 gather、lane broadcast 与 permutation；
-- 单字 `EXEC_ROUTE` 编制与 `fmt=0xd` canonical expansion，已沿严格 action 控制链
-  驱动每个 SIMD4 的本地 crossbar；
+- 单字 `EXEC_ROUTE vs/vi/vd` 编制与 `fmt=0xd` canonical expansion：数据和逐 byte
+  索引均来自 VRF，立即数 route control 已取消；当前 cluster 以 blocking engine 经共享
+  VRF arbiter 串行捕获 source/index、完成 16-byte gather，再逐组 masked commit；
 - 可接相邻 SIMD group 边界的双向 slide，用于组成更宽的逻辑执行组；
 - mask-aware 的组合 reduction tree，可求和、最小值、最大值和获胜 lane；
 - 由 `ABSDIFF_U + REDUCE_SUM_U` 组合出的 SAD 验证内核；
@@ -100,7 +101,7 @@ VSP / SoC 子系统（未来）
   `SMOVI/SADD/SADDI` CONTROL state、`VLOAD/VSTORE` MEMORY、opaque record 或 raw word
   编制成 hex/listing/symbol，写入可替换的 control-store
   行为模型，从参数化 byte PC 顺序读取，并跨 bundle 组装为单 record ready/valid；
-  工具提供本地 `EXEC_ROUTE` 与 `EXEC_REDUCE` pseudo-op；
+  工具提供 VRF-indexed `EXEC_ROUTE` 与 `EXEC_REDUCE` pseudo-op；
 - 独立 `vsp_vector_memory_engine`：VRF-only，一个 active command、一个
   outstanding memory beat，按 group 升序在连续 4-byte beat 上执行
   LOAD/STORE，并报告 stop-on-first 的 partial masks/bytes；
@@ -134,14 +135,17 @@ state base。它仍只消费 slot 0；三 record admission metadata、ordered wi
 engine 并发 binding、queue-head late-decode 重排尚未接通。因此该 reference
 integration 可以验证程序顺序、地址状态、数据搬运和完成合同，但还不是并发
 sequencer，也不代表最终吞吐组织。
-跨组 lane 路由不再候选为与 MEMORY 并列的独立 command class。当前候选是寄存器形式的
-gather：`DR[lane] = SR[IR[lane]]`，其中索引向量 IR 由 VRF 提供，允许一对一置换
-与广播，不支持 scatter（同一操作内不会出现多通道写同一通道）。它属于 Vector ALU
-内的一个 routing 级；`vsp_lane_gather` 已按固定 16×16 crossbar 提供临时基线 RTL，
-word-first four-pass engine 也已提供 snapshot/result transaction reference；但并行
-VRF capture/commit、资源预留和 canonical dynamic-index action 未定义，因此尚未接入
-数据通路。
-这与已经接通的 SIMD4-local `fmt=0xd` ROUTE 是两个不同层次。
+跨组 lane 路由不再候选为与 MEMORY 并列的独立 command class。`fmt=0xd` 现为寄存器
+形式的 gather：`DR[lane] = SR[IR[lane]]`，其中 SR/IR/DR 都是 VRF row，允许一对一
+置换与广播，不支持 scatter（同一操作内不会出现多通道写同一通道）。它属于 Vector
+ALU/cluster 的 EXEC routing path；`vsp_cluster_register_route_engine` 已经通过共享 VRF
+arbiter 串行捕获选中 group 的 source/index row，使用 `vsp_vrf_gather` 形成 16-byte
+结果，逐组 masked commit 后进入 cluster completion。memory wrapper 会先排空既有
+ordinary EXEC/MEMORY/VRF transaction；pending route 阻止新 MEMORY，route busy 阻止
+新 ordinary EXEC/MEMORY，因而安全性不只依赖外层 strict controller。当前仍是
+single-active blocking 实现；并行 capture/commit、独立 source/destination mask、
+细粒度 predicate 和并发 resource-aware scheduling 尚未完善。`vsp_lane_gather` 与
+word-first four-pass engine 只保留为未接入的物理实现比较。
 
 `vsp_vector_memory_engine` 已接入 reference class router，但尚未接入 local SRAM 或
 DMA，不表示整个存储路径已闭合。

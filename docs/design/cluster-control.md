@@ -139,24 +139,40 @@ credit 决定，且不会产生 group fire。
 因此现有 `cfg_*` 写优先行为不能在 cluster 中静默吞掉一条已经接受的执行写；
 外层控制器必须在接受前把这种冲突转换成 backpressure。
 
-## 6. 跨组操作 `[候选语义，RTL 待实现]`
+## 6. 跨组操作 `[blocking RTL 事实 + 调度扩展]`
 
-普通逐元素操作只占用目的 group。涉及边界或跨组路由时还需要声明更大的资源集合：
+普通逐元素操作只占用目的 group。涉及边界或跨组路由时需要声明更大的资源集合：
 
 - 相邻 `SLIDE` 必须同时拥有并读取提供边界值的相邻 group，或者明确选择来自
   ingress/zero 的边界；
 - 跨组 gather 是 cluster 操作，源和目的 group 的并集在该事务期间被占用；
 - 跨组路由采用独立阶段和显式写回，不无条件串入普通 ALU 组合路径。
 
-跨组路由不再候选为与 MEMORY 并列的独立 command class，也不再预设以 row packet
-为颗粒。当前用寄存器形式的 lane gather 描述候选语义：
+跨组路由不是与 MEMORY 并列的独立 command class。当前 `fmt=0xd` 已把寄存器形式的
+lane gather 编入 EXEC，cluster wrapper 在普通 per-group EXEC 入口之前将其分流到
+`vsp_cluster_register_route_engine`：
 
 ```text
 DR[lane] = SR[IR[lane]]
 ```
 
 索引向量 `IR` 由 VRF 提供，允许一对一置换与广播，不支持 scatter；同一条操作内
-不会出现多个源竞争写同一目的。完整模型可派生两个 mask：
+不会出现多个源竞争写同一目的。当前默认四组 route domain 中，engine 经共享 VRF
+arbiter 串行捕获选中 group 的 source row，再捕获 index row；完整 snapshot 进入
+16-byte `vsp_vrf_gather`，结果随后逐组 masked commit。所有读取先于第一次写回，
+所以 `vd==vs` 或 `vd==vi` 安全；completion 在最后一项选中 group write 完成后产生。
+
+首版只使用一份 resolved `action_group_mask`：每个 bit 同时决定该 group 的 source/index
+capture 和 destination commit，并整组展开成四个 destination byte。未选中的目的保持
+旧值；active destination 的 index 越界或指向未选中/无效 source 时确定性写零。engine
+会合并 VRF response mask，但当前 endpoint 只回显全一 request mask；指令也不编码 MRF
+selector 或逐 byte predicate，所以选中组内 tail 目前只能零填充。当前 wrapper 自身已有
+drain/互斥门控：pending VROUTE 等待既有 EXEC queue/
+tracker/completion、MEMORY 和 VRF arbiter 排空，同时阻止新 MEMORY；route busy 期间阻止
+普通 EXEC/MEMORY admission。外层 strict controller 还保持 program order，但不是
+snapshot/commit 不被交错的唯一保证。当前尚未形成可安全放宽该互斥的精确资源调度。
+
+更完整的并发调度模型仍可派生独立 mask：
 
 ```text
 src_group_mask       本次 gather 读取的源 group
@@ -164,12 +180,12 @@ dst_group_mask       写入的目的 group
 resource_group_mask  src_group_mask | dst_group_mask
 ```
 
-cluster scheduler 需在 action 原子接受前解析三者以完成资源预留；4-group 动态
-index reference 的第一版可以更保守地原子占用完整、对齐的四组 route domain，避免
-在 index capture 前猜测 source mask。当前跨组 route 已从控制闭环中延期；若以后
-重启，应保留既有 16×16 flat byte crossbar 作功能基线，并与固定四次迭代的
-group-word/local-route 候选做等价和综合 A/B。拓扑探索记录在
-[路由](../architecture/routing.md)，本页不重复。
+未来 scheduler 可在 action 原子接受前解析这些 mask，完成精确资源预留；在 index
+capture 前不能推导真实 source 集合时，也可以显式提供 source mask，或保守占用完整
+route domain。并行 VRF capture/commit、独立 source/destination mask、细粒度 predicate
+和 resource-aware multi-action scheduling 都是当前 blocking closure 之后的增强。
+`vsp_lane_gather` 与固定四次 group-word/local-route 继续作为综合 A/B reference；拓扑
+探索记录在[路由](../architecture/routing.md)，本页不重复。
 
 超出单条 gather 寻址范围的逻辑向量由 sequencer 拆成多次操作；多次操作不提供整个
 向量的原地原子性，源/目的重叠时需要 scratch/ping-pong 或编译器 cycle
@@ -349,12 +365,14 @@ per-group 1-entry EXEC ingress
   的当前全局 `END` 改用 `queue_empty && tracker_empty && !mem_busy && !arbiter_busy`
   作为更强的静止条件。
 
-它还没有 class router、动态 owner table、barrier、MEMORY parent、跨组 gather、
-跨 group boundary staging 或 host/OS completion。因此此模块只称 cluster execution integration；
-这些能力中的 strict class routing 和最小 `END` 位于外层 reference controller，
-不会反向改变本模块边界。
+`simd_cluster_exec` 本体还没有 class router、动态 owner table、barrier、MEMORY parent、
+跨 group boundary staging 或 host/OS completion。因此此模块只称 cluster execution
+integration；strict class routing 和最小 `END` 位于外层 reference controller。跨组
+VROUTE 也不在本体的 per-group ingress 中执行，而由
+`vsp_cluster_memory_wrapper` 内的 register-route engine 截获并接回同一 EXEC
+completion boundary，不反向改变本模块的 ordinary EXEC 边界。
 
-## 12. 当前 decoded MEMORY integration `[RTL事实 + 里程碑基线]`
+## 12. 当前 decoded MEMORY / register-route integration `[RTL事实 + 里程碑基线]`
 
 `vsp_cluster_vrf_arbiter` 为多个 VRF-only parent client 提供一个共享 cluster child
 边界。它以 RR 在 client read/write request lane 间选择，一次只接受一个 child；
@@ -365,23 +383,31 @@ ownership、scoreboard 或 program-order 状态。
 `vsp_cluster_memory_wrapper` 组合：
 
 ```text
-decoded MEMORY → vsp_vector_memory_engine ─┐
-                                      ├→ shared VRF arbiter
-decoded EXEC → cluster execution integration ─────┘       ↓
-                                      group VRF state-read/write
+decoded MEMORY → vector memory engine ─ client 0 ─┐
+register VROUTE → register-route engine ─ client 1 ┼→ shared VRF arbiter
+                                                   └→ group VRF state-read/write
+
+decoded ordinary EXEC → cluster execution integration → group datapath/RF
 
 dmem_* ↔ external data-memory logical boundary
 ```
 
-`vsp_cluster_memory_wrapper` 以单个 MEMORY client 使用该 arbiter。EXEC 与
-MEMORY 各有独立 command/completion 端口，没有 common class router、统一
+`vsp_cluster_memory_wrapper` 以 MEMORY engine 和 register-route engine 两个独立 client
+使用该 arbiter；每次只允许一个 client 的一个 VRF subrequest 前进。EXEC 与 MEMORY
+各有独立 command/completion 端口，没有 common class router、统一
 error/completion mux 或 program-order enforcement。reference test 通过等待 LOAD
 completion 后提交 EXEC、再等待其 completion 后提交 STORE 来建立顺序；wrapper
 不会从两个入口自行推导数据依赖。
 
-arbiter 的 `CLIENT_COUNT` 仍是参数，多 client 仲裁已由其单元测试覆盖，为以后并接
-其他 VRF-only engine 留出边界；当前 cluster 集成只挂一个 client。跨组 gather 不使用
-这条边界：它是 Vector ALU 内的一级，不作为独立 client 竞争 group VRF 端点。
+wrapper 对 VROUTE 另有显式 admission interlock：route 只在 ordinary EXEC queue/
+tracker/completion、MEMORY engine/completion 与 VRF arbiter 全部排空后启动；pending
+route 优先阻止新 MEMORY，route busy 则阻止新 ordinary EXEC/MEMORY。既有事务先排空，
+不会在 route snapshot 或 commit 中途穿插。这项互斥独立于外层 strict class controller。
+
+arbiter 的 `CLIENT_COUNT` 仍是参数，多 client 仲裁已由单元测试覆盖。跨组 gather
+当前正是第二个 VRF-only client：它以 blocking transaction 串行捕获 `vs/vi` rows、
+组合 gather、再串行写回 `vd`。这是 wrapper 内的实现 client，不会把 VROUTE 改成
+新的 dispatch class；并行 RF 端口或更细粒度资源仲裁可以以后替换这段 transport。
 
 owner snapshot 仍由外部输入，EXEC resource grant 在此 reference integration 中固定为全可用；
 动态 owner/resource controller 尚未实现。`dmem_*`
@@ -460,8 +486,9 @@ engine 并发。
    action；把外部 owner/grant 配置逐步收进有状态 controller；
 3. 保留当前 vector-memory→shared VRF arbiter→wrapper 接线，在 `dmem_*` 下游比较并接入
    物理 local SRAM、cache/MMU adapter 或 DMA 边界；
-4. 跨组 route 暂不进入当前实现序列；出现负载依据后，以独立 16×16 byte crossbar
-   实验重新评估，不回侵现有 class/retire 合同；
+4. 保留已接入的 blocking 16-byte VROUTE 作为语义基线；出现吞吐依据后，比较并行
+   capture/commit、独立 source/destination mask、细粒度 predicate 与替代 crossbar
+   hierarchy，不回侵现有 class/retire 合同；
 5. 在 vector memory engine 下游接 DMA/地址空间 adapter，再依据实测比较二维地址
    与多 outstanding，不在
    SIMD group 内处理 cache coherence；

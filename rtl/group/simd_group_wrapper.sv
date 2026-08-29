@@ -7,6 +7,10 @@ module simd_group_wrapper #(
   parameter int MREGS         = 4,
   parameter int CONTEXT_COUNT = 2,
   parameter int TAG_W         = 8,
+  // Stable topology identity. This is not the cluster-local array slot and
+  // therefore remains eight bits even in a four-group cluster.
+  parameter int SIMD4_ID_W    = 8,
+  parameter logic [SIMD4_ID_W-1:0] SIMD4_ID = '0,
   parameter int VRF_ADDR_W = (VREGS <= 2) ? 1 : $clog2(VREGS),
   parameter int ARF_ADDR_W = (AREGS <= 2) ? 1 : $clog2(AREGS),
   parameter int MRF_ADDR_W = (MREGS <= 2) ? 1 : $clog2(MREGS),
@@ -21,6 +25,8 @@ module simd_group_wrapper #(
 ) (
   input  logic clk_i,
   input  logic rst_ni,
+
+  output logic [SIMD4_ID_W-1:0]            simd4_id_o,
 
   // Canonical, already-decoded SIMD execution transaction.  This interface
   // deliberately stays on the decoded side of any future compact-uword
@@ -125,6 +131,8 @@ module simd_group_wrapper #(
   output logic [OFFSET_W-1:0]               rsp_count_o
 );
   import simd_pkg::*;
+
+  assign simd4_id_o = SIMD4_ID;
 
   // Round-robin next preference: 0=EXEC, 1=state-write, 2=state-read.
   logic [1:0] request_rr_q;
@@ -520,6 +528,7 @@ module simd_group_wrapper #(
   assign rsp_count_o = rsp_count_q;
 
   initial begin
+    if (SIMD4_ID_W != 8) $error("SIMD4 identity is defined as 8 bits");
     if (CONTEXT_COUNT < 1) $error("CONTEXT_COUNT must be positive");
     if (TAG_W < 1) $error("TAG_W must be positive");
     if (ACC_W < ELEM_W) $error("ACC_W must be at least ELEM_W");

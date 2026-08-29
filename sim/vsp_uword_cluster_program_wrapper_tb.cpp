@@ -381,7 +381,7 @@ int main(int argc, char** argv) {
 
   const std::vector<uint32_t> program = read_hex(argv[1]);
   const std::vector<uint32_t> golden = {
-      0x17822210U, 0x10020430U, 0x00000007U, 0xd48c6004U,
+      0x17822210U, 0x10020430U, 0x00000007U, 0xd08c0040U,
       0xc0000000U};
   if (program != golden) {
     std::cerr << "generated executable example differs from golden\n";
@@ -418,16 +418,10 @@ int main(int argc, char** argv) {
   }
   check_completion(normal.completions[3], kControl, 1, 0x43, 0,
                    kStatusOk, 0, true, "normal END");
-  expect_eq("normal exported two selected groups", 2,
+  // VROUTE commits vd in the distributed VRF and has no implicit narrow
+  // export. A later explicit operation may export or store that row.
+  expect_eq("normal vector route has no implicit export", 0,
             normal.results.size());
-  for (const Result& result : normal.results) {
-    expect_eq("result context captured", 1, result.context);
-    expect_eq("route result tag", 0x42, result.tag);
-    expect_eq("route result value", 0x07070707U, result.narrow);
-    expect_eq("route result lane mask", 0xf, result.narrow_mask);
-    expect_eq("result group belongs to mask", 1,
-              result.group == 0 || result.group == 2);
-  }
   expect_eq("normal issued no data-memory request", 0,
             normal.dmem_requests);
 
@@ -549,7 +543,7 @@ int main(int argc, char** argv) {
   // END is rejected, younger words are drained without entering EXEC, and the
   // program reports failure.
   const std::vector<uint32_t> early_end = {
-      0xc0000000U, 0xd48c6004U};
+      0xc0000000U, 0xd08c0040U};
   program_store(dut, early_end);
   launch(dut, kBasePc + 8, 0, 0x5, 0xa0);
   Run early = run_until_terminal(dut);

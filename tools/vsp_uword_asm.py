@@ -61,12 +61,6 @@ REDUCE_SELECTORS = {
     "max_u": 5,
     "max_s": 6,
 }
-ROUTE_OPS = {
-    "gather": 0,
-    "broadcast": 1,
-    "slide_up": 2,
-    "slide_down": 3,
-}
 STATE_OPS = {
     "smovi": 0,
     "sadd": 1,
@@ -439,18 +433,31 @@ def encode_reduce(tokens: list[str], line_number: int) -> list[int]:
 
 
 def encode_route(tokens: list[str], line_number: int) -> list[int]:
-    """Encode one SIMD4-local source-A route operation."""
+    """Encode one VRF-indexed vector gather operation."""
     named, positional = split_arguments(tokens, line_number)
     if positional:
         raise AssemblyError(
             f"line {line_number}: route fields must use key=value syntax"
         )
 
-    op_name = take_named(named, "op", None, line_number).lower()
-    if op_name not in ROUTE_OPS:
-        raise AssemblyError(f"line {line_number}: unknown route op {op_name!r}")
-    va = require_range(
-        "va", parse_integer(take_named(named, "va", None, line_number),
+    if "vs" in named and "va" in named:
+        raise AssemblyError(
+            f"line {line_number}: route source may use vs or legacy va, not both"
+        )
+    if "vs" in named:
+        source_name = "vs"
+    elif "va" in named:
+        source_name = "va"
+    else:
+        raise AssemblyError(f"line {line_number}: missing required field 'vs'")
+    vs = require_range(
+        source_name,
+        parse_integer(take_named(named, source_name, None, line_number),
+                      line_number),
+        0, 15, line_number,
+    )
+    vi = require_range(
+        "vi", parse_integer(take_named(named, "vi", None, line_number),
                             line_number),
         0, 15, line_number,
     )
@@ -459,62 +466,15 @@ def encode_route(tokens: list[str], line_number: int) -> list[int]:
                             line_number),
         0, 15, line_number,
     )
-    mask_name = take_named(named, "mask", "none", line_number).lower()
-    reduce_name = take_named(named, "reduce", "none", line_number).lower()
-    if mask_name not in MASK_SELECTORS:
-        raise AssemblyError(f"line {line_number}: unknown mask selector {mask_name!r}")
-    if reduce_name not in REDUCE_SELECTORS:
-        raise AssemblyError(f"line {line_number}: unknown reduction {reduce_name!r}")
-    write_vrf = parse_boolean(
-        take_named(named, "write", "1", line_number), "write", line_number
-    )
-    export_narrow = parse_boolean(
-        take_named(named, "export", "0", line_number), "export", line_number
-    )
-    if not write_vrf and vd != 0:
-        raise AssemblyError(
-            f"line {line_number}: vd must be zero when write=0"
-        )
-
-    route_ctrl = 0
-    if op_name == "gather":
-        for lane in range(4):
-            source = require_range(
-                f"i{lane}",
-                parse_integer(take_named(named, f"i{lane}", None, line_number),
-                              line_number),
-                0, 3, line_number,
-            )
-            route_ctrl |= source << (2 * lane)
-    elif op_name == "broadcast":
-        route_ctrl = require_range(
-            "lane",
-            parse_integer(take_named(named, "lane", None, line_number),
-                          line_number),
-            0, 3, line_number,
-        )
-    else:
-        route_ctrl = require_range(
-            "amount",
-            parse_integer(take_named(named, "amount", None, line_number),
-                          line_number),
-            0, 4, line_number,
-        )
 
     if named:
         unknown = ", ".join(sorted(named))
         raise AssemblyError(f"line {line_number}: unknown route fields: {unknown}")
 
-    base = 0
-    base |= 0xD << 28
-    base |= ROUTE_OPS[op_name] << 26
-    base |= va << 22
+    base = 0xD << 28
+    base |= vs << 22
     base |= vd << 18
-    base |= MASK_SELECTORS[mask_name] << 15
-    base |= write_vrf << 14
-    base |= export_narrow << 13
-    base |= REDUCE_SELECTORS[reduce_name] << 10
-    base |= route_ctrl << 2
+    base |= vi << 6
     return [base]
 
 

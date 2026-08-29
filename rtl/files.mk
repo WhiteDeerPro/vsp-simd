@@ -28,10 +28,13 @@ RTL_ROUTE := rtl/permute/simd_route.sv
 RTL_COMPACT := rtl/permute/simd_compact.sv
 RTL_BENES := rtl/interconnect/benes_network.sv
 RTL_LANE_GATHER := rtl/interconnect/vsp_lane_gather.sv
+RTL_VRF_GATHER := rtl/interconnect/vsp_vrf_gather.sv
 RTL_WORD_FIRST_GATHER_PHASE := \
 		rtl/interconnect/vsp_word_first_gather_phase.sv
 RTL_FOUR_PASS_GATHER_ENGINE := \
 		rtl/cluster/vsp_four_pass_gather_engine.sv
+RTL_CLUSTER_REGISTER_ROUTE_ENGINE := \
+		rtl/cluster/vsp_cluster_register_route_engine.sv
 RTL_ISSUE_DISPATCH := rtl/cluster/simd_issue_dispatch.sv
 RTL_ISSUE_QUEUE := rtl/cluster/simd_issue_queue.sv
 RTL_CLUSTER_ISSUE_FRONTEND := rtl/cluster/simd_cluster_issue_frontend.sv
@@ -112,6 +115,7 @@ ROUTE_RTL := $(RTL_PKG) $(RTL_CROSSBAR) $(RTL_ROUTE)
 # does not pull in simd_pkg: it defines its own mode encodings and is not a
 # datapath operation.
 LANE_GATHER_RTL := $(RTL_CROSSBAR) $(RTL_LANE_GATHER)
+VRF_GATHER_RTL := $(RTL_VRF_GATHER)
 WORD_FIRST_GATHER_PHASE_RTL := $(RTL_CROSSBAR) \
 		$(RTL_WORD_FIRST_GATHER_PHASE)
 FOUR_PASS_GATHER_ENGINE_RTL := $(WORD_FIRST_GATHER_PHASE_RTL) \
@@ -131,6 +135,7 @@ CLUSTER_EXEC_RTL := $(GROUP_WRAPPER_RTL) $(RTL_ISSUE_QUEUE) \
 		$(RTL_CLUSTER_EXEC)
 CLUSTER_MEMORY_WRAPPER_RTL := $(CLUSTER_EXEC_RTL) $(RTL_VSP_PKG) \
 		$(RTL_CLUSTER_VRF_ARBITER) $(RTL_VECTOR_MEMORY_ENGINE) \
+		$(RTL_VRF_GATHER) $(RTL_CLUSTER_REGISTER_ROUTE_ENGINE) \
 		$(RTL_CLUSTER_MEMORY_WRAPPER)
 CLUSTER_CONTROLLER_WRAPPER_RTL := $(CLUSTER_MEMORY_WRAPPER_RTL) \
 		$(RTL_VSP_ACTION_PKG) $(RTL_VSP_EXEC_UWORD_PKG) \

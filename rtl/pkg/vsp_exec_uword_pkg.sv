@@ -3,8 +3,9 @@ package vsp_exec_uword_pkg;
   // the canonical EXEC boundary.  Profile v0 deliberately targets the
   // current SIMD4 shape (8-bit physical lanes, 32-bit accumulators,
   // 16/8/4 VRF/ARF/MRF rows).  It is not an architectural instruction-set
-  // encoding. Format D controls only the group-local source-A route; the
-  // independent 16-lane cross-group candidate is outside this package.
+  // encoding. Format D names a register-indexed vector route action: both
+  // the source data row and the byte-index row are VRF operands.  Its cluster
+  // capture/route/commit implementation is handled downstream of this package.
   localparam int VSP_EXEC_UWORD_W = 32;
   localparam int VSP_EXEC_UWORD_FORMAT_W = 4;
 

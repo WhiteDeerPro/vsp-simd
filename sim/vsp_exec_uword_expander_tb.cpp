@@ -184,14 +184,10 @@ uint32_t enc_mrf(unsigned mask_op, unsigned ma, unsigned mb, unsigned md,
          (uint32_t(export_narrow) << 13) | reserved;
 }
 
-uint32_t enc_route(unsigned route_op, unsigned va, unsigned vd,
-                   unsigned mask, bool write_vrf, bool export_narrow,
-                   unsigned reduce, unsigned route_ctrl,
-                   unsigned reserved = 0) {
-  return (kFmtRoute << 28) | (route_op << 26) | (va << 22) | (vd << 18) |
-         (mask << 15) | (uint32_t(write_vrf) << 14) |
-         (uint32_t(export_narrow) << 13) | (reduce << 10) |
-         (route_ctrl << 2) | reserved;
+uint32_t enc_route(unsigned vs, unsigned vi, unsigned vd,
+                   uint32_t reserved = 0) {
+  return (kFmtRoute << 28) | (vs << 22) | (vd << 18) | (vi << 6) |
+         reserved;
 }
 
 struct Expected {
@@ -512,40 +508,13 @@ void test_golden_formats(Vvsp_exec_uword_expander& dut) {
   expected.op = kOpPassA;
   expected.mode = kModeByte;
   expected.src_a = 1;
+  expected.src_b = 3;
   expected.dst_vrf = 2;
   expected.write_vrf = true;
   expected.route_enable = true;
   expected.route_op = 0;
-  expected.route_index = 0x1b;
-  expect_legal(dut, "fmtD ROUTE gather",
-               enc_route(0, 1, 2, 0, true, false, 0, 0x1b),
-               false, 0, false, expected);
-
-  expected = {};
-  expected.op = kOpPassA;
-  expected.mode = kModeByte;
-  expected.src_a = 3;
-  expected.export_narrow = true;
-  expected.route_enable = true;
-  expected.route_op = 1;
-  expected.route_broadcast = 2;
-  apply_mask(expected, 1);
-  apply_reduce(expected, 3);
-  expect_legal(dut, "fmtD ROUTE broadcast result",
-               enc_route(1, 3, 0, 1, false, true, 3, 2),
-               false, 0, false, expected);
-
-  expected = {};
-  expected.op = kOpPassA;
-  expected.mode = kModeByte;
-  expected.src_a = 4;
-  expected.dst_vrf = 5;
-  expected.write_vrf = true;
-  expected.route_enable = true;
-  expected.route_op = 2;
-  expected.route_slide = 4;
-  expect_legal(dut, "fmtD ROUTE zero-fill slide",
-               enc_route(2, 4, 5, 0, true, false, 0, 4),
+  expect_legal(dut, "fmtD VRF-indexed ROUTE",
+               enc_route(1, 3, 2),
                false, 0, false, expected);
 }
 
@@ -723,18 +692,14 @@ void test_illegal_and_priority(Vvsp_exec_uword_expander& dut) {
   expect_illegal(dut, "MNOT has second source",
                  enc_mrf(3, 1, 2, 0, 0, false, false, false),
                  false, 0, false, true, kErrUnused);
-  expect_illegal(dut, "ROUTE reserved bits",
-                 enc_route(0, 1, 2, 0, true, false, 0, 0x1b, 1),
-                 false, 0, false, true, kErrReserved);
-  expect_illegal(dut, "ROUTE broadcast unused control",
-                 enc_route(1, 1, 2, 0, true, false, 0, 0x42),
-                 false, 0, false, true, kErrUnused);
-  expect_illegal(dut, "ROUTE slide amount out of range",
-                 enc_route(3, 1, 2, 0, true, false, 0, 5),
-                 false, 0, false, true, kErrBadSubop);
-  expect_illegal(dut, "ROUTE disabled destination is nonzero",
-                 enc_route(0, 1, 2, 0, false, false, 0, 0x1b),
-                 false, 0, false, true, kErrUnused);
+  constexpr unsigned kRouteReservedBits[] = {
+      27, 26, 17, 16, 15, 14, 13, 12, 11, 10, 5, 4, 3, 2, 1, 0,
+  };
+  for (unsigned bit : kRouteReservedBits) {
+    expect_illegal(dut, "ROUTE reserved bit " + std::to_string(bit),
+                   enc_route(1, 3, 2, 1u << bit),
+                   false, 0, false, true, kErrReserved);
+  }
 
   // Multi-error cases lock the documented cause priority rather than merely
   // checking that the word is rejected.

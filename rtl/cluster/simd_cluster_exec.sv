@@ -15,6 +15,8 @@ module simd_cluster_exec #(
   parameter int CONTEXT_COUNT   = 2,
   parameter int TAG_W           = 8,
   parameter int RESOURCE_W      = 8,
+  parameter int SIMD4_ID_W      = 8,
+  parameter logic [SIMD4_ID_W-1:0] SIMD4_BASE_ID = '0,
   parameter int VRF_ADDR_W = (VREGS <= 2) ? 1 : $clog2(VREGS),
   parameter int ARF_ADDR_W = (AREGS <= 2) ? 1 : $clog2(AREGS),
   parameter int MRF_ADDR_W = (MREGS <= 2) ? 1 : $clog2(MREGS),
@@ -176,6 +178,9 @@ module simd_cluster_exec #(
   output logic [ISSUE_SLOTS-1:0]            issue_reject_o,
   output logic [GROUP_COUNT-1:0]            group_ingress_valid_o,
   output logic [GROUP_COUNT-1:0]            group_exec_fire_o,
+  // Stable topology IDs, group-major. GROUP_ID_W elsewhere in this module is
+  // only the local array slot used by child transactions.
+  output logic [(GROUP_COUNT*SIMD4_ID_W)-1:0] simd4_id_o,
   output logic [(CONTEXT_COUNT*QUEUE_COUNT_W)-1:0]
                                                 queue_occupancy_o,
   output logic [TRACKER_COUNT_W-1:0]        tracker_occupancy_o,
@@ -642,6 +647,9 @@ module simd_cluster_exec #(
   end
 
   for (genvar group = 0; group < GROUP_COUNT; group++) begin : g_group
+    localparam logic [SIMD4_ID_W-1:0] GROUP_SIMD4_ID =
+        SIMD4_BASE_ID + SIMD4_ID_W'(group);
+
     assign tracker_child_cpl_valid[group] = wrapper_cpl_valid[group] &&
         (wrapper_cpl_kind[(group*SIMD_GROUP_REQ_KIND_W) +:
                           SIMD_GROUP_REQ_KIND_W] == SIMD_GROUP_REQ_EXEC);
@@ -655,6 +663,8 @@ module simd_cluster_exec #(
       .MREGS(MREGS),
       .CONTEXT_COUNT(CONTEXT_COUNT),
       .TAG_W(TAG_W),
+      .SIMD4_ID_W(SIMD4_ID_W),
+      .SIMD4_ID(GROUP_SIMD4_ID),
       .VRF_ADDR_W(VRF_ADDR_W),
       .ARF_ADDR_W(ARF_ADDR_W),
       .MRF_ADDR_W(MRF_ADDR_W),
@@ -665,6 +675,7 @@ module simd_cluster_exec #(
     ) u_group_wrapper (
       .clk_i,
       .rst_ni,
+      .simd4_id_o(simd4_id_o[(group*SIMD4_ID_W) +: SIMD4_ID_W]),
       .exec_valid_i(ingress_valid_q[group]),
       .exec_ready_o(wrapper_exec_ready[group]),
       .exec_context_i(ingress_context_q[group]),
@@ -1152,6 +1163,9 @@ module simd_cluster_exec #(
   assign cpl_owner_mismatch_o = completion_owner_mismatch_q;
 
   initial begin
+    if (SIMD4_ID_W != 8) $error("SIMD4 identity is defined as 8 bits");
+    if ((int'(SIMD4_BASE_ID) + GROUP_COUNT) > (1 << SIMD4_ID_W))
+      $error("SIMD4 ID range exceeds 0..255");
     if (GROUP_COUNT < 1 || ISSUE_SLOTS < 1 || QUEUE_DEPTH < 1 ||
         TRACKER_ENTRIES < 1 || CONTEXT_COUNT < 1) begin
       $error("cluster capacities must be positive");

@@ -11,7 +11,7 @@
 
 - SIMD4 的 VRF/ARF/MRF、BYTE/HALF/WORD 动态 ADD/SUB/shift/compare；
 - byte 语义的饱和、AVG、ABSDIFF、MUL/MAC 和宽窄操作；
-- local route/broadcast/slide、compact/expand、MRF logic、narrow reduction；
+- 内部 local route 叶端、compact/expand、MRF logic、narrow reduction；
 - `vsp_lane_gather`：默认 16 lane 的固定全 crossbar 临时基线，动态索引与静态图样
   已验证，未接入数据通路；
 - Gaussian、Sobel、Median、SAD 与 low-32 byte-convolution 参考负载；
@@ -36,7 +36,7 @@
 - 每 issue slot 一项的 decode holding stage：raw/resolved/cached provenance 与
   canonical class/resource/payload 输出在背压下保持稳定；
 - `vsp_exec_uword_expander`：解析内部 profile v0 的 32-bit base 与可选 immediate
-  extension，覆盖当前 EXEC function 与 SIMD4-local route，并对非法 word 进行无副作用
+  extension，覆盖当前 EXEC function 与 VRF-indexed vector route，并对非法 word 进行无副作用
   canonicalization；已接入 strict controller action 入口，尚未接入 queue/head holding；
 - `vsp_uword_predecoder`：默认并行扫描 4 个连续 32-bit uword stream word，按结构长度
   划分完整 record、预判 dispatch class，并报告待续接尾 record；当前是无状态组合
@@ -73,7 +73,9 @@
 - `simd_cluster_exec` 的 group-addressed VRF state-read/write child 路径，以及
   `vsp_cluster_vrf_arbiter` 的多 client read/write 仲裁和返回归属保持；
 - `vsp_cluster_memory_wrapper` decoded reference integration：vector memory engine 经 shared
-  VRF arbiter 接入四组 cluster，端到端 LOAD→EXEC→STORE 回归已通过；
+  VRF arbiter 接入四组 cluster；register-route engine 作为第二个 client 串行捕获
+  `vs/vi` rows、执行 16-byte gather 并逐组 masked commit；端到端 LOAD→EXEC→STORE
+  与 VROUTE 回归已通过；
 - `vsp_decoded_action_controller` 与 `vsp_cluster_controller_wrapper`：统一
   `EXEC/MEMORY/CONTROL` 分派、owner/context 检查、严格跨 class 顺序、统一
   completion，以及等待 queue/tracker/memory/arbiter 强静止的 `END`；decoded LOAD →
@@ -90,8 +92,9 @@
 
 当前优先级转向把 multi-record framer、action envelope、浅层依赖窗口和各 class
 engine 组成并发控制链，并补充实际 admission legality/resource/state-dependency
-metadata、动态 owner 状态与 sequencer loop/redirect。跨组 route 已从这条执行闭环中
-解耦并延期。
+metadata、动态 owner 状态与 sequencer loop/redirect。跨组 VROUTE 已在 wrapper-local
+drain/互斥门控和 strict action path 上形成 blocking 执行闭环；它的并行化和与其他
+action 的资源调度仍服从上述并发控制工作。
 物理 memory hierarchy 仍在独立 I-side/D-side 逻辑边界之外；当前只新增了可执行
 protocol model，没有实现 I-cache/D-cache。候选分层见
 [I-side / D-side 内存模型边界](../architecture/memory-hierarchy.md)。在出现新的阻塞负载证据
@@ -263,11 +266,17 @@ responder 上检查 address/context、load/store data、write strobe、request b
 和八项有序 completion/tag。它同样不实现物理 SRAM、I-cache、MMU、DMA、loop 或
 多 action 并发。
 
-## M5：跨组 route `[固定 crossbar 临时基线已实现；接入仍延期]`
+## M5：跨组 route `[blocking 执行闭环已实现；吞吐与调度待完善]`
 
-组内 4×4 `simd_crossbar/simd_route` 已由单字 `fmt=0xd` 编码接入 profile v0，并通过
-assembler→predecoder→expander→controller→group writeback 回归。profile v0 不编码
-跨组 route，当前 controller/cluster 工作也不等待跨组网络。
+单字 `fmt=0xd` 已重定义成 `EXEC_ROUTE vs/vi/vd`：数据与逐 byte 8-bit index 都来自
+VRF，canonical expansion 固定为 byte GATHER 和 VRF writeback，不再编码组内
+broadcast/slide/immediate index。assembler 与 expander 回归覆盖该合同。
+`vsp_cluster_register_route_engine` 已通过 shared VRF arbiter 串行捕获选中 group 的
+source/index row，调用 `vsp_vrf_gather` 形成默认 16-byte 结果，再逐组 masked commit；
+completion 已接回 EXEC 路径。wrapper 还会让 pending route 等待既有 EXEC/MEMORY/VRF
+transaction 排空，并在 pending/busy 期间门控新的冲突 admission；该安全边界不只依赖
+外层 strict controller。已有组内 4×4 `simd_crossbar/simd_route` 仍作为内部叶端资源
+保留，但当前 cluster VROUTE 没有物理复用它。
 
 固定 16×16 byte crossbar 已按该基线实现为 `vsp_lane_gather`：纯 gather、九种 mode
 （含动态 GATHER）、rotate wrap 报告，独立验证通过。选它而不是先做动态 Bênes/Omega
@@ -285,10 +294,11 @@ valid/ready 背压，但尚未连接 group VRF，也不是已经接入的四级�
 成本边界及 memory trade-off 见
 [路由](../architecture/routing.md)。
 
-仍未定义、因此接入继续延期的部分：canonical dynamic-index action、group-local VRF
-的并行 capture/commit、source/destination resource metadata、分级和写回事务。接入时它应
-作为可替换的 Vector ALU/cluster data-path stage，不改变 EXEC/MEMORY/CONTROL 的
-顺序与完成合同。
+当前 closure 是 blocking、single-active、串行 VRF transport；一份
+`action_group_mask` 同时约束 source/index capture 与 destination commit，并按整组四个
+byte 展开。后续完善项是并行 capture/commit、独立 source/destination mask、细粒度
+predicate、精确 resource metadata、多 action scheduling，以及根据综合结果替换 gather
+datapath。它们不改变 EXEC/MEMORY/CONTROL 的顺序与完成合同。
 
 `benes_network` 和既有多级网络文档保留为探索材料，不接入当前数据通路，也不作为
 decoder/class-router 的前置条件。

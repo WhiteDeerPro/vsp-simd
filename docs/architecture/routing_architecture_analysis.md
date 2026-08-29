@@ -7,7 +7,8 @@ architecture commitments and have therefore been removed.
 The authoritative routing description is [routing.md](routing.md).  In
 particular, use that document for:
 
-- the connected SIMD4-local route path and its instruction semantics;
+- the internal SIMD4-local route path and the VRF-indexed vector instruction
+  semantics;
 - the status of wider cross-group routing experiments;
 - the boundary between register permutation and indexed memory access;
 - unresolved questions and implementation constraints.

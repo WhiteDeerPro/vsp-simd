@@ -1,20 +1,28 @@
-# SIMD 局部数据路由
+# SIMD register route 与交换网络
 
 ## 作用域 `[当前 profile]`
 
-当前路由网络属于一个 SIMD 执行单元，不是覆盖整个 VSP 的全局互连。架构调度
-实验目前使用四个 8-bit physical lane 的 SIMD4。叶模块仍对 8、16 lane 参数
-做健壮性 lint，但扩大总并行度的当前工作模型是增加 SIMD4 group 数，而不是扩大
-一个 group。
+当前有两个不同层次的 register-route path：每个 SIMD4 group 内的 4×4 local route，
+以及 execution cluster 内已经接入的 VRF-indexed VROUTE。当前参考 profile 用四个
+SIMD4 group 组成一个 16-byte route domain；扩大总并行度的工作模型仍是增加 SIMD4
+group，而不是扩大一个 group。这里的 cluster route 不是覆盖整个 VSP 或 memory
+address space 的全局互连。
 
 ```text
 VSP / cluster
 ├── SIMD group 0: local route + lanes + local VRF slice
-├── SIMD group 1: local route + lanes + local VRF slice
-└── shared sequencer / SRAM / reduction and boundary links
+├── ...
+├── SIMD group 3: local route + lanes + local VRF slice
+└── shared VROUTE engine
+    ├── selected-group VRF source/index snapshots
+    ├── 16-byte output-driven gather
+    └── selected-group serial masked commit
 ```
 
-多个 SIMD group 可以接收同一微操作，分别处理连续的元素区间。逐元素运算因此可以把 `2 × SIMD4` 当作逻辑上的 8-lane 工作。任意跨组 permutation 并不由此自动获得；它需要额外网络或经过局部存储分拍执行。
+多个 SIMD group 可以接收同一微操作，分别处理连续的元素区间。普通逐元素运算仍在
+各 group 内执行；VROUTE 则把同一个 VRF row number 在四组中的 4-byte fragment 拼成
+16-byte 逻辑 source/index/destination view。跨出当前 route domain 的 permutation 仍需
+额外交换网络或经过局部存储分拍执行。
 
 ## Crossbar 语义 `[接口语义]`
 
@@ -33,12 +41,13 @@ out[lane] = in[index[lane]]
 这与多级网络内部两条合法路径争用同一 link 的 internal path conflict 是两回事。
 
 当前 SIMD4 RTL 采用直接 4×4 crossbar。接口保留任意重复索引，因此组内已经支持
-广播；普通 Bênes 网络只保证一一置换，无法直接表达这一点。跨组 route 的**编码与
-数据通路接入**仍然延期；作为临时基线，固定 16×16 byte crossbar 已有独立参考
-RTL（`vsp_lane_gather`），供需要跨组置换的负载映射先行取证。下文的 Omega 内容
-只保留为早期探索记录。
+广播；普通 Bênes 网络只保证一一置换，无法直接表达这一点。跨组 VRF-indexed
+`fmt=0xd` 已经由 controller 展开，并在 cluster wrapper 中交给
+`vsp_cluster_register_route_engine`。该 engine 捕获 VRF operands 后使用
+`vsp_vrf_gather` 形成 16-byte 结果。`vsp_lane_gather`、fixed-four-pass、Omega 与
+Bênes 内容保留为实现比较和扩展研究，不是当前 VROUTE 的连接路径。
 
-## `simd_route` 操作
+## `simd_route` 内部操作
 
 | 操作 | 含义 |
 |---|---|
@@ -47,17 +56,71 @@ RTL（`vsp_lane_gather`），供需要跨组置换的负载映射先行取证。
 | `ROUTE_OP_SLIDE_UP` | 数据向高编号 lane 移动，低端缺口从 `lower_i` 获取 |
 | `ROUTE_OP_SLIDE_DOWN` | 数据向低编号 lane 移动，高端缺口从 `upper_i` 获取 |
 
-内部 EXEC profile v0 已给这条本地路径分配单字 `fmt=0xd`。它固定执行
-`PASS_A/BYTE`，可写回 VRF、导出窄结果或在 route 后做 SIMD4 reduction；GATHER 的
-四个 2-bit source index 全部放在同一 32-bit word。SLIDE 在该编码中把相邻组
-boundary 固定为零，所以只有 zero-fill 语义。assembler 示例：
+这些是 `simd_route` 叶端 RTL 的控制接口，不再是一组可以直接编码的指令操作。
+profile v0 的单字 `fmt=0xd` 已重定义为纯向量 gather：
 
 ```text
-EXEC_ROUTE op=gather va=1 vd=2 i0=3 i1=2 i2=1 i3=0
+EXEC_ROUTE vs=1 vi=3 vd=2
 ```
 
-这条编码已经沿 uword predecode、canonical expander、controller 和 group writeback
-跑通；它不控制下文独立的 16×16 跨组模块。
+`vs` 是数据 VRF row，`vi` 是保存逐 byte 8-bit index 的 VRF row，`vd` 是目的
+VRF row。展开结果固定为 `PASS_A/BYTE/GATHER/write_vrf`，所有 immediate route
+control 为零。重复索引自然表达广播；偏移索引表达 domain 内 slide mapping，越界或
+inactive source 按当前 VROUTE 规则补零。现有
+4×4 `simd_route` 可以继续作为 cluster route 的叶端物理资源，但没有独立的
+immediate router 编码。
+
+## 当前 cluster VROUTE 数据通路 `[已接入]`
+
+默认 `GROUP_COUNT=4`、每组四个 byte。`vsp_cluster_memory_wrapper` 在普通 group EXEC
+入口之前识别合法 VROUTE，并将它交给 blocking、single-active 的
+`vsp_cluster_register_route_engine`。当前实现顺序执行：
+
+1. 通过共享 VRF arbiter，逐个捕获选中 group 的 `vs` row；
+2. 再逐个捕获这些 group 的 `vi` row；
+3. 对完整 snapshot 组合执行 `vsp_vrf_gather`；
+4. 逐个向选中 group 的 `vd` row 发 masked write；
+5. 所有目标 write 完成后才产生 action completion。
+
+所有 source/index snapshot 都先于第一次 destination write，因此当前实现允许
+`vd==vs`、`vd==vi` 以及三者相等，不会被早期写回破坏。route 与 vector memory engine
+共享 VRF transaction arbiter，故 action latency 包含 arbitration、endpoint ready 和
+completion backpressure；它不是固定四拍，也还不是每拍可接受一条的新流水线。
+
+一个 route-domain-relative byte index 的映射为：
+
+```text
+domain_byte = 4 * group_local_slot + lane_offset
+```
+
+在默认四组 domain 中，`vi` 的 8-bit index 0..15 合法；16..255 保留完整值参与范围
+检查，不截断到低四位，也不回绕。group-local slot 只是本 wrapper 内的 group endpoint
+序号。每个 group 另有 `SIMD4_BASE_ID + slot` 形成的不可变 8-bit SIMD4 static ID；该
+身份没有编码进 `vi`，也不参与上述 byte index 计算。
+
+VROUTE v0 的 `group_mask` 来自 canonical action envelope，不来自 `fmt=0xd` 或 MRF。
+一个选中 bit 把该 group 的四个 destination byte 全部置为 active，并令 engine 捕获
+该 group 的 source/index row。route engine 的通用边界会遵守 VRF read response mask，
+但当前 group endpoint 只回显 engine 发出的全一 request mask，VRF 也没有持久 validity；
+因此已接入路径目前没有选中 group 内的独立 tail/predicate。行为为：
+
+- inactive destination：不产生 byte write，原 `vd` 保持；
+- active destination 且 index 合法、source byte 有效：写所选 source byte；
+- active destination 但 index 越界，或指向未选中/无效 source byte：确定性写零，并在
+  engine 内置 invalid-element bit；
+- 重复 index 合法，直接表达 multicast/broadcast；空 `group_mask` 拒绝且不写回。
+
+逐 byte invalid-element mask 当前保存在 route completion 内部，但统一 EXEC completion
+envelope 尚未将它暴露给上级。read-side error 在首次 destination write 前终止，因而完整
+保留旧目的值；write 逐组提交，若后续 write 失败，较早已经接受的 group write 可能已经
+生效，并通过 illegal-group status 报告。
+
+默认 16-byte domain 可让程序把 16..255 的索引用作确定性零填充，因此任意长度 tail
+仍可得到无污染的零值；这不是“目的 byte 不写回”的 predicate 语义。若后续需要 tail
+undisturbed，或把 domain 扩到 256 byte 使全部 8-bit index 都合法，必须增加独立的
+lane-active mask（例如 action metadata/MRF 路径），不能继续依赖 OOB index。
+
+### 叶端 `simd_route` 的 slide boundary
 
 `slide_amount_i=0` 是恒等映射；`slide_amount_i=LANES` 完整传入相邻 SIMD group。更大的数超出这个局部网络覆盖范围并报告 `illegal_o`。
 
@@ -67,9 +130,10 @@ ports。正确性只要求 boundary data 在事务期间稳定并经过资源仲
 group RF。`boundary_mask_o` 只标记哪些结果来自 boundary
 输入，不是执行 mask。
 
-## 数据通路位置
+## Group-local 数据通路位置
 
-当前只实例化一份路由网络，放在 VRF source A 与 lane execution 之间：
+普通 SIMD group execution 只实例化一份 local route，放在 VRF source A 与 lane
+execution 之间：
 
 ```text
 VRF source A ── local route ──┐
@@ -82,7 +146,11 @@ VRF source B ─────────────────┘
 - `PASS_A + write_vrf_i`：形成单独的 route 写回；
 - 其他 ALU 操作：可以直接消费路由后的 A，避免临时寄存器。
 
-这避免为两个源操作数复制两套 crossbar，也没有把网络串到 B 操作数路径。当前仍是无内部流水的组合实现；可否满足目标频率必须在选定工艺和 lane/位宽后通过综合判断。
+这避免为两个源操作数复制两套 crossbar，也没有把网络串到 B 操作数路径。当前仍是
+无内部流水的组合实现；可否满足目标频率必须在选定工艺和 lane/位宽后通过综合判断。
+编码后的 cluster VROUTE 不沿这条普通 group EXEC 路径逐组发射；wrapper 会截获它，
+改由上一节的共享 register-route engine 读写 VRF。两条路径具有相同的 output-selects-input
+语义，但当前没有物理复用同一份 crossbar。
 
 ## Mask 驱动的稳定重排
 
@@ -99,7 +167,7 @@ mask：
 crossbar 共享选择网络，也可以根据时序结果分拍执行；这一选择仍然开放。
 跨 group 的 packet 拼接、余数保留和网络流控仍属于上级 VSP 互连问题。
 
-## 临时基线：`vsp_lane_gather` `[里程碑基线]`
+## 未接入的比较基线：`vsp_lane_gather` `[研究参考]`
 
 固定全 crossbar 已实现为独立参考 RTL，默认 `LANES=16 / DATA_W=8`，位于
 `rtl/interconnect/`，**不接入数据通路**。选它而不是先做 Bênes/Omega 的理由就是
@@ -128,29 +196,33 @@ crossbar 共享选择网络，也可以根据时序结果分拍执行；这一�
 掉即得到零填充 shift，因此 16-lane 逻辑向量内的 stencil 不再需要相邻组 boundary
 端口。它不是执行 mask。保留 mode 与越界 `amount_i` 报告 `illegal_o` 且不交付数据；
 动态索引越界（仅在 `LANES` 非二次幂时可能）沿用 `simd_crossbar` 语义，只把该输出
-lane 置零。RVV `vrgather` 的越界返零与这里的 `illegal_o` 不能静默等同，跨组
-out-of-range 的最终选择仍是开放项。
+lane 置零。该 standalone mode 接口的 `illegal_o` 与当前 VROUTE 的逐 byte invalid
+diagnostic 不同，不能把它们静默等同；已接入 VROUTE 的 out-of-range 行为以上一节为准。
 
-明确未定义、因此该模块目前不能声称的部分：宽逻辑向量如何 stripe 到各 group 的
-VRF row、索引来自 VRF 还是立即数、资源预留与 group ownership、写回事务，以及
-分级/流水与面积。它是可替换的临时基线，不是已选拓扑。
+该 standalone 模块自身仍不定义 VRF stripe、资源预留、group ownership 或写回事务。
+这些合同已经由 `vsp_cluster_register_route_engine` 在另一条路径闭合；不能据此声称
+`vsp_lane_gather` 本身已接入或是已选拓扑。
 
-## 候选：4-group 固定四次迭代 gather `[standalone RTL 已实现，cluster 未接入]`
+## 研究参考：4-group 固定四次迭代 gather `[standalone RTL，未接入]`
 
-这里的目标仍是 byte-lane register gather，不是 indexed memory load：四个相邻
+这里记录的是被比较过但未被当前 cluster wrapper 选择的多 pass 实现。目标仍是
+byte-lane register gather，不是 indexed memory load：四个相邻
 SIMD4 group 各提供一个 32-bit VRF row，共同形成 16-byte source、16-byte index 和
-16-byte destination view。这个“4-group route domain”只是候选物理共享范围，不增加
-新的编程模型术语。语义先写成：
+16-byte destination view。它与已接入 VROUTE 共用同一 4-group route-domain 语义；
+差异只在候选物理数据通路和时序。语义写成：
 
 ```text
 for i in 0..15:
     if destination_active[i]:
-        destination[i] = index[i] < 16 ? source[index[i]] : 0
+        source_ok = index[i] < 16 && source_active[index[i]]
+        destination[i] = source_ok ? source[index[i]] : 0
 ```
 
 重复 index 合法并形成 multicast/broadcast；每个 destination byte 只有一个 producer，
 因此不是 scatter。index 可由 VRF 的第二读操作数提供。为了让超范围值不会被低四位
 截断后回绕，首版即使只访问 16 个 byte，也应保存并检查完整的 8-bit index。
+`source_active/destination_active` 由 action 的 group mask 按每组四个 byte 展开；
+inactive destination 不写回，active destination 的越界索引或 inactive source 写零。
 
 ### 源侧 local route 后接 word multicast：原算法成立
 
@@ -298,27 +370,27 @@ word-first reference 则用 output-driven multicast word mux，index 高两位�
 hierarchy 也仍含 `M²` word connectivity；它不是全局扩展到任意规模时的 `N log N`
 答案，而是用固定小 domain 和多次 pass 换掉动态 conflict handling。
 
-### Transaction 与资源合同
+### 当前 Transaction 与资源合同
 
-要把“四次 route”变成可调用 engine，至少需要以下合同：
+已接入实现采用比上述 four-pass reference 更窄的共享 VRF 边界：
 
-1. admission 原子预留完整、对齐的四个 source/destination group，以及一个
-   route-domain shared resource；该 action 仍属于 `EXEC`，不新增 dispatch class；
-2. 同拍读取 source row 与 index row，完整快照后才开始迭代。这样既不持续占用 VRF
-   read port，也避免 `vd==vs` 或 `vd==vi` 时早期写破坏后续读取；第一版 profile 仍可
-   暂时禁止 overlap，直到 hazard metadata 覆盖完成；
-3. destination-inactive byte 保持旧值；active 且 index 越界的 byte 写零，二者不能
-   共用“禁止写”处理；
-4. 优先在 engine 内收齐 128-bit result，再通过四个 group 的并行 masked write path
-   commit。当前 `vsp_cluster_vrf_arbiter` 是单 group、single-outstanding client，若逐组
-   走该口，四次 route 会膨胀为串行 child transactions，不能继续称固定四次服务；
-5. action completion 只在所有目标 group 的最终 commit 都被接收后产生。任何阶段的
-   downstream backpressure 必须保持 phase、snapshot、result 和 tag 稳定。
+1. VROUTE 仍属于 `EXEC`，wrapper 将合法 route action 从普通 per-group EXEC 路径分流
+   到一个 blocking、single-active register-route engine，不新增 dispatch class；
+2. engine 只访问 `group_mask` 选中的 group，经 single-group VRF arbiter port 逐组读取
+   `vs`，再逐组读取 `vi`，完整 snapshot 后才计算和写回；
+3. `group_mask` 按每组选中四个 byte；engine 能遵守 RF response mask，但当前 endpoint
+   回显全一 request mask，因此部署路径仍是 whole-group active。inactive destination
+   保持旧值，active invalid destination 确定性写零；
+4. `vsp_vrf_gather` 一次组合形成整个 route-domain result，随后经同一 arbiter 逐组选中
+   destination row masked write。这里没有 four-pass route latency，也没有并行四组 commit；
+5. completion 只在最后一个被选 group 的 write response 完成后产生。下游背压期间
+   command identity、snapshot、result 和 completion 保持稳定；
+6. 任意 read error 在 commit 前中止；write error 发生时，前面已经完成的串行 write
+   可能已经可见。因此现有实现提供 read-side all-or-nothing，但不承诺 write-side rollback。
 
-当前 2R1W、per-lane write-mask 的 group VRF 具备所需叶端能力；multi-cycle standalone
-engine 已有，缺的是 cluster 级并行 capture/commit、资源预留和动态 index action 字段。
-编码不应先挤进现有 `fmt=0xd`：它只包含一组对所有 group 相同的四个 immediate local
-index。
+这条实现复用了现有 VRF arbiter，先闭合了可调用性、alias 安全和 completion。并行
+capture/commit、route pipeline 与不同 crossbar hierarchy 仍可作为吞吐/面积优化，而非
+当前语义缺口。
 
 ### Register route、memory fallback 与 indexed memory gather
 
@@ -334,7 +406,7 @@ index。
 | 路径 | 数据起点 | 延迟/故障 | 适合情况 |
 |---|---|---|---|
 | SIMD4 local route | 本组 VRF | 单拍组合，无 memory fault | 静态小重排、broadcast、slide |
-| 4-group iterative register gather | 四组 VRF snapshot | 固定 route passes，无 TLB/cache fault | FFT/小波/transpose/邻域数据已驻留且会复用 |
+| 当前 4-group register gather | 选中组的 VRF snapshot | 无 TLB/cache fault；延迟随串行 VRF 事务与背压变化 | FFT/小波/transpose/邻域数据已驻留且会复用 |
 | SRAM staging 或 packet exchange | 其他 route domain | 多 action，可预测但消耗端口/带宽 | 低频跨 domain 重排、编译器布局兜底 |
 | indexed memory gather | D-side memory | 可变；需 AGU/TLB/cache/outstanding/reorder | 数据未入 VRF、索引跨大范围稀疏工作集 |
 
@@ -355,14 +427,14 @@ cluster 全局互连平方增长，并能自然形成较长数据生命周期的
 block 时仍由 memory engine 保存 element tag、fault 和 response merge 状态。两类 engine
 可以共享 VRF writeback arbiter 或小型 byte selector，但不应共享同一个架构操作语义。
 
-### 当前层级建议
+### 当前层级与扩展边界
 
 ```text
 SIMD4 group
-  -> 现有 4x4 local route，1 cycle，immediate/static pattern
+  -> 现有 4x4 local route 作为内部叶端选择器
 
-aligned 4-group route domain
-  -> 候选 iterative register gather，dynamic VRF index，4 route passes
+4-group / 16-byte route domain
+  -> 已接入 blocking snapshot + vsp_vrf_gather + serial masked commit
 
 execution cluster with several route domains
   -> point-to-point word/packet exchange + staging；不承诺全局任意 byte gather
@@ -371,11 +443,11 @@ D-side memory hierarchy
   -> 未来独立 indexed gather/scatter AGU/coalescer/reorder path
 ```
 
-已保留 flat `vsp_lane_gather`，并完成 word-first phase/engine 的行为验证。下一步对
-`source-local anti-diagonal`、`word-first destination-local` 和直接 time-muxed byte mux
-做综合 A/B，再设计 parallel VRF capture/commit wrapper。只有真实 trace 显示跨
-route-domain gather 频繁，才扩大 network；否则让编译器用 packet exchange、scratch
-row 或 SRAM layout 组合，避免全 cluster `O(group_count^2)` word crossbar。
+已保留 flat `vsp_lane_gather` 与 word-first phase/engine 作为 A/B research RTL。若后续
+目标是提高 VROUTE 吞吐，可以在不改 `vs/vi/vd` 和逐 byte invalid 语义的前提下，比较
+并行 VRF capture/commit、four-pass hierarchy 或 pipelined flat gather。只有真实 trace
+显示跨 route-domain gather 频繁，才扩大 network；否则让编译器用 packet exchange、
+scratch row 或 SRAM layout 组合，避免全 cluster `O(group_count^2)` word crossbar。
 
 资料对照：RVV 也把
 [register gather 与 indexed memory load/store](https://docs.riscv.org/reference/isa/extensions/vector/_attachments/riscv-v-spec.pdf)
@@ -391,28 +463,34 @@ stage/unique-path 定义可追溯到
 [Lawrie 1975](https://doi.org/10.1109/T-C.1975.224157)，Bênes 的 rearrangeable network
 性质见[原始工作](https://doi.org/10.1002/j.1538-7305.1964.tb04103.x)。
 
-## 跨组 lane gather 语义 `[延期议题；以下含历史探索]`
+## 跨组 lane gather 语义 `[编码与执行已接入]`
 
-跨组 route 的 **encoding 与 controller 接入**仍不在当前路线内；profile v0 的
-`fmt=0xd` 只编码组内 4×4 route。以下 register-gather 语义与 Omega 比较保留用于
-追溯问题，不代表已选拓扑。
+profile v0 的 `fmt=0xd` 已编码下面的 VRF-indexed register gather，并保持为 EXEC
+class；controller 展开、cluster 分流、VRF operand capture、route engine 仲裁、commit
+和 completion 已经接通。当前采用共享 arbiter 上的串行 capture/commit，不表示并行
+四组端口或最终物理拓扑已经决定。以下 Omega/Bênes 比较保留用于追溯问题。
 
-跨组路由不再候选为与 MEMORY 并列的独立 command class，也不再预设以 SIMD4 row
-为端口颗粒。当前用一个 register-gather action 描述目标语义；它不是已经编码的
-指令，候选位置是 Vector ALU 内的一个 routing 级：
+跨组路由不是与 MEMORY 并列的独立 command class。当前用一个 register-gather action
+描述目标语义；wrapper 在 EXEC integration boundary 把它交给共享 route engine：
 
 ```text
 ROUTE SR, IR, DR
 DR[lane] = SR[IR[lane]]
 ```
 
-`SR`、`IR` 和 `DR` 是逻辑源、索引和目的视图；它们如何 stripe 到各 SIMD group 的
-group-local VRF row 尚未定义。索引候选由 VRF 提供，因此可以是运行时计算结果。
-8-bit index 能编码 0..255，但一个具体网络只有 `N` 个 source lane，实际合法范围至多
-是 `0..min(255,N-1)`；当前 16-lane 候选只能访问 0..15。上面的 four-pass reference
-选择 RVV-like 的 out-of-range 写零，便于与 flat reference 做行为等价；真正接入 profile
-时仍需把这一规则写进 canonical action。当前 local `simd_crossbar` 的非法索引路径报告
-`illegal_o`，两者不能静默等同。
+`SR`、`IR` 和 `DR` 分别由 `vs`、`vi`、`vd` 指定。一个逻辑 row view 按
+`domain_byte = 4 * group-local slot + lane offset`，把同一 row number 在四个 group
+中的 fragment 依 slot 顺序连接；它不按 8-bit SIMD4 static ID 排列。索引由 VRF 提供，
+因此可以是运行时计算结果。8-bit index 保持 0..255 的完整值；当前 16-byte domain 仅
+0..15 合法。active destination 的 out-of-range index 或 inactive source 写零，inactive
+destination 则禁止 byte write。该逐 byte 语义由 `vsp_vrf_gather` 实现，不沿用 local
+`simd_crossbar` 的整操作 `illegal_o` 行为。
+
+首版 `group_mask` 按 group-local slot 编号，并对选中 group 的四个 byte 整组启用；它
+同时限定 source/index capture 与 destination commit。因而 index 指向未选中 group 的
+byte 时，等同于指向 inactive source 并写零。engine 接口保留 response-mask 合并逻辑，
+但当前 endpoint 不提供独立 byte validity；`fmt=0xd` 也不携带 MRF selector 或 per-byte
+predicate，所以选中组内的 tail 目前只能用 OOB index 做确定性零填充。
 
 ### 语义边界：只做 gather
 
@@ -467,13 +545,13 @@ FFT/小波是这里的主要负载依据：它们的 butterfly 在 stride 跨过
 路由替换这些往返，降低内存压力。
 
 当前 RTL 状态：组内 4×4 crossbar（`simd_crossbar`/`simd_route`）已实现并验证；
-16×16 固定 crossbar（`vsp_lane_gather`）已作为独立临时基线实现并验证，但未接入
-数据通路，也没有相关编码。参数化 Bênes 网络（`benes_network`）与上述 Omega 方案
-只作为网络研究材料保留，不接入数据通路。
+`fmt=0xd` 已产生 `vs/vi/vd` canonical operands；`vsp_cluster_register_route_engine`
+经 cluster VRF arbiter 捕获 operands，调用 `vsp_vrf_gather` 并写回，已接入 controller/
+cluster completion 路径。`vsp_lane_gather`、`vsp_four_pass_gather_engine`、参数化
+`benes_network` 与 Omega 方案只作为实现研究材料保留，不接入正式 VROUTE 路径。
 
 ## Broadcast 边界
 
-当前 `ROUTE_OP_BROADCAST` 是 lane-to-lanes broadcast。展开后的 scalar immediate
-已经能送到单个 SIMD4；cluster 中相同 uop/常数的物理交付应使用分层控制扇出，
-不经过全局 N×N data crossbar。跨组广播/置换在延期期间不具有可调用硬件语义；
-组内复制仍可由目的 SIMD4 的 local broadcast 完成。
+`ROUTE_OP_BROADCAST` 仍是叶端 RTL 的 lane-to-lanes 控制，但没有独立编码。正式
+VROUTE 用索引 VRF row 中的重复值表达广播。展开后的 scalar immediate 已经能送到
+单个 SIMD4；cluster 中相同 uop/常数的控制扇出不经过全局 N×N data crossbar。

@@ -40,7 +40,7 @@
   class/response/group-mask/exact-resource/canonical-payload/legal/error；背压时所有
   字段稳定。当前 hook 是参考 adapter 接口，不是 encoded parser。
 - `vsp_exec_uword_expander` 组合解析内部实验 profile v0 的 32-bit base 与可选
-  32-bit scalar-immediate extension，覆盖当前 EXEC function 与 SIMD4-local route；它复用
+  32-bit scalar-immediate extension，覆盖当前 EXEC function 与 VRF-indexed vector route；它复用
   `simd_uop_legal`，对非法项输出确定 cause 并把所有 canonical 副作用归零。具体
   位域见 [EXEC uword profile v0](exec-uword-profile-v0.md)。
 - `vsp_uword_predecoder` 组合扫描一个默认 4-word 的连续 uword bundle，划分完整

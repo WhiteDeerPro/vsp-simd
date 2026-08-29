@@ -15,7 +15,9 @@ constexpr uint8_t kAddrLocal = 0;
 constexpr uint8_t kFaultNone = 0;
 constexpr uint8_t kCplOk = 0;
 constexpr uint8_t kOpAdd = 0x00;
+constexpr uint8_t kOpPassA = 0x1a;
 constexpr uint8_t kElemByte = 0;
+constexpr uint8_t kRouteGather = 0;
 
 uint64_t checks = 0;
 
@@ -252,6 +254,41 @@ void issue_add_immediate(Vvsp_cluster_memory_wrapper& dut,
   std::exit(1);
 }
 
+void configure_route(Vvsp_cluster_memory_wrapper& dut, uint8_t tag,
+                     uint8_t source_row, uint8_t index_row,
+                     uint8_t destination_row) {
+  clear_exec_command(dut);
+  dut.exec_cmd_valid_i = 1;
+  dut.exec_cmd_context_i = 0;
+  dut.exec_cmd_tag_i = tag;
+  dut.exec_cmd_group_mask_i = 0xf;
+  dut.exec_cmd_op_i = kOpPassA;
+  dut.exec_cmd_elem_mode_i = kElemByte;
+  dut.exec_cmd_src_a_addr_i = source_row;
+  dut.exec_cmd_src_b_addr_i = index_row;
+  dut.exec_cmd_dst_vrf_addr_i = destination_row;
+  dut.exec_cmd_write_vrf_i = 1;
+  dut.exec_cmd_route_enable_i = 1;
+  dut.exec_cmd_route_op_i = kRouteGather;
+}
+
+void configure_memory(Vvsp_cluster_memory_wrapper& dut, uint8_t op,
+                      uint8_t tag, uint32_t base, uint8_t group_mask,
+                      uint8_t row, uint8_t span_bytes) {
+  clear_memory_command(dut);
+  dut.mem_cmd_valid_i = 1;
+  dut.mem_cmd_op_i = op;
+  dut.mem_cmd_exec_context_i = 0;
+  dut.mem_cmd_tag_i = tag;
+  dut.mem_cmd_addr_space_i = kAddrLocal;
+  dut.mem_cmd_addr_context_i = 0x5a;
+  dut.mem_cmd_base_eaddr_i = base;
+  dut.mem_cmd_eaddr_offset_i = 0;
+  dut.mem_cmd_group_mask_i = group_mask;
+  dut.mem_cmd_vrf_row_i = row;
+  dut.mem_cmd_span_bytes_i = span_bytes;
+}
+
 void consume_memory_completion(Vvsp_cluster_memory_wrapper& dut,
                                LocalMemory& memory, uint8_t op, uint8_t tag,
                                uint8_t group_mask, uint8_t bytes) {
@@ -365,13 +402,19 @@ int main(int argc, char** argv) {
   dut.group_owner_i = 0;
 
   constexpr uint32_t kLoadBase = 0x20;
+  constexpr uint32_t kIndexBase = 0x40;
   constexpr uint32_t kStoreBase = 0x80;
   const std::array<uint32_t, 4> source_words = {
       0x04030201U, 0x281e140aU, 0xfdfcfbfaU, 0xff800700U};
-  const std::array<uint32_t, 4> expected_words = {
-      0x07060504U, 0x2b21170dU, 0x00fffefdU, 0x02830a03U};
+  const std::array<uint32_t, 4> reverse_index_words = {
+      0x0c0d0e0fU, 0x08090a0bU, 0x04050607U, 0x00010203U};
+  const std::array<uint32_t, 4> routed_words = {
+      0x030a8302U, 0xfdfeff00U, 0x0d17212bU, 0x04050607U};
   for (unsigned group = 0; group < source_words.size(); ++group)
     store_word(memory.bytes, kLoadBase + 4 * group, source_words[group], 0xf);
+  for (unsigned group = 0; group < reverse_index_words.size(); ++group)
+    store_word(memory.bytes, kIndexBase + 4 * group,
+               reverse_index_words[group], 0xf);
 
   issue_memory(dut, memory, kMemLoad, 0x31, kLoadBase, 0xf, 2, 16);
   consume_memory_completion(dut, memory, kMemLoad, 0x31, 0xf, 16);
@@ -383,18 +426,117 @@ int main(int argc, char** argv) {
   expect_eq("non-exporting ADD produced no result", 0,
             dut.exec_result_valid_o);
 
-  issue_memory(dut, memory, kMemStore, 0x53, kStoreBase, 0xf, 3, 16);
+  // An already-active MEMORY action drains before VROUTE may snapshot VRF.
+  issue_memory(dut, memory, kMemLoad, 0x4a, kIndexBase, 0xf, 4, 16);
+  configure_route(dut, 0x4b, 3, 4, 5);
+  for (int cycle = 0; cycle < 5; ++cycle) {
+    memory.drive(dut);
+    dut.clk_i = 0;
+    dut.eval();
+    expect_eq("active MEMORY blocks route admission", 0,
+              dut.exec_cmd_ready_o);
+    memory.step(dut);
+  }
+  consume_memory_completion(dut, memory, kMemLoad, 0x4a, 0xf, 16);
+
+  bool route_accepted = false;
+  for (int timeout = 0; timeout < 100; ++timeout) {
+    memory.drive(dut);
+    dut.clk_i = 0;
+    dut.eval();
+    if (dut.exec_cmd_ready_o) {
+      memory.step(dut);
+      clear_exec_command(dut);
+      route_accepted = true;
+      break;
+    }
+    memory.step(dut);
+  }
+  expect_eq("route accepted after MEMORY drain", 1, route_accepted);
+
+  // Conversely, an active route blocks a new MEMORY command until the final
+  // masked VRF commit and held EXEC completion have retired.
+  configure_memory(dut, kMemStore, 0x53, kStoreBase, 0xf, 5, 16);
+  for (int cycle = 0; cycle < 5; ++cycle) {
+    memory.drive(dut);
+    dut.clk_i = 0;
+    dut.eval();
+    expect_eq("active route blocks MEMORY admission", 0,
+              dut.mem_cmd_ready_o);
+    memory.step(dut);
+  }
+  consume_exec_completion(dut, memory, 0x4b);
+
+  bool store_accepted = false;
+  for (int timeout = 0; timeout < 100; ++timeout) {
+    memory.drive(dut);
+    dut.clk_i = 0;
+    dut.eval();
+    if (dut.mem_cmd_ready_o) {
+      memory.step(dut);
+      clear_memory_command(dut);
+      store_accepted = true;
+      break;
+    }
+    memory.step(dut);
+  }
+  expect_eq("MEMORY accepted after route drain", 1, store_accepted);
   consume_memory_completion(dut, memory, kMemStore, 0x53, 0xf, 16);
   expect_eq("STORE issued four SRAM writes", 4, memory.stores);
-  expect_eq("total memory requests", 8, memory.requests);
+  expect_eq("two LOADs issued eight SRAM reads", 8, memory.loads);
+  expect_eq("total memory requests", 12, memory.requests);
   expect_eq("request backpressure occurred", 1,
             memory.request_stall_cycles != 0);
 
-  for (unsigned group = 0; group < expected_words.size(); ++group) {
-    expect_eq("stored transformed group " + std::to_string(group),
-              expected_words[group],
+  for (unsigned group = 0; group < routed_words.size(); ++group) {
+    expect_eq("stored routed group " + std::to_string(group),
+              routed_words[group],
               load_word(memory.bytes, kStoreBase + 4 * group));
   }
+
+  // The route side must apply the same ownership contract as ordinary EXEC,
+  // even when this decoded wrapper is driven without the outer controller.
+  dut.group_owner_valid_i = 0x7;
+  configure_route(dut, 0x64, 3, 4, 5);
+  bool reject_accepted = false;
+  for (int timeout = 0; timeout < 100; ++timeout) {
+    memory.drive(dut);
+    dut.clk_i = 0;
+    dut.eval();
+    if (dut.exec_cmd_ready_o) {
+      memory.step(dut);
+      clear_exec_command(dut);
+      reject_accepted = true;
+      break;
+    }
+    memory.step(dut);
+  }
+  expect_eq("owner-mismatched route accepted for ordered reject", 1,
+            reject_accepted);
+  bool reject_completed = false;
+  for (int timeout = 0; timeout < 100; ++timeout) {
+    memory.drive(dut);
+    dut.clk_i = 0;
+    dut.eval();
+    if (dut.exec_cpl_valid_o) {
+      expect_eq("route owner reject tag", 0x64, dut.exec_cpl_tag_o);
+      expect_eq("route owner reject illegal", 1, dut.exec_cpl_illegal_o);
+      expect_eq("route owner reject rejected", 1,
+                dut.exec_cpl_rejected_o);
+      expect_eq("route owner mismatch reported", 1,
+                dut.exec_cpl_owner_mismatch_o);
+      expect_eq("route owner reject group mask", 0xf,
+                dut.exec_cpl_illegal_group_mask_o);
+      dut.exec_cpl_ready_i = 1;
+      memory.step(dut);
+      dut.exec_cpl_ready_i = 0;
+      reject_completed = true;
+      break;
+    }
+    memory.step(dut);
+  }
+  expect_eq("owner-mismatched route completed", 1, reject_completed);
+  dut.group_owner_valid_i = 0xf;
 
   expect_eq("memory engine idle", 0, dut.mem_busy_o);
   expect_eq("VRF arbiter idle", 0, dut.vrf_arbiter_busy_o);
@@ -404,6 +546,7 @@ int main(int argc, char** argv) {
 
   dut.final();
   std::cout << "PASS: VSP cluster MEMORY wrapper " << checks
-            << " checks across LOAD -> EXEC -> STORE and backpressure\n";
+            << " checks across LOAD -> EXEC -> VROUTE -> STORE, exclusion "
+               "and backpressure\n";
   return 0;
 }

@@ -138,19 +138,18 @@ Action make_add_immediate(uint8_t tag, uint8_t src, uint8_t dst,
   return action;
 }
 
-Action make_route_gather(uint8_t tag, uint8_t src, uint8_t dst,
-                         uint8_t packed_indices) {
+Action make_route_gather(uint8_t tag, uint8_t source, uint8_t index,
+                         uint8_t destination) {
   Action action;
   action.action_class = kClassExec;
   action.tag = tag;
   action.group_mask = 0xf;
-  // EXEC local-route format D: PASS_A(BYTE), unmasked VRF write.  Each output
-  // lane owns one 2-bit source index in packed_indices.
+  // EXEC vector-route format D: source and index are distributed VRF rows;
+  // destination is written after the complete 16-byte source/index snapshot.
   action.exec_base = (uint32_t{0xd} << 28) |
-                     (uint32_t(src & 0xfU) << 22) |
-                     (uint32_t(dst & 0xfU) << 18) |
-                     (uint32_t{1} << 14) |
-                     (uint32_t(packed_indices) << 2);
+                     (uint32_t(source & 0xfU) << 22) |
+                     (uint32_t(destination & 0xfU) << 18) |
+                     (uint32_t(index & 0xfU) << 6);
   return action;
 }
 
@@ -534,22 +533,31 @@ int main(int argc, char** argv) {
   reset(dut, memory, global_cycle);
 
   constexpr uint32_t kLoadBase = 0x20;
+  constexpr uint32_t kIndexBase = 0x40;
   constexpr uint32_t kStoreBase = 0x80;
   const std::array<uint32_t, 4> source_words = {
       0x04030201U, 0x281e140aU, 0xfdfcfbfaU, 0xff800700U};
   const std::array<uint32_t, 4> expected_words = {
       0x04050607U, 0x0d17212bU, 0xfdfeff00U, 0x030a8302U};
+  const std::array<uint32_t, 4> route_index_words = {
+      0x00010203U, 0x04050607U, 0x08090a0bU, 0x0c0d0e0fU};
   for (unsigned group = 0; group < source_words.size(); ++group)
     store_word(memory.bytes, kLoadBase + 4 * group, source_words[group], 0xf);
+  for (unsigned group = 0; group < route_index_words.size(); ++group)
+    store_word(memory.bytes, kIndexBase + 4 * group,
+               route_index_words[group], 0xf);
 
   const std::vector<Action> success_actions = {
       make_memory(kMemLoad, 0, 0x31, kLoadBase, 0xf, 2, 16),
+      make_memory(kMemLoad, 0, 0x38, kIndexBase, 0xf, 5, 16),
       make_add_immediate(0x42, 2, 3, 3),
-      make_route_gather(0x4a, 3, 4, 0x1b),
+      make_route_gather(0x4a, 3, 5, 4),
       make_memory(kMemStore, 0, 0x53, kStoreBase, 0xf, 4, 16),
       make_end(0, 0x64)};
   const std::vector<ExpectedCompletion> success_expected = {
       {kClassMemory, 0, 0x31, kStatusOk, 0, false, 0, false,
+       kMemLoad, kMemCplOk, kFaultNone, 0, 0xf, 0xf, 0, 16, false},
+      {kClassMemory, 0, 0x38, kStatusOk, 0, false, 0, false,
        kMemLoad, kMemCplOk, kFaultNone, 0, 0xf, 0xf, 0, 16, false},
       {kClassExec, 0, 0x42, kStatusOk, 0, false, 0xf, false},
       {kClassExec, 0, 0x4a, kStatusOk, 0, false, 0xf, false},
@@ -558,8 +566,8 @@ int main(int argc, char** argv) {
       {kClassControl, 0, 0x64, kStatusOk, 0, true}};
   const StreamResult success =
       run_stream(dut, memory, success_actions, success_expected, global_cycle);
-  expect_eq("success accepted all actions", 5, success.accept_cycles.size());
-  expect_eq("success retired all actions", 5,
+  expect_eq("success accepted all actions", 6, success.accept_cycles.size());
+  expect_eq("success retired all actions", 6,
             success.completion_cycles.size());
   for (std::size_t index = 1; index < success.accept_cycles.size(); ++index) {
     expect_eq("no cross-class issue before prior retire", 1,
@@ -567,7 +575,7 @@ int main(int argc, char** argv) {
                   success.completion_cycles[index - 1]);
   }
   expect_eq("one successful program-done pulse", 1, success.done_pulses);
-  expect_eq("LOAD request count", 4, memory.loads);
+  expect_eq("LOAD request count", 8, memory.loads);
   expect_eq("STORE request count", 4, memory.stores);
   expect_eq("memory request backpressure occurred", 1,
             memory.request_stalls != 0);
@@ -642,7 +650,7 @@ int main(int argc, char** argv) {
   const StreamResult fault_result =
       run_stream(dut, memory, fault_actions, fault_expected, global_cycle);
   expect_eq("fault stream terminates once", 1, fault_result.done_pulses);
-  expect_eq("faulting LOAD issued two beats", 6, memory.loads);
+  expect_eq("faulting LOAD issued two beats", 10, memory.loads);
   memory.fault_address = std::numeric_limits<uint32_t>::max();
   memory.fault_cause = kFaultNone;
 
@@ -762,7 +770,7 @@ int main(int argc, char** argv) {
 
   dut.final();
   std::cout << "PASS: VSP cluster controller " << checks
-            << " checks across decoded LOAD -> encoded ADDI/local ROUTE "
+            << " checks across decoded LOAD -> encoded ADDI/vector ROUTE "
                "-> decoded STORE -> END, "
                "ordering, backpressure, owner/decode errors and memory "
                "faults\n";

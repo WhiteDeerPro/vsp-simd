@@ -1,10 +1,10 @@
-# Minimal executable PC-to-cluster program.  The first two actions establish a
-# byte value, the local route exports it from the selected SIMD4 groups, and
-# the exact final word C0000000 retires the ordered stream.
+# Minimal PC-to-cluster program. The first two actions establish a zero index
+# row and a byte value; the vector route uses that VRF index row, and the exact
+# final word C0000000 retires the ordered stream.
 
 entry:
     EXEC_ALU_RR op=xor mode=byte va=1 vb=1 vd=1
     EXEC_ALU_RI op=add mode=byte va=1 vd=2 imm=7
-    EXEC_ROUTE op=broadcast va=2 vd=3 lane=1 export=1
+    EXEC_ROUTE vs=2 vi=1 vd=3
 program_end:
     CONTROL_END

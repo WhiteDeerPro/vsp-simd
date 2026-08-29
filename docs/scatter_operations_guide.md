@@ -8,9 +8,10 @@
 
 ## Keep three operations separate
 
-1. `EXEC_ROUTE` is a SIMD4-local **register permutation**. Each destination
-   lane selects one source lane; duplicate source indices are legal and mean
-   multicast. It does not form memory addresses.
+1. `EXEC_ROUTE` is a VRF-indexed **register gather** over one route domain.
+   Each destination byte reads its source index from another VRF row;
+   duplicate source indices are legal and mean multicast. It does not form
+   memory addresses. Its cluster capture/commit path is not yet connected.
 2. The current vector memory path moves a contiguous span from
    `sbase + offset`. It does not consume a vector of addresses.
 3. Scatter writes `value[i]` to an address selected by `index[i]`. Equal
@@ -85,11 +86,12 @@ least:
 The existing contiguous memory command boundary should remain usable without
 this engine. Indexed requests can share the downstream D-side translation and
 cache interfaces once those interfaces exist, but should not be hidden inside
-the SIMD4-local route unit.
+the register-route engine.
 
 ## What is intentionally not claimed
 
-- no current dynamic VRF-row index instruction;
+- the dynamic VRF-row route encoding exists, but its cluster execution path is
+  not connected;
 - no current indexed load/store command;
 - no current atomic histogram update;
 - no current automatic 16-lane count collection;

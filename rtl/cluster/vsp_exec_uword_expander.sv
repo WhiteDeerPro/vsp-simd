@@ -40,8 +40,11 @@ module vsp_exec_uword_expander #(
   output logic [simd_pkg::REDUCE_OP_W-1:0]         reduce_op_o,
   output logic                                      export_narrow_o,
 
-  // Profile v0 encodes the already-implemented SIMD4-local source-A route.
-  // Cross-group routing remains outside this expander.
+  // Format D is a register-indexed vector route.  The source and index VRF
+  // addresses use the ordinary A/B fields.  These legacy local-route control
+  // outputs remain in the canonical bundle for interface compatibility, but
+  // a legal Format-D word always drives GATHER with every immediate control
+  // field zero.  The cluster route path consumes the two VRF operands.
   output logic                                      route_enable_o,
   output logic [simd_pkg::ROUTE_OP_W-1:0]          route_op_o,
   output logic [7:0]                                route_index_o,
@@ -499,44 +502,23 @@ module vsp_exec_uword_expander #(
       end
 
       VSP_EXEC_UWORD_FMT_ROUTE: begin
-        // A route word is a byte-mode PASS_A whose source-A operand first
-        // traverses the existing SIMD4-local crossbar.  The format is one
-        // word: four 2-bit gather indices fit in route_ctrl[7:0].  Slides use
-        // zero boundary operands in this profile.
+        // A route word names source-data, index and destination VRF rows.  It
+        // remains an EXEC-class byte-mode PASS_A action, but the route map is
+        // read from VRF-B rather than embedded in the word.  Broadcast and
+        // slide are expressed by constructing the corresponding index row.
         raw_op = SIMD_OP_PASS_A;
         raw_elem_mode = ELEM_MODE_BYTE;
         raw_reads_vrf_a = 1'b1;
+        raw_reads_vrf_b = 1'b1;
         raw_src_a_addr = base_word_i[25:22];
+        raw_src_b_addr = base_word_i[9:6];
         raw_dst_vrf_addr = base_word_i[21:18];
-        mask_selector_present = 1'b1;
-        mask_sel = base_word_i[17:15];
-        raw_write_vrf = base_word_i[14];
-        raw_export_narrow = base_word_i[13];
-        reduce_sel = base_word_i[12:10];
+        raw_write_vrf = 1'b1;
         raw_route_enable = 1'b1;
-        raw_route_op = base_word_i[27:26];
-        reserved_ok = base_word_i[1:0] == 2'h0;
-        unused_ok = unused_ok &&
-                    (raw_write_vrf || (base_word_i[21:18] == 4'h0));
-
-        unique case (base_word_i[27:26])
-          ROUTE_OP_GATHER: begin
-            raw_route_index = base_word_i[9:2];
-          end
-          ROUTE_OP_BROADCAST: begin
-            raw_route_broadcast_index = base_word_i[3:2];
-            unused_ok = unused_ok && (base_word_i[9:4] == 6'h0);
-          end
-          ROUTE_OP_SLIDE_UP,
-          ROUTE_OP_SLIDE_DOWN: begin
-            raw_route_slide_amount = base_word_i[4:2];
-            unused_ok = unused_ok && (base_word_i[9:5] == 5'h0);
-            // SIMD4 permits complete-group transfer at amount=4.  Values
-            // 5..7 are not deferred to the execution stage.
-            subop_ok = int'(base_word_i[4:2]) <= 4;
-          end
-          default: subop_ok = 1'b0;
-        endcase
+        raw_route_op = ROUTE_OP_GATHER;
+        reserved_ok = (base_word_i[27:26] == 2'b00) &&
+                      (base_word_i[17:10] == 8'h00) &&
+                      (base_word_i[5:0] == 6'h00);
       end
 
       default: begin

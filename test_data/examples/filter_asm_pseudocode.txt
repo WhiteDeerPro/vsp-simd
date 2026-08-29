@@ -24,15 +24,16 @@ process_center_region:
     SADDI rd=4 rs1=1 imm=144
     VLOAD space=local addr_context=0 sbase=4 vrf=2 span=16 offset=0
 
-    # 创建左移版本（通过slide）
-    EXEC_ROUTE op=slide_down va=0 vd=3 amount=1
-    EXEC_ROUTE op=slide_down va=1 vd=4 amount=1
-    EXEC_ROUTE op=slide_down va=2 vd=5 amount=1
+    # VRF12/VRF13 由加载阶段预先准备为左右邻居的索引向量。
+    # route 本身只读取数据行和索引行，不再编码立即数 slide。
+    EXEC_ROUTE vs=0 vi=12 vd=3
+    EXEC_ROUTE vs=1 vi=12 vd=4
+    EXEC_ROUTE vs=2 vi=12 vd=5
 
     # 创建右移版本
-    EXEC_ROUTE op=slide_up va=0 vd=6 amount=1
-    EXEC_ROUTE op=slide_up va=1 vd=7 amount=1
-    EXEC_ROUTE op=slide_up va=2 vd=8 amount=1
+    EXEC_ROUTE vs=0 vi=13 vd=6
+    EXEC_ROUTE vs=1 vi=13 vd=7
+    EXEC_ROUTE vs=2 vi=13 vd=8
 
     # 九路加法（行7的三个位置）
     EXEC_ALU_RR op=add mode=byte va=3 vb=0 vd=10
