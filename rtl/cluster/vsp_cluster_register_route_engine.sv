@@ -30,6 +30,7 @@ module vsp_cluster_register_route_engine #(
   input  logic [VRF_ADDR_W-1:0]             cmd_source_row_i,
   input  logic [VRF_ADDR_W-1:0]             cmd_index_row_i,
   input  logic [VRF_ADDR_W-1:0]             cmd_destination_row_i,
+  input  logic [1:0]                        cmd_io_mode_i,
 
   output logic                              cpl_valid_o,
   input  logic                              cpl_ready_i,
@@ -311,7 +312,13 @@ module vsp_cluster_register_route_engine #(
               end
             end
 
-            if (!cmd_legal_i || int'(cmd_context_i) >= CONTEXT_COUNT ||
+            // A partial OUT/IN descriptor is useful only after a peer-aware
+            // pre-admission rendezvous has formed one complete route wave.
+            // Never let this single-active engine accept half a wave and
+            // become outstanding while waiting for a future command.
+            if (!cmd_legal_i ||
+                cmd_io_mode_i != 2'b11 ||
+                int'(cmd_context_i) >= CONTEXT_COUNT ||
                 int'(cmd_source_row_i) >= VRF_ROWS ||
                 int'(cmd_index_row_i) >= VRF_ROWS ||
                 int'(cmd_destination_row_i) >= VRF_ROWS) begin

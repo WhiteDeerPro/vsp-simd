@@ -162,8 +162,9 @@ arbiter 串行捕获选中 group 的 source row，再捕获 index row；完整 s
 16-byte `vsp_vrf_gather`，结果随后逐组 masked commit。所有读取先于第一次写回，
 所以 `vd==vs` 或 `vd==vi` 安全；completion 在最后一项选中 group write 完成后产生。
 
-首版只使用一份 resolved `action_group_mask`：每个 bit 同时决定该 group 的 source/index
-capture 和 destination commit，并整组展开成四个 destination byte。未选中的目的保持
+`fmt=0xd` 已增加 `route_io_mode[1:0]={OUT,IN}`。当前 engine 只执行 `INOUT`，并只使用
+一份 resolved `action_group_mask`：每个 bit 同时决定该 group 的 source/index capture
+和 destination commit，并整组展开成四个 destination byte。未选中的目的保持
 旧值；active destination 的 index 越界或指向未选中/无效 source 时，也关闭对应 byte
 write 并保留旧值，同时生成 invalid-element 诊断。该诊断不使 action illegal、rejected
 或 protocol error。engine 会合并 VRF response mask，但当前 endpoint 只回显全一 request
@@ -186,6 +187,21 @@ resource_group_mask  src_group_mask | dst_group_mask
 capture 前不能推导真实 source 集合时，也可以显式提供 source mask，或保守占用完整
 route domain。并行 VRF capture/commit、独立 source/destination mask、细粒度 predicate
 和 resource-aware multi-action scheduling 都是当前 blocking closure 之后的增强。
+
+OUT-only 与 IN-only 不能分别成为两个已接受的 outstanding 再互相等待。那会产生典型
+hold-and-wait：A 已占 source group 等 B，B 又因 A 占用的 group、route engine、队头或
+最后一个 completion credit 无法发射。正确同步点在 admission 之前：两个带显式
+`{context,epoch,route_id}` 的 descriptor 先配成一个 route-wave parent；首个 profile
+只配合同 context participant，tag 可不同。若使用 bounded rendezvous table，
+`fragment_capture` 可以 pop queue，但不分配 execution tracker/group/engine；无 table
+实现则要求所有 fragment 同时在 queue heads 可见。只有 `wave_accept` 才原子取得
+`src_group_mask | dst_group_mask` 和每个 participant 的 completion credit。parent 一旦
+进入执行，不再等待未来 action；完成后向各原 tag fan-out completion。
+
+孤立 descriptor 只能由 out-of-band flush/epoch teardown、table 可观察的 stream-end 或
+系统 abort 取消；不能指望堵在它后面的普通 END/barrier 破局。当前 RTL 尚无这个配对
+入口，所以
+`NONE/IN/OUT` mode 有序拒绝且不访问 VRF，只有 `INOUT` 进入 blocking engine。
 `vsp_lane_gather` 与固定四次 group-word/local-route 继续作为综合 A/B reference；拓扑
 探索记录在[路由](../architecture/routing.md)，本页不重复。
 

@@ -195,13 +195,14 @@ void reset(Vvsp_cluster_register_route_engine& dut, VrfModel& vrf) {
 
 void launch(Vvsp_cluster_register_route_engine& dut, VrfModel& vrf,
             uint8_t mask, uint8_t source, uint8_t index, uint8_t destination,
-            uint8_t tag, bool legal = true) {
+            uint8_t tag, bool legal = true, uint8_t io_mode = 3) {
   dut.cmd_context_i = 0;
   dut.cmd_tag_i = tag;
   dut.cmd_group_mask_i = mask;
   dut.cmd_source_row_i = source;
   dut.cmd_index_row_i = index;
   dut.cmd_destination_row_i = destination;
+  dut.cmd_io_mode_i = io_mode;
   dut.cmd_legal_i = legal;
   dut.cmd_valid_i = 1;
   settle(dut);
@@ -232,6 +233,24 @@ int main(int argc, char** argv) {
   Vvsp_cluster_register_route_engine dut;
   VrfModel vrf;
   reset(dut, vrf);
+
+  // The current single-active engine can execute only a complete route wave:
+  // OUT publishes the source snapshot and IN consumes the routed destination.
+  // Half waves and a command with neither direction remain encoded, but are
+  // ordered rejects until a cooperative peer transport exists.
+  for (uint8_t io_mode : {uint8_t{0}, uint8_t{1}, uint8_t{2}}) {
+    const uint64_t reads_before_io_reject = vrf.reads;
+    const uint64_t writes_before_io_reject = vrf.writes;
+    launch(dut, vrf, 0xf, 1, 2, 3,
+           static_cast<uint8_t>(0x30 + io_mode), true, io_mode);
+    run_to_completion(dut, vrf);
+    expect(dut.cpl_illegal_o && dut.cpl_rejected_o,
+           "route IO mode reject", "ordered status");
+    expect(vrf.reads == reads_before_io_reject &&
+               vrf.writes == writes_before_io_reject,
+           "route IO mode reject", "no VRF traffic");
+    consume(dut, vrf);
+  }
 
   Bytes source{};
   Bytes reverse{};

@@ -60,12 +60,13 @@ Bênes 内容保留为实现比较和扩展研究，不是当前 VROUTE 的连�
 profile v0 的单字 `fmt=0xd` 已重定义为纯向量 gather：
 
 ```text
-EXEC_ROUTE vs=1 vi=3 vd=2
+EXEC_ROUTE vs=1 vi=3 vd=2 io=3
 ```
 
 `vs` 是数据 VRF row，`vi` 是保存逐 byte 8-bit index 的 VRF row，`vd` 是目的
-VRF row。展开结果固定为 `PASS_A/BYTE/GATHER/write_vrf`，所有 immediate route
-control 为零。重复索引自然表达广播；偏移索引表达 domain 内 slide mapping。越界或
+VRF row。展开结果固定为 `PASS_A/BYTE/GATHER`，`write_vrf=IN`；除新的 OUT/IN role
+immediate 外，旧的 index/broadcast/slide control 均为零。重复索引自然表达广播；
+偏移索引表达 domain 内 slide mapping。越界或
 inactive source 会关闭对应目的 byte 的写使能并保留旧 `vd`；需要 zero-fill slide 时，
 程序必须先清零目的值或显式选择一个有效零源。现有
 4×4 `simd_route` 可以继续作为 cluster route 的叶端物理资源，但没有独立的
@@ -100,6 +101,9 @@ domain_byte = 4 * group_local_slot + lane_offset
 身份没有编码进 `vi`，也不参与上述 byte index 计算。
 
 VROUTE v0 的 `group_mask` 来自 canonical action envelope，不来自 `fmt=0xd` 或 MRF。
+`fmt=0xd` 的 `[27:26]` 是 `OUT/IN` role immediate；当前可执行的 blocking action 必须
+为 `INOUT`，因此仍由同一 mask 同时选择 source 与 destination。其他三种 mode 已编码并
+贯穿 canonical payload，但当前 engine 会在任何 VRF 访问前有序拒绝。
 一个选中 bit 把该 group 的四个 destination byte 全部置为 active，并令 engine 捕获
 该 group 的 source/index row。route engine 的通用边界会遵守 VRF read response mask，
 但当前 group endpoint 只回显 engine 发出的全一 request mask，VRF 也没有持久 validity；
@@ -497,8 +501,8 @@ byte write、保留原 `vd` 并设置 invalid 诊断；inactive destination 同�
 但不设置这项诊断。两种情况都不会使 action illegal。该逐 byte 语义由
 `vsp_vrf_gather` 实现，不沿用 local `simd_crossbar` 的整操作 `illegal_o` 行为。
 
-首版 `group_mask` 按 group-local slot 编号，并对选中 group 的四个 byte 整组启用；它
-同时限定 source/index capture 与 destination commit。因而 index 指向未选中 group 的
+首版可执行的 `INOUT group_mask` 按 group-local slot 编号，并对选中 group 的四个 byte
+整组启用；它同时限定 source/index capture 与 destination commit。因而 index 指向未选中 group 的
 byte 时，等同于指向 inactive source 并禁止该目的 byte 写回。engine 接口保留
 response-mask 合并逻辑，
 但当前 endpoint 不提供独立 byte validity；`fmt=0xd` 也不携带 MRF selector 或 per-byte
@@ -517,6 +521,46 @@ many-to-one 的写冲突只可能跨操作发生（后一条 gather 覆盖前一
 不需要在单次操作内做冲突消解。因此不需要 conflict-detection CAM、写归约网络或
 串行化重排缓冲。当前不支持 scatter；以后可以比较 sequencer 分解的顺序 STORE，
 或独立 indexed-memory unit，但这两条 fallback 目前都没有 RTL。
+
+### 两个 mask 协作与 outstanding 边界
+
+OUT/IN 两位只声明一个 mask 在 route wave 中的角色，不负责把两个独立 action 配成一
+对。首个 cooperative profile 应只允许同一 execution context 内的 streams 协作，并以
+显式的 `{context, epoch, route_id}`（或同一条已定义的 bundle 身份）匹配；participant
+tag 可以不同。OUT/IN 本身不授权跨 context 读取 VRF；若以后需要跨 context 交换，必须
+另行定义 sharing/permission 和双边 retirement 语义。匹配后形成一个内部 parent：
+
+```text
+src_group_mask       OUT fragments 的并集
+dst_group_mask       IN fragments 的并集
+resource_group_mask  src_group_mask | dst_group_mask
+```
+
+这里区分两个 handshake：
+
+- `fragment_capture`：可选的有限 rendezvous table 从 action queue 收走一半 descriptor；
+  它不分配 execution tracker、不锁 group/route engine，也不算已接受的 route
+  outstanding。table 满时只产生普通入口 backpressure；
+- `wave_accept`：所有 participant 已配齐，且 union groups、route engine、VRF hazard 和
+  每个 participant 的 completion credit 能同拍原子取得，内部 parent 才进入执行。
+
+不设置 rendezvous table 也可要求所有 fragment 同时在多个 queue head 可见，并直接做
+原子 `wave_accept`；代价是更强的 head-of-line/program scheduling 约束。一个 execution
+parent 不等于一个 architectural completion：接受时为每个 participant 预留 completion，
+共同执行结束后按原 context/tag fan-out；共同 transport fault 广播给各 participant，
+逐 byte invalid 只归属有 IN role 的 participant。当前单条 `INOUT` 是一 parent/一
+completion 的特例。
+
+parent 一旦接受，只能等待已经发出的有限 VRF response、固定 route/commit 阶段及已
+预留 completion buffer 的背压；不能再等待另一个 slot、未来指令或运行中扩大的 mask。
+索引落在 `src_group_mask` 外仍沿用 no-write、保留 `vd` 的 invalid 行为。
+
+按 slot 号、mask 相似性或“恰好同拍到达”隐式配对会让结果依赖调度时序，不作为程序
+语义。若 peer 永远不出现，仍会形成程序级 rendezvous deadlock。使用 table 时，只有
+out-of-band flush/epoch teardown 或 table 可直接观察到的 stream-end 才能可靠取消并报告
+孤立 fragment；位于同一阻塞队头之后的普通 END/barrier 不能反过来解锁它。无 table
+方案则由编译器/程序保证各 fragment 同时可见，系统级 abort/watchdog 负责错误恢复。
+当前 RTL 没有 rendezvous table，因此只执行单 action 的 `INOUT`。
 
 ### 当前为什么不选择 Bênes
 
@@ -558,7 +602,8 @@ FFT/小波是这里的主要负载依据：它们的 butterfly 在 stride 跨过
 路由替换这些往返，降低内存压力。
 
 当前 RTL 状态：组内 4×4 crossbar（`simd_crossbar`/`simd_route`）已实现并验证；
-`fmt=0xd` 已产生 `vs/vi/vd` canonical operands；`vsp_cluster_register_route_engine`
+`fmt=0xd` 已产生 `vs/vi/vd` 和 OUT/IN canonical operands；当前 engine 在任何 VRF
+事务前有序拒绝非 `INOUT` mode。`vsp_cluster_register_route_engine`
 经 cluster VRF arbiter 捕获 operands，调用 `vsp_vrf_gather` 并写回，已接入 controller/
 cluster completion 路径。`vsp_lane_gather`、`vsp_four_pass_gather_engine`、参数化
 `benes_network` 与 Omega 方案只作为实现研究材料保留，不接入正式 VROUTE 路径。

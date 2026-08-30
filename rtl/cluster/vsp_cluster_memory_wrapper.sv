@@ -68,6 +68,7 @@ module vsp_cluster_memory_wrapper #(
   input  logic                              exec_cmd_reduce_enable_i,
   input  logic [simd_pkg::REDUCE_OP_W-1:0] exec_cmd_reduce_op_i,
   input  logic                              exec_cmd_route_enable_i,
+  input  logic [1:0]                        exec_cmd_route_io_mode_i,
   input  logic [simd_pkg::ROUTE_OP_W-1:0]  exec_cmd_route_op_i,
   input  logic [(LANES*INDEX_W)-1:0]        exec_cmd_route_index_i,
   input  logic [INDEX_W-1:0]                exec_cmd_route_broadcast_index_i,
@@ -364,6 +365,7 @@ module vsp_cluster_memory_wrapper #(
       !exec_cmd_write_mrf_i && !exec_cmd_export_narrow_i &&
       !exec_cmd_use_imm_i && !exec_cmd_mask_enable_i &&
       !exec_cmd_reduce_enable_i &&
+      exec_cmd_route_io_mode_i == 2'b11 &&
       exec_cmd_route_op_i == ROUTE_OP_GATHER &&
       !(|exec_cmd_route_index_i) &&
       !(|exec_cmd_route_broadcast_index_i) &&
@@ -593,6 +595,7 @@ module vsp_cluster_memory_wrapper #(
     .cmd_source_row_i(exec_cmd_src_a_addr_i),
     .cmd_index_row_i(exec_cmd_src_b_addr_i),
     .cmd_destination_row_i(exec_cmd_dst_vrf_addr_i),
+    .cmd_io_mode_i(exec_cmd_route_io_mode_i),
     .cpl_valid_o(route_cpl_valid),
     .cpl_ready_i(route_cpl_ready),
     .cpl_context_o(route_cpl_context),

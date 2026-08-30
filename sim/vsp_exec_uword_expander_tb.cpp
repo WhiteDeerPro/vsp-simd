@@ -186,7 +186,7 @@ uint32_t enc_mrf(unsigned mask_op, unsigned ma, unsigned mb, unsigned md,
 
 uint32_t enc_route(unsigned vs, unsigned vi, unsigned vd,
                    uint32_t reserved = 0) {
-  return (kFmtRoute << 28) | (vs << 22) | (vd << 18) | (vi << 6) |
+  return (kFmtRoute << 28) | (3u << 26) | (vs << 22) | (vd << 18) | (vi << 6) |
          reserved;
 }
 
@@ -211,6 +211,7 @@ struct Expected {
   uint32_t reduce_op = 0;
   bool export_narrow = false;
   bool route_enable = false;
+  uint32_t route_io_mode = 0;
   uint32_t route_op = 0;
   uint32_t route_index = 0;
   uint32_t route_broadcast = 0;
@@ -261,6 +262,7 @@ void expect_zero_canonical(Vvsp_exec_uword_expander& dut,
   expect_eq(name + " zero reduce op", 0, dut.reduce_op_o);
   expect_eq(name + " zero export", 0, dut.export_narrow_o);
   expect_eq(name + " zero route enable", 0, dut.route_enable_o);
+  expect_eq(name + " zero route io mode", 0, dut.route_io_mode_o);
   expect_eq(name + " zero route op", 0, dut.route_op_o);
   expect_eq(name + " zero route index", 0, dut.route_index_o);
   expect_eq(name + " zero route broadcast", 0,
@@ -321,6 +323,8 @@ void expect_legal(Vvsp_exec_uword_expander& dut, const std::string& name,
 
   expect_eq(name + " route enable", expected.route_enable,
             dut.route_enable_o);
+  expect_eq(name + " route io mode", expected.route_io_mode,
+            dut.route_io_mode_o);
   expect_eq(name + " route op", expected.route_op, dut.route_op_o);
   expect_eq(name + " route index", expected.route_index,
             dut.route_index_o);
@@ -512,10 +516,26 @@ void test_golden_formats(Vvsp_exec_uword_expander& dut) {
   expected.dst_vrf = 2;
   expected.write_vrf = true;
   expected.route_enable = true;
+  expected.route_io_mode = 3;
   expected.route_op = 0;
   expect_legal(dut, "fmtD VRF-indexed ROUTE",
                enc_route(1, 3, 2),
                false, 0, false, expected);
+
+  // Bits 27:26 are an orthogonal route IO immediate.  Decode preserves all
+  // four values; the current single-active route engine decides which modes
+  // it can execute.
+  for (uint32_t io_mode = 0; io_mode < 4; ++io_mode) {
+    expected.src_a = (io_mode & 2u) ? 1 : 0;
+    expected.src_b = (io_mode & 1u) ? 3 : 0;
+    expected.dst_vrf = (io_mode & 1u) ? 2 : 0;
+    expected.write_vrf = io_mode & 1u;
+    expected.route_io_mode = io_mode;
+    const uint32_t word = (enc_route(1, 3, 2) & ~(uint32_t{3} << 26)) |
+                          (io_mode << 26);
+    expect_legal(dut, "fmtD route IO mode " + std::to_string(io_mode),
+                 word, false, 0, false, expected);
+  }
 }
 
 void test_alu_subop_mapping_and_no_effect(
@@ -693,7 +713,7 @@ void test_illegal_and_priority(Vvsp_exec_uword_expander& dut) {
                  enc_mrf(3, 1, 2, 0, 0, false, false, false),
                  false, 0, false, true, kErrUnused);
   constexpr unsigned kRouteReservedBits[] = {
-      27, 26, 17, 16, 15, 14, 13, 12, 11, 10, 5, 4, 3, 2, 1, 0,
+      17, 16, 15, 14, 13, 12, 11, 10, 5, 4, 3, 2, 1, 0,
   };
   for (unsigned bit : kRouteReservedBits) {
     expect_illegal(dut, "ROUTE reserved bit " + std::to_string(bit),

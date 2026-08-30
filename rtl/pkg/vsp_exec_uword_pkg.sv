@@ -8,6 +8,13 @@ package vsp_exec_uword_pkg;
   // capture/route/commit implementation is handled downstream of this package.
   localparam int VSP_EXEC_UWORD_W = 32;
   localparam int VSP_EXEC_UWORD_FORMAT_W = 4;
+  // Format-D route_io_mode[1:0] = {OUT source publication,
+  //                                 IN destination consumption}.
+  localparam int VSP_EXEC_ROUTE_IO_W = 2;
+  localparam logic [VSP_EXEC_ROUTE_IO_W-1:0] VSP_EXEC_ROUTE_IO_NONE   = 2'b00;
+  localparam logic [VSP_EXEC_ROUTE_IO_W-1:0] VSP_EXEC_ROUTE_IO_IN    = 2'b01;
+  localparam logic [VSP_EXEC_ROUTE_IO_W-1:0] VSP_EXEC_ROUTE_IO_OUT   = 2'b10;
+  localparam logic [VSP_EXEC_ROUTE_IO_W-1:0] VSP_EXEC_ROUTE_IO_INOUT = 2'b11;
 
   typedef enum logic [VSP_EXEC_UWORD_FORMAT_W-1:0] {
     VSP_EXEC_UWORD_FMT_ALU          = 4'h1,

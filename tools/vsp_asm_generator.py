@@ -153,9 +153,11 @@ class VSPAsmBuilder:
 
     # === Vector route操作 ===
 
-    def vroute(self, vd: int, vs: int, vi: int):
-        """用VRF索引行vi对VRF数据行vs执行向量gather。"""
-        self.lines.append(f"EXEC_ROUTE vs={vs} vi={vi} vd={vd}")
+    def vroute(self, vd: int, vs: int, vi: int, io_mode: int = 3):
+        """用VRF索引行vi路由vs；io_mode[1:0]分别使能OUT/IN。"""
+        self.lines.append(
+            f"EXEC_ROUTE vs={vs} vi={vi} vd={vd} io={io_mode}"
+        )
         return self
 
     # === Reduction操作 ===

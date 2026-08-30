@@ -56,10 +56,12 @@ VSP / SoC 子系统（未来）
   register gather；支持重复 index、OOB no-write/reporting、结果背压与 identity 保持，
   作为未接入的多 pass 比较实现保留；
 - SIMD group 内的一份直接 crossbar，支持重复索引的 gather、lane broadcast 与 permutation；
-- 单字 `EXEC_ROUTE vs/vi/vd` 编制与 `fmt=0xd` canonical expansion：数据和逐 byte
-  索引均来自 VRF，立即数 route control 已取消；当前 cluster 以 blocking engine 经共享
-  VRF arbiter 串行捕获 source/index、完成 16-byte gather，再逐组 masked commit；OOB 或
-  invalid source 关闭对应 byte write 并保留 `vd`，invalid mask 只诊断、不使 action 异常；
+- 单字 `EXEC_ROUTE vs/vi/vd/io` 编制与 `fmt=0xd` canonical expansion：数据和逐 byte
+  索引均来自 VRF，旧的 index/broadcast/slide immediate control 已取消；当前 cluster
+  以 blocking engine 经共享 VRF arbiter 串行捕获 source/index、完成 16-byte gather，再
+  逐组 masked commit；OOB 或 invalid source 关闭对应 byte write 并保留 `vd`，invalid
+  mask 只诊断、不使 action 异常；
+  `io[1:0]={OUT,IN}` 已贯穿编码和 canonical payload，当前 engine 只执行完整 `INOUT`；
 - 可接相邻 SIMD group 边界的双向 slide，用于组成更宽的逻辑执行组；
 - mask-aware 的组合 reduction tree，可求和、最小值、最大值和获胜 lane；
 - 由 `ABSDIFF_U + REDUCE_SUM_U` 组合出的 SAD 验证内核；

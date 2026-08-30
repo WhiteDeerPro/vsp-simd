@@ -268,9 +268,10 @@ responder 上检查 address/context、load/store data、write strobe、request b
 
 ## M5：跨组 route `[blocking 执行闭环已实现；吞吐与调度待完善]`
 
-单字 `fmt=0xd` 已重定义成 `EXEC_ROUTE vs/vi/vd`：数据与逐 byte 8-bit index 都来自
-VRF，canonical expansion 固定为 byte GATHER 和 VRF writeback，不再编码组内
-broadcast/slide/immediate index。assembler 与 expander 回归覆盖该合同。
+单字 `fmt=0xd` 已重定义成 `EXEC_ROUTE vs/vi/vd/io`：数据与逐 byte 8-bit index 都来自
+VRF，canonical expansion 固定为 byte GATHER；`io[1:0]={OUT,IN}` 控制 operand/write
+角色，不再编码组内 broadcast/slide/immediate index。assembler 与 expander 回归覆盖
+四种编码；当前 single-active engine 只执行 `INOUT`，其余 mode 有序拒绝且不访问 VRF。
 `vsp_cluster_register_route_engine` 已通过 shared VRF arbiter 串行捕获选中 group 的
 source/index row，调用 `vsp_vrf_gather` 形成默认 16-byte 结果，再逐组 masked commit；
 completion 已接回 EXEC 路径。wrapper 还会让 pending route 等待既有 EXEC/MEMORY/VRF

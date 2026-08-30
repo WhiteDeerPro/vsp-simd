@@ -153,6 +153,7 @@ void clear_exec_command(Vvsp_cluster_memory_wrapper& dut) {
   dut.exec_cmd_reduce_enable_i = 0;
   dut.exec_cmd_reduce_op_i = 0;
   dut.exec_cmd_route_enable_i = 0;
+  dut.exec_cmd_route_io_mode_i = 0;
   dut.exec_cmd_route_op_i = 0;
   dut.exec_cmd_route_index_i = 0;
   dut.exec_cmd_route_broadcast_index_i = 0;
@@ -269,6 +270,7 @@ void configure_route(Vvsp_cluster_memory_wrapper& dut, uint8_t tag,
   dut.exec_cmd_dst_vrf_addr_i = destination_row;
   dut.exec_cmd_write_vrf_i = 1;
   dut.exec_cmd_route_enable_i = 1;
+  dut.exec_cmd_route_io_mode_i = 3;
   dut.exec_cmd_route_op_i = kRouteGather;
 }
 

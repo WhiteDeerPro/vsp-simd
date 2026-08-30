@@ -168,7 +168,7 @@ module vsp_cluster_controller_wrapper #(
   localparam int NARROW_W = LANES * ELEM_W;
   localparam int EXEC_PAYLOAD_W = RESOURCE_W + 1 + SIMD_OP_W + ELEM_MODE_W +
       (3*VRF_ADDR_W) + 1 + IMM_W + (2*ARF_ADDR_W) + 1 +
-      (3*MRF_ADDR_W) + 4 + REDUCE_OP_W + 1 + ROUTE_OP_W +
+      (3*MRF_ADDR_W) + 4 + REDUCE_OP_W + 1 + VSP_EXEC_ROUTE_IO_W + ROUTE_OP_W +
       (LANES*INDEX_W) + INDEX_W + OFFSET_W + (2*NARROW_W);
   localparam int MEMORY_PAYLOAD_W = VSP_MEM_OP_W + VSP_MEM_ADDR_SPACE_W +
       ADDR_CONTEXT_W + MEM_EADDR_W + MEM_OFFSET_W + VRF_ADDR_W +
@@ -201,6 +201,7 @@ module vsp_cluster_controller_wrapper #(
   logic [REDUCE_OP_W-1:0] expand_reduce_op;
   logic expand_export_narrow;
   logic expand_route_enable;
+  logic [VSP_EXEC_ROUTE_IO_W-1:0] expand_route_io_mode;
   logic [ROUTE_OP_W-1:0] expand_route_op;
   logic [7:0] expand_route_index;
   logic [1:0] expand_route_broadcast_index;
@@ -247,6 +248,7 @@ module vsp_cluster_controller_wrapper #(
   logic exec_reduce_enable;
   logic [REDUCE_OP_W-1:0] exec_reduce_op;
   logic exec_route_enable;
+  logic [VSP_EXEC_ROUTE_IO_W-1:0] exec_route_io_mode;
   logic [ROUTE_OP_W-1:0] exec_route_op;
   logic [(LANES*INDEX_W)-1:0] exec_route_index;
   logic [INDEX_W-1:0] exec_route_broadcast_index;
@@ -338,6 +340,7 @@ module vsp_cluster_controller_wrapper #(
     .reduce_op_o(expand_reduce_op),
     .export_narrow_o(expand_export_narrow),
     .route_enable_o(expand_route_enable),
+    .route_io_mode_o(expand_route_io_mode),
     .route_op_o(expand_route_op),
     .route_index_o(expand_route_index),
     .route_broadcast_index_o(expand_route_broadcast_index),
@@ -368,7 +371,8 @@ module vsp_cluster_controller_wrapper #(
       expand_src_arf, expand_dst_arf, expand_mask_enable, expand_mask_addr,
       expand_select_mask_addr, expand_dst_mrf, expand_write_vrf,
       expand_write_arf, expand_write_mrf, expand_reduce_enable,
-      expand_reduce_op, expand_route_enable, expand_route_op,
+      expand_reduce_op, expand_route_enable, expand_route_io_mode,
+      expand_route_op,
       expand_route_index, expand_route_broadcast_index,
       expand_route_slide_amount, expand_route_lower, expand_route_upper};
 
@@ -383,7 +387,8 @@ module vsp_cluster_controller_wrapper #(
           exec_src_arf, exec_dst_arf, exec_mask_enable, exec_mask_addr,
           exec_select_mask_addr, exec_dst_mrf, exec_write_vrf,
           exec_write_arf, exec_write_mrf, exec_reduce_enable, exec_reduce_op,
-          exec_route_enable, exec_route_op, exec_route_index,
+          exec_route_enable, exec_route_io_mode, exec_route_op,
+          exec_route_index,
           exec_route_broadcast_index, exec_route_slide_amount,
           exec_route_lower, exec_route_upper} = controller_exec_payload;
 
@@ -551,6 +556,7 @@ module vsp_cluster_controller_wrapper #(
     .exec_cmd_reduce_enable_i(exec_reduce_enable),
     .exec_cmd_reduce_op_i(exec_reduce_op),
     .exec_cmd_route_enable_i(exec_route_enable),
+    .exec_cmd_route_io_mode_i(exec_route_io_mode),
     .exec_cmd_route_op_i(exec_route_op),
     .exec_cmd_route_index_i(exec_route_index),
     .exec_cmd_route_broadcast_index_i(exec_route_broadcast_index),

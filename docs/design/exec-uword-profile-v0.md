@@ -421,7 +421,8 @@ count result 由 function 自动产生，不占 base 字段。reduction 仍只�
 
 ```text
 31:28  fmt = 0xd
-27:26  reserved = 0
+27     OUT（source export enable）
+26     IN（destination import enable）
 25:22  vs（source-data VRF row）
 21:18  vd
 17:10  reserved = 0
@@ -429,15 +430,25 @@ count result 由 function 自动产生，不占 base 字段。reduction 仍只�
 5:0    reserved = 0
 ```
 
+`[27:26]` 合称 2-bit `route_io_mode`：`00=NONE`、`01=IN`、`10=OUT`、
+`11=INOUT`。OUT 表示当前 action mask 的 group 可向 route wave 发布 `vs`；IN 表示
+当前 mask 的 group 消费 `vi` 并向 `vd` 提交结果。完整的 domain-local gather 使用
+`INOUT`。
+
 ROUTE 是纯寄存器形式的向量 gather：数据来自 `vs`，每个目的 byte 的 8-bit
 索引来自 `vi`，结果写入 `vd`。它固定展开成
-`SIMD_OP_PASS_A / ELEM_MODE_BYTE / write_vrf=1 / route_enable=1 /
+`SIMD_OP_PASS_A / ELEM_MODE_BYTE / route_enable=1 /
 ROUTE_OP_GATHER`，canonical `src_a=vs`、`src_b=vi`。旧的 immediate
 `route_index/broadcast_index/slide_amount` 输出全部为零；广播和 slide 由程序构造
 重复或偏移的 VRF 索引向量表达，不再占用指令位。
 
+OUT=0 时 canonical `src_a` 归零；IN=0 时 `src_b/dst_vrf/write_vrf` 归零。四种值都能
+被 assembler 和 expander 表达，但当前 single-active cluster engine 只执行 `INOUT`；
+`NONE/IN/OUT` 会形成有序的 illegal+rejected completion，且不产生 VRF 事务。这样半条
+route 不会进入 outstanding 后等待尚未出现的协作者。
+
 首版不编码 MRF selector、narrow export 或 reduction。目的 group 的有效性来自
-resolved `action_group_mask` sideband；该 sideband 不塞进本字。当前 cluster 接入用
+resolved `action_group_mask` sideband；该 sideband 不塞进本字。当前 `INOUT` 接入用
 同一 mask 选择 source/index capture 与 destination commit，并把每个选中 group 整组
 展开为四个 active byte。活动目的的越界索引或指向 inactive source 的索引关闭对应
 byte write、保留 `vd` 并设置 invalid-element 诊断；inactive 目的同样不写回，但不设置
@@ -447,9 +458,12 @@ v0 编码。
 示例：
 
 ```text
-EXEC_ROUTE vs=1 vi=3 vd=2
-=> 0xd04800c0
+EXEC_ROUTE vs=1 vi=3 vd=2 io=3
+=> 0xdc4800c0
 ```
+
+assembler 省略 `io` 时默认 `3`。此前实验编码把 `[27:26]` 作为零保留位；本 profile
+尚未冻结，因此旧的 raw `0xd04800c0` 不再表示可执行的完整 gather。
 
 ## 5. Canonical expansion
 
@@ -462,12 +476,13 @@ format 中出现的字段必须规范成零，不继承上一条 entry 的值。
 |---|---|
 | `dispatch_class` | `EXEC` |
 | `route_enable` | ROUTE 为 `1`，其他 format 为 `0` |
-| `route_op/index/broadcast/slide` | ROUTE 固定 `GATHER`，所有 immediate route control 为零 |
+| `route_io_mode` | ROUTE 直接保留 `[27:26]` 的 OUT/IN；其他 format 为 `0` |
+| `route_op/index/broadcast/slide` | ROUTE 固定 `GATHER`，旧的 index/broadcast/slide immediate control 为零 |
 | `route_lower/route_upper` | 不来自 uword；本 profile 始终输出零 |
 | `mask_enable/mask_addr` | 通常由 `mask_sel` 派生；ROUTE 与 MRF_LOGIC 固定 disabled |
 | `reduce_enable/reduce_op` | 通常由 `red` 派生；ROUTE 固定 disabled |
 | `use_imm/imm` | 由 `bimm` 或 MAC_RI 派生；WADD_WSUB 使用 inline align |
-| `write_vrf/write_arf/write_mrf` | 通常由显式 write bit 与 operation family 派生；ROUTE 隐含写 VRF |
+| `write_vrf/write_arf/write_mrf` | 通常由显式 write bit 与 operation family 派生；ROUTE 的 `write_vrf=IN` |
 | `elem_mode` | ALU/CMP/SELECT/COMPACT 使用字段；其他 format 固定 BYTE |
 
 format-specific sub-op 先映射成 `simd_op_e`，然后复用
@@ -624,8 +639,10 @@ packet 的格式需求，不能作为“先提交 base、下一拍再补 extensi
 ### ROUTE 的 cluster 执行路径
 
 profile v0 已给 VRF-indexed ROUTE 分配 `fmt=0xd` 并归入 EXEC；cluster wrapper 已将
-这项 canonical action 接到 blocking `vsp_cluster_register_route_engine`。默认
-16-byte route domain 通过 shared VRF arbiter 串行捕获选中 group 的 `vs`/`vi` row，
+这项 canonical action 接到 blocking `vsp_cluster_register_route_engine`。编码包含
+2-bit `{OUT,IN}` role immediate；当前部署只接受 `INOUT`，其余 mode 在任何 VRF
+transaction 前有序拒绝。默认 16-byte route domain 通过 shared VRF arbiter 串行捕获
+选中 group 的 `vs`/`vi` row，
 完整 snapshot 进入 gather，再逐组 masked commit；最后一个 write 完成后才产生 EXEC
 completion。wrapper 在启动前排空既有 ordinary EXEC/MEMORY/VRF transaction；pending
 route 阻止新 MEMORY，route busy 阻止新 ordinary EXEC/MEMORY，所以 snapshot/commit

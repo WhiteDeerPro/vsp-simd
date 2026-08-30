@@ -11,7 +11,8 @@
 1. `EXEC_ROUTE` is a VRF-indexed **register gather** over one route domain.
    Each destination byte reads its source index from another VRF row;
    duplicate source indices are legal and mean multicast. It does not form
-   memory addresses. Its cluster capture/commit path is not yet connected.
+   memory addresses. Its blocking cluster capture/commit path is connected;
+   the current engine executes only complete `INOUT` route mode.
 2. The current vector memory path moves a contiguous span from
    `sbase + offset`. It does not consume a vector of addresses.
 3. Scatter writes `value[i]` to an address selected by `index[i]`. Equal
@@ -90,8 +91,7 @@ the register-route engine.
 
 ## What is intentionally not claimed
 
-- the dynamic VRF-row route encoding exists, but its cluster execution path is
-  not connected;
+- cooperative OUT-only/IN-only route-wave rendezvous is not connected;
 - no current indexed load/store command;
 - no current atomic histogram update;
 - no current automatic 16-lane count collection;

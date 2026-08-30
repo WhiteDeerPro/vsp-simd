@@ -466,12 +466,18 @@ def encode_route(tokens: list[str], line_number: int) -> list[int]:
                             line_number),
         0, 15, line_number,
     )
+    route_io = require_range(
+        "io", parse_integer(take_named(named, "io", "3", line_number),
+                            line_number),
+        0, 3, line_number,
+    )
 
     if named:
         unknown = ", ".join(sorted(named))
         raise AssemblyError(f"line {line_number}: unknown route fields: {unknown}")
 
     base = 0xD << 28
+    base |= route_io << 26
     base |= vs << 22
     base |= vd << 18
     base |= vi << 6
