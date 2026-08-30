@@ -19,6 +19,27 @@ package vsp_sequencer_state_pkg;
     endcase
   endfunction
 
+  // Branch conditions consume the same sequencer-local scalar register file
+  // as address-state operations.  They are kept separate from state_op_e:
+  // a branch reads state but does not update it.
+  localparam int VSP_BRANCH_COND_W = 2;
+
+  typedef enum logic [VSP_BRANCH_COND_W-1:0] {
+    VSP_BRANCH_COND_J   = 2'h0,
+    VSP_BRANCH_COND_BEQ = 2'h1,
+    VSP_BRANCH_COND_BNE = 2'h2
+  } vsp_branch_cond_e;
+
+  function automatic logic vsp_branch_cond_defined(
+      input logic [VSP_BRANCH_COND_W-1:0] branch_cond);
+    unique case (branch_cond)
+      VSP_BRANCH_COND_J,
+      VSP_BRANCH_COND_BEQ,
+      VSP_BRANCH_COND_BNE: vsp_branch_cond_defined = 1'b1;
+      default: vsp_branch_cond_defined = 1'b0;
+    endcase
+  endfunction
+
   localparam int VSP_STATE_CPL_STATUS_W = 2;
 
   typedef enum logic [VSP_STATE_CPL_STATUS_W-1:0] {

@@ -26,8 +26,8 @@ strict single-active controller
 
 There is one PC, one execution context and one issue slot in the executable
 profile.  The PC advances by four bytes for every stream word, including an
-extension/body word.  There is no branch, loop, redirect, prediction or
-exception restart yet.
+extension/body word.  `J/BEQ/BNE` may redirect that single PC; there is no
+second PC, prediction, delay slot, CALL/RET or exception restart.
 
 `FETCH_WORDS=4` means that the I-side can return four consecutive 32-bit stream
 words in one bundle.  It does not mean four instructions are issued.  A bundle
@@ -73,6 +73,13 @@ The predecoder answers only:
 - whether a canonical `CONTROL.END` terminates younger fetch.
 
 It does not decode operands, compute addresses or infer dependencies.
+
+CONTROL branch is a fixed two-word record.  The semantic decoder identifies
+the condition/registers and a signed byte displacement relative to the header
+PC.  Redirect is resolved only at the oldest-action boundary.  On every legal
+branch, the source discards/poisons younger fetch state and the framer clears
+its tail, EOF, continuity and prefetched-END state before refetching the chosen
+target or fall-through PC.
 
 ## Two-stage decode
 
@@ -152,9 +159,9 @@ format.
 ## Next useful work
 
 1. Preserve the one-PC/one-slot executable baseline while adding directed
-   indexed-memory programs.
-2. Add loop/redirect only with explicit PC, framer-tail and younger-record
-   flush rules.
+   indexed-memory and branch-loop programs.
+2. Measure the cost of the conservative branch refetch rule before adding a
+   not-taken sequential fast path.
 3. Measure whether one action slot starves the four-group EXEC cluster before
    adding a second slot.
 4. If overlap is justified, introduce a small dependency window for ordinary

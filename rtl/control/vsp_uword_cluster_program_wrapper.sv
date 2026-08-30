@@ -139,6 +139,9 @@ module vsp_uword_cluster_program_wrapper #(
 
   logic source_start_valid;
   logic source_start_ready;
+  logic source_redirect_valid;
+  logic source_redirect_ready;
+  logic [PC_W-1:0] source_redirect_pc;
   logic source_bundle_valid;
   logic source_bundle_ready;
   logic [(FETCH_WORDS*VSP_UWORD_W)-1:0] source_bundle_words;
@@ -175,6 +178,7 @@ module vsp_uword_cluster_program_wrapper #(
   logic framer_terminal_clear;
   logic framer_clear_q;
   logic framer_stream_abort_q;
+  logic framer_redirect_flush;
   logic framer_delivery_done;
   logic framer_idle;
   logic framer_protocol_error;
@@ -198,6 +202,11 @@ module vsp_uword_cluster_program_wrapper #(
   logic [STATE_REG_INDEX_W-1:0] adapter_state_rs1;
   logic [STATE_REG_INDEX_W-1:0] adapter_state_rs2;
   logic [31:0] adapter_state_imm;
+  logic adapter_action_is_branch;
+  logic [VSP_BRANCH_COND_W-1:0] adapter_branch_cond;
+  logic [STATE_REG_INDEX_W-1:0] adapter_branch_rs1;
+  logic [STATE_REG_INDEX_W-1:0] adapter_branch_rs2;
+  logic signed [31:0] adapter_branch_offset;
   logic adapter_memory_base_read_valid;
   logic [VSP_MEMORY_UWORD_STATE_REG_W-1:0]
       adapter_memory_base_read_reg;
@@ -248,6 +257,26 @@ module vsp_uword_cluster_program_wrapper #(
   logic state_busy;
   logic state_router_protocol_error_q;
 
+  logic branch_action_selected;
+  logic branch_issue_valid;
+  logic branch_issue_ready;
+  logic branch_fire;
+  logic branch_redirect_fire;
+  logic branch_condition_legal;
+  logic branch_taken;
+  logic branch_next_pc_valid;
+  logic [PC_W-1:0] branch_next_pc;
+  logic control_read_valid;
+  logic [MEM_EADDR_W-1:0] control_read_rs1_data;
+  logic [MEM_EADDR_W-1:0] control_read_rs2_data;
+  logic control_read_legal;
+  logic branch_cpl_valid_q;
+  logic branch_cpl_ready;
+  logic [CONTEXT_W-1:0] branch_cpl_context_q;
+  logic [TAG_W-1:0] branch_cpl_tag_q;
+  logic [VSP_ACTION_CPL_STATUS_W-1:0] branch_cpl_status_q;
+  logic [DECODE_ERROR_W-1:0] branch_cpl_decode_error_q;
+
   logic [ADDR_CONTEXT_W-1:0] action_memory_addr_context;
   logic signed [MEM_OFFSET_W-1:0] action_memory_eaddr_offset;
   logic [VRF_ADDR_W-1:0] action_memory_vrf_row;
@@ -267,6 +296,7 @@ module vsp_uword_cluster_program_wrapper #(
 
   logic [CONTEXT_W-1:0] program_context_q;
   logic [GROUP_COUNT-1:0] program_group_mask_q;
+  logic [PC_W-1:0] program_start_pc_q;
   logic [PC_W-1:0] program_end_pc_q;
   logic program_active_q;
   logic program_done_q;
@@ -298,8 +328,20 @@ module vsp_uword_cluster_program_wrapper #(
   logic program_finish_success;
   logic program_finish_failure;
   logic transport_failure_now;
+  logic completion_parent_overlap;
+  logic active_engine_overlap;
+
+  localparam int BRANCH_CALC_W = ((PC_W + 1) > 33) ? (PC_W + 1) : 33;
+  logic signed [BRANCH_CALC_W-1:0] branch_pc_ext;
+  logic signed [BRANCH_CALC_W-1:0] branch_offset_ext;
+  logic signed [BRANCH_CALC_W-1:0] branch_target_ext;
+  logic signed [BRANCH_CALC_W-1:0] branch_fallthrough_ext;
+  logic signed [BRANCH_CALC_W-1:0] branch_selected_pc_ext;
+  logic signed [BRANCH_CALC_W-1:0] program_start_pc_ext;
+  logic signed [BRANCH_CALC_W-1:0] program_end_pc_ext;
 
   assign start_ready_o = rst_ni && !program_active_q && !state_busy &&
+      !branch_cpl_valid_q &&
       !cluster_controller_busy && source_start_ready && framer_idle &&
       !framer_clear_q && !action_record_valid_q;
   assign start_fire = start_valid_i && start_ready_o;
@@ -331,7 +373,7 @@ module vsp_uword_cluster_program_wrapper #(
     // global record order and prevents a younger cluster action from passing
     // the sequencer-local engine.
     record_ready[0] = !action_record_valid_q && program_active_q &&
-                      !state_busy;
+                      !state_busy && !branch_cpl_valid_q;
   end
 
   assign adapter_end_allowed =
@@ -357,10 +399,13 @@ module vsp_uword_cluster_program_wrapper #(
   assign action_cpl_fire = action_cpl_valid_o && action_cpl_ready_i;
   assign program_finish_success = program_active_q && end_retired_q &&
       !terminal_boundary_error_q && !source_running && framer_halted &&
-      !cluster_controller_busy && !state_busy && !action_record_valid_q;
+      !cluster_controller_busy && !state_busy && !branch_cpl_valid_q &&
+      !action_record_valid_q && !branch_redirect_fire;
   assign program_finish_failure = program_active_q &&
-      !cluster_controller_busy && !state_busy && !source_running &&
+      !cluster_controller_busy && !state_busy && !branch_cpl_valid_q &&
+      !source_running &&
       !action_record_valid_q && !record_valid[0] &&
+      !branch_redirect_fire &&
       ((terminal_boundary_error_q && framer_halted) ||
        (eof_records_done_q && !end_retired_q) ||
        (transport_failure_q && (framer_idle || framer_halted)));
@@ -371,7 +416,8 @@ module vsp_uword_cluster_program_wrapper #(
   assign program_active_o = program_active_q;
   assign program_done_o = program_done_q;
   assign program_failed_o = program_failed_q;
-  assign program_error_o = program_error_q;
+  assign program_error_o = program_error_q || terminal_boundary_error_q ||
+                           transport_failure_q;
   assign program_halted_o = framer_halted;
   assign program_terminal_pc_o = framer_terminal_pc;
   assign fetch_protocol_error_o = control_store_protocol_error ||
@@ -381,20 +427,94 @@ module vsp_uword_cluster_program_wrapper #(
   assign protocol_error_o = fetch_protocol_error_o ||
       cluster_protocol_error_o || state_router_protocol_error_q ||
       terminal_boundary_error_q;
+  assign completion_parent_overlap =
+      (branch_cpl_valid_q && state_cpl_valid) ||
+      (branch_cpl_valid_q && cluster_action_cpl_valid) ||
+      (state_cpl_valid && cluster_action_cpl_valid);
+  assign active_engine_overlap =
+      (branch_cpl_valid_q && state_busy) ||
+      (branch_cpl_valid_q && cluster_controller_busy) ||
+      (state_busy && cluster_controller_busy);
 
-  // A legal CONTROL-state record is the only action intercepted locally.
-  // Malformed state records continue through the generic controller so they
-  // retire on the existing ordered decode-error path.  The two engines are
-  // mutually excluded until their completion has been consumed.
+  // Legal CONTROL-state records and every recognized branch record are
+  // intercepted locally.  Malformed state records still use the generic
+  // ordered reject path; malformed branches use the local completion so no
+  // branch-family record can leak into the cluster controller.  A branch
+  // resolves only after every older engine is idle, and its registered
+  // completion blocks younger admission until the external handshake.
   assign state_action_selected = adapter_action_valid &&
       adapter_action_is_state && adapter_action_legal;
+  assign branch_action_selected = adapter_action_valid &&
+      adapter_action_is_branch;
   assign state_cmd_valid = state_action_selected &&
-                           !cluster_controller_busy;
+                           !cluster_controller_busy && !branch_cpl_valid_q;
+  assign branch_issue_valid = branch_action_selected && !state_busy &&
+      !cluster_controller_busy && !branch_cpl_valid_q;
+  assign branch_issue_ready = !branch_next_pc_valid || source_redirect_ready;
+  assign branch_fire = branch_issue_valid && branch_issue_ready;
+  assign branch_redirect_fire = branch_fire && branch_next_pc_valid;
+  assign source_redirect_valid = branch_issue_valid && branch_next_pc_valid;
+  assign source_redirect_pc = branch_next_pc;
+  assign framer_redirect_flush = branch_redirect_fire;
   assign cluster_action_valid = adapter_action_valid &&
-                                !state_action_selected && !state_busy;
-  assign adapter_action_ready = state_action_selected ?
-      (!cluster_controller_busy && state_cmd_ready) :
-      (!state_busy && cluster_action_ready);
+      !state_action_selected && !branch_action_selected && !state_busy &&
+      !branch_cpl_valid_q;
+  always_comb begin
+    if (state_action_selected) begin
+      adapter_action_ready = !cluster_controller_busy &&
+                             !branch_cpl_valid_q && state_cmd_ready;
+    end else if (branch_action_selected) begin
+      adapter_action_ready = branch_issue_valid && branch_issue_ready;
+    end else begin
+      adapter_action_ready = !state_busy && !branch_cpl_valid_q &&
+                             cluster_action_ready;
+    end
+  end
+
+  // Branch targets are signed byte displacements relative to the header PC.
+  // The widened arithmetic distinguishes a real in-range target from modulo
+  // wraparound.  Taken targets must name a word inside the launch range;
+  // fall-through may equal end_pc so a missing final END drains normally.
+  always_comb begin
+    branch_pc_ext = $signed({{(BRANCH_CALC_W-PC_W){1'b0}},
+                             adapter_action_start_pc});
+    branch_offset_ext =
+        $signed({{(BRANCH_CALC_W-32){adapter_branch_offset[31]}},
+                 adapter_branch_offset});
+    branch_target_ext = branch_pc_ext + branch_offset_ext;
+    branch_fallthrough_ext = branch_pc_ext + BRANCH_CALC_W'(8);
+    program_start_pc_ext =
+        $signed({{(BRANCH_CALC_W-PC_W){1'b0}}, program_start_pc_q});
+    program_end_pc_ext =
+        $signed({{(BRANCH_CALC_W-PC_W){1'b0}}, program_end_pc_q});
+
+    branch_condition_legal = adapter_action_legal &&
+        ((adapter_branch_cond == VSP_BRANCH_COND_J) || control_read_legal);
+    branch_taken = 1'b0;
+    unique case (adapter_branch_cond)
+      VSP_BRANCH_COND_J: branch_taken = 1'b1;
+      VSP_BRANCH_COND_BEQ:
+        branch_taken = control_read_rs1_data == control_read_rs2_data;
+      VSP_BRANCH_COND_BNE:
+        branch_taken = control_read_rs1_data != control_read_rs2_data;
+      default: branch_taken = 1'b0;
+    endcase
+
+    branch_selected_pc_ext = branch_taken ? branch_target_ext :
+                                            branch_fallthrough_ext;
+    branch_next_pc = branch_selected_pc_ext[PC_W-1:0];
+    branch_next_pc_valid = branch_condition_legal &&
+        (branch_selected_pc_ext >= program_start_pc_ext) &&
+        (branch_selected_pc_ext <= program_end_pc_ext) &&
+        (branch_selected_pc_ext[1:0] == 2'b00);
+    if (branch_taken)
+      branch_next_pc_valid = branch_next_pc_valid &&
+                             (branch_selected_pc_ext < program_end_pc_ext);
+  end
+
+  assign control_read_valid = branch_action_selected &&
+      adapter_action_legal &&
+      (adapter_branch_cond != VSP_BRANCH_COND_J);
 
   // The adapter has already expanded UNIT_STRIDE span code zero into the
   // ordinary byte count selected by the launch mask.  Explicit casts keep
@@ -411,29 +531,35 @@ module vsp_uword_cluster_program_wrapper #(
   assign action_memory_span_bytes =
       SPAN_BYTES_W'(adapter_memory_span_bytes);
 
-  // State and cluster completions cannot overlap in the strict reference
-  // path.  State has deterministic priority while an assertion below records
-  // any integration violation rather than combining two parents.
-  assign action_cpl_valid_o = state_cpl_valid || cluster_action_cpl_valid;
-  assign state_cpl_ready = action_cpl_ready_i && state_cpl_valid;
+  // Branch, state and cluster completions cannot overlap in the strict path.
+  // Deterministic priority keeps payload stable while the assertion below
+  // records an integration violation rather than combining parents.
+  assign action_cpl_valid_o = branch_cpl_valid_q || state_cpl_valid ||
+                              cluster_action_cpl_valid;
+  assign branch_cpl_ready = action_cpl_ready_i && branch_cpl_valid_q;
+  assign state_cpl_ready = action_cpl_ready_i && !branch_cpl_valid_q &&
+                           state_cpl_valid;
   assign cluster_action_cpl_ready = action_cpl_ready_i &&
-                                    !state_cpl_valid;
-  assign action_cpl_class_o = state_cpl_valid ?
+      !branch_cpl_valid_q && !state_cpl_valid;
+  assign action_cpl_class_o = (branch_cpl_valid_q || state_cpl_valid) ?
       VSP_ACTION_CLASS_CONTROL : cluster_action_cpl_class;
-  assign action_cpl_context_o = state_cpl_valid ?
-      state_cpl_context : cluster_action_cpl_context;
-  assign action_cpl_tag_o = state_cpl_valid ?
-      state_cpl_tag : cluster_action_cpl_tag;
-  assign action_cpl_group_mask_o = state_cpl_valid ?
+  assign action_cpl_context_o = branch_cpl_valid_q ?
+      branch_cpl_context_q : (state_cpl_valid ?
+      state_cpl_context : cluster_action_cpl_context);
+  assign action_cpl_tag_o = branch_cpl_valid_q ? branch_cpl_tag_q :
+      (state_cpl_valid ? state_cpl_tag : cluster_action_cpl_tag);
+  assign action_cpl_group_mask_o = (branch_cpl_valid_q || state_cpl_valid) ?
       '0 : cluster_action_cpl_group_mask;
-  assign action_cpl_status_o = state_cpl_valid ?
-      (state_cpl_status == VSP_STATE_CPL_OK ? VSP_ACTION_CPL_OK :
-                                             VSP_ACTION_CPL_CONTROL_ERROR) :
-      cluster_action_cpl_status;
-  assign action_cpl_decode_error_o = state_cpl_valid ?
-      '0 : cluster_action_cpl_decode_error;
-  assign action_cpl_end_o = state_cpl_valid ? 1'b0 :
-                                              cluster_action_cpl_end;
+  assign action_cpl_status_o = branch_cpl_valid_q ? branch_cpl_status_q :
+      (state_cpl_valid ?
+       (state_cpl_status == VSP_STATE_CPL_OK ? VSP_ACTION_CPL_OK :
+                                              VSP_ACTION_CPL_CONTROL_ERROR) :
+       cluster_action_cpl_status);
+  assign action_cpl_decode_error_o = branch_cpl_valid_q ?
+      branch_cpl_decode_error_q : (state_cpl_valid ?
+      '0 : cluster_action_cpl_decode_error);
+  assign action_cpl_end_o = (branch_cpl_valid_q || state_cpl_valid) ? 1'b0 :
+      cluster_action_cpl_end;
 
   vsp_uword_control_store #(
     .PC_W(PC_W),
@@ -471,6 +597,9 @@ module vsp_uword_cluster_program_wrapper #(
     .start_ready_o(source_start_ready),
     .start_pc_i,
     .end_pc_i,
+    .redirect_valid_i(source_redirect_valid),
+    .redirect_ready_o(source_redirect_ready),
+    .redirect_pc_i(source_redirect_pc),
     .store_req_valid_o(store_req_valid),
     .store_req_ready_i(store_req_ready),
     .store_req_pc_o(store_req_pc),
@@ -524,6 +653,7 @@ module vsp_uword_cluster_program_wrapper #(
     .halted_o(framer_halted),
     .terminal_clear_i(framer_terminal_clear),
     .stream_abort_i(framer_stream_abort_q),
+    .redirect_flush_i(framer_redirect_flush),
     .record_delivery_done_o(framer_delivery_done),
     .idle_o(framer_idle),
     .protocol_error_clear_i,
@@ -579,6 +709,11 @@ module vsp_uword_cluster_program_wrapper #(
     .action_state_rs1_o(adapter_state_rs1),
     .action_state_rs2_o(adapter_state_rs2),
     .action_state_imm_o(adapter_state_imm),
+    .action_is_branch_o(adapter_action_is_branch),
+    .action_branch_cond_o(adapter_branch_cond),
+    .action_branch_rs1_o(adapter_branch_rs1),
+    .action_branch_rs2_o(adapter_branch_rs2),
+    .action_branch_offset_o(adapter_branch_offset),
     .memory_base_read_valid_o(adapter_memory_base_read_valid),
     .memory_base_read_reg_o(adapter_memory_base_read_reg),
     .memory_base_read_data_i(adapter_memory_base_read_data),
@@ -620,6 +755,13 @@ module vsp_uword_cluster_program_wrapper #(
     .base_read_reg_i(STATE_REG_INDEX_W'(adapter_memory_base_read_reg)),
     .base_read_data_o(adapter_memory_base_read_data),
     .base_read_legal_o(adapter_memory_base_read_legal),
+    .control_read_valid_i(control_read_valid),
+    .control_read_context_i(adapter_action_context),
+    .control_read_rs1_i(adapter_branch_rs1),
+    .control_read_rs2_i(adapter_branch_rs2),
+    .control_read_rs1_data_o(control_read_rs1_data),
+    .control_read_rs2_data_o(control_read_rs2_data),
+    .control_read_legal_o(control_read_legal),
     .cpl_valid_o(state_cpl_valid),
     .cpl_ready_i(state_cpl_ready),
     .cpl_context_o(state_cpl_context),
@@ -750,11 +892,40 @@ module vsp_uword_cluster_program_wrapper #(
   );
   /* verilator lint_on PINCONNECTEMPTY */
 
+  // A branch completion is deliberately registered even though comparison
+  // and target selection are combinational.  This makes CONTROL completion
+  // obey the same valid/ready stability contract as EXEC, MEMORY and state
+  // actions, and prevents a younger record from entering while it is stalled.
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      branch_cpl_valid_q <= 1'b0;
+      branch_cpl_context_q <= '0;
+      branch_cpl_tag_q <= '0;
+      branch_cpl_status_q <= VSP_ACTION_CPL_OK;
+      branch_cpl_decode_error_q <= '0;
+    end else begin
+      if (branch_cpl_valid_q && branch_cpl_ready)
+        branch_cpl_valid_q <= 1'b0;
+      if (branch_fire) begin
+        branch_cpl_valid_q <= 1'b1;
+        branch_cpl_context_q <= adapter_action_context;
+        branch_cpl_tag_q <= adapter_action_tag;
+        branch_cpl_status_q <= !adapter_action_legal ?
+            VSP_ACTION_CPL_DECODE_ERROR :
+            (branch_next_pc_valid ? VSP_ACTION_CPL_OK :
+                                    VSP_ACTION_CPL_CONTROL_ERROR);
+        branch_cpl_decode_error_q <= adapter_action_legal ?
+            '0 : adapter_action_decode_error;
+      end
+    end
+  end
+
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       source_terminal_drain_q <= 1'b0;
       program_context_q <= '0;
       program_group_mask_q <= '0;
+      program_start_pc_q <= '0;
       program_end_pc_q <= '0;
       program_active_q <= 1'b0;
       program_done_q <= 1'b0;
@@ -778,11 +949,10 @@ module vsp_uword_cluster_program_wrapper #(
     end else begin
       if (protocol_error_clear_i)
         state_router_protocol_error_q <= 1'b0;
-      if ((state_cpl_valid && cluster_action_cpl_valid) ||
-          (state_busy && cluster_controller_busy))
+      if (completion_parent_overlap || active_engine_overlap)
         state_router_protocol_error_q <= 1'b1;
 
-      if (start_fire)
+      if (start_fire || branch_redirect_fire)
         source_terminal_drain_q <= 1'b0;
       else if (framer_stop_fetch)
         source_terminal_drain_q <= 1'b1;
@@ -797,7 +967,8 @@ module vsp_uword_cluster_program_wrapper #(
       if (program_active_q &&
           (transport_failure_q || transport_failure_now) &&
           !framer_stop_fetch && !record_valid[0] &&
-          !framer_idle && !framer_halted && !framer_stream_abort_q)
+          !framer_idle && !framer_halted && !framer_stream_abort_q &&
+          !branch_redirect_fire)
         framer_stream_abort_q <= 1'b1;
 
       if (record_accept[0]) begin
@@ -829,6 +1000,7 @@ module vsp_uword_cluster_program_wrapper #(
       if (start_fire) begin
         program_context_q <= start_context_i;
         program_group_mask_q <= start_group_mask_i;
+        program_start_pc_q <= start_pc_i;
         program_end_pc_q <= end_pc_i;
         program_active_q <= 1'b1;
         program_error_q <= 1'b0;
@@ -840,20 +1012,25 @@ module vsp_uword_cluster_program_wrapper #(
         // An empty [start_pc,end_pc) range produces no bundle for the framer;
         // source delivery is therefore also an EOF event when the framer is
         // already idle.  It closes as a missing-END failure, not a hang.
-        if (framer_delivery_done ||
-            (source_delivery_done && framer_idle))
+        if (!branch_redirect_fire &&
+            (framer_delivery_done ||
+             (source_delivery_done && framer_idle)))
           eof_records_done_q <= 1'b1;
-        if (terminal_boundary_error_now) begin
+        if (terminal_boundary_error_now && !branch_redirect_fire) begin
           terminal_boundary_error_q <= 1'b1;
-          program_error_q <= 1'b1;
         end
-        if (transport_failure_now) begin
+        if (transport_failure_now && !branch_redirect_fire) begin
           transport_failure_q <= 1'b1;
-          program_error_q <= 1'b1;
+        end
+        if (branch_redirect_fire) begin
+          // EOF, an early END and a fetch fault may all belong to the
+          // prefetched sequential path younger than this branch.
+          eof_records_done_q <= 1'b0;
+          terminal_boundary_error_q <= 1'b0;
+          transport_failure_q <= 1'b0;
         end
         if (cluster_protocol_error_o || state_router_protocol_error_q ||
-            (state_cpl_valid && cluster_action_cpl_valid) ||
-            (state_busy && cluster_controller_busy))
+            completion_parent_overlap || active_engine_overlap)
           program_error_q <= 1'b1;
         if (action_cpl_fire &&
             action_cpl_status_o != VSP_ACTION_CPL_OK)

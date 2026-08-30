@@ -56,6 +56,11 @@ module vsp_uword_multi_framer #(
   // stream.  It is not successful EOF and does not clear a previously
   // recognized END or a sticky protocol error.
   input  logic                                      stream_abort_i,
+  // A committed control-flow redirect is stronger than a transport abort: it
+  // discards every buffered sequential-path word and all continuity/EOF/END
+  // state so the next bundle may begin at an unrelated PC.  A sticky framing
+  // protocol error is diagnostic history and is deliberately preserved.
+  input  logic                                      redirect_flush_i,
   output logic                                      record_delivery_done_o,
   output logic                                      idle_o,
   input  logic                                      protocol_error_clear_i,
@@ -219,7 +224,8 @@ module vsp_uword_multi_framer #(
     accepted_records = 0;
     for (scan_index = 0; scan_index < ADMIT_SLOTS;
          scan_index = scan_index + 1) begin
-      record_accept_o[scan_index] = !stream_abort_i && prefix_open &&
+      record_accept_o[scan_index] = !stream_abort_i && !redirect_flush_i &&
+          prefix_open &&
           record_valid_o[scan_index] && record_ready_i[scan_index];
       if (record_accept_o[scan_index]) begin
         accepted_words = accepted_words + int'(
@@ -237,13 +243,17 @@ module vsp_uword_multi_framer #(
     capacity_bundle_words = bundle_count_ok ? valid_bundle_words :
                                              BUNDLE_WORDS;
 
-    stop_fetch_o = terminal_stop_q || terminal_found;
+    // Suppress stale control/data handshakes in the redirect commit cycle.
+    // The registered state is cleared at the following edge.
+    stop_fetch_o = !redirect_flush_i &&
+                   (terminal_stop_q || terminal_found);
     terminal_pc_o = terminal_found ? terminal_found_pc : terminal_pc_q;
     terminal_accept_o = |(record_accept_o & record_terminal_o);
-    halted_o = terminal_stop_q && (word_count_q == 0);
+    halted_o = !redirect_flush_i && terminal_stop_q &&
+               (word_count_q == 0);
     idle_o = (word_count_q == 0) && !eof_seen_q &&
              !discard_until_last_q && !terminal_stop_q;
-    record_delivery_done_o = record_delivery_done_q;
+    record_delivery_done_o = record_delivery_done_q && !redirect_flush_i;
     protocol_error_o = protocol_error_q;
 
     // A valid producer holds count and payload stable with valid.  Using the
@@ -251,7 +261,7 @@ module vsp_uword_multi_framer #(
     // width to record-admission width.  Invalid counts reserve a full bundle
     // so the bad transfer can still be accepted and diagnosed once space is
     // available.
-    bundle_ready_o = rst_ni && !stream_abort_i &&
+    bundle_ready_o = rst_ni && !stream_abort_i && !redirect_flush_i &&
         (discard_until_last_q ||
          (!stop_fetch_o && !eof_seen_q &&
           ((retained_words + capacity_bundle_words) <= BUFFER_WORDS)));
@@ -344,6 +354,26 @@ module vsp_uword_multi_framer #(
       terminal_stop_d = terminal_stop_q || terminal_found;
       terminal_pc_d = terminal_found ? terminal_found_pc : terminal_pc_q;
       record_delivery_done_d = 1'b0;
+      for (shift_index = 0; shift_index < BUFFER_WORDS;
+           shift_index = shift_index + 1)
+        word_d[shift_index] = '0;
+    end
+
+    // Redirect is the final data-state priority.  Unlike stream_abort it also
+    // revokes a recognized END, because the sequencer has committed a new PC.
+    // Preserve protocol_error_q even if the old stream becomes idle here;
+    // only the explicit diagnostic-clear path may acknowledge it later.
+    if (redirect_flush_i) begin
+      word_count_d = '0;
+      base_pc_d = '0;
+      expected_bundle_pc_d = '0;
+      expected_bundle_pc_valid_d = 1'b0;
+      eof_seen_d = 1'b0;
+      discard_until_last_d = 1'b0;
+      terminal_stop_d = 1'b0;
+      terminal_pc_d = '0;
+      record_delivery_done_d = 1'b0;
+      protocol_error_d = protocol_error_q;
       for (shift_index = 0; shift_index < BUFFER_WORDS;
            shift_index = shift_index + 1)
         word_d[shift_index] = '0;

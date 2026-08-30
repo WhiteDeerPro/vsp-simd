@@ -30,6 +30,7 @@ register routing or multi-PC synchronization as prerequisites.
 - mixed EXEC/MEMORY/CONTROL structural predecode;
 - EXEC expander, MEMORY/CONTROL semantic decode and action adapter;
 - single-context sequencer address state (`SMOVI/SADD/SADDI`);
+- PC-relative `J/BEQ/BNE`, source redirect and framer younger-state flush;
 - strict one-active-action class controller and ordered completion;
 - `CONTROL.END` and `program_done` reference behavior.
 
@@ -54,7 +55,7 @@ These are current design choices, not incidental test values:
 - four SIMD4 groups implemented, sixteen groups the profile bound;
 - no cross-group register-to-register route instruction;
 - no thread-like slot behavior;
-- no cache, MMU/TLB/PTW, DMA, branch/loop or exception machinery yet.
+- no cache, MMU/TLB/PTW, DMA, branch prediction or exception machinery yet.
 
 Experimental Bênes/Omega/crossbar, wide gather, route rendezvous and route-wave
 RTL stays outside the default product lint/test and may be run through the
@@ -89,7 +90,7 @@ Tasks:
 Acceptance is a protocol adapter and executable model, not a speculative cache
 capacity choice.
 
-## M3 — Loop and redirect
+## M3 — Loop and redirect (baseline implemented)
 
 Goal: run useful kernels without unrolling every iteration.
 
@@ -102,6 +103,11 @@ Required contract:
 - precise END and restart behavior.
 
 No branch prediction is required for the first loop profile.
+
+Current acceptance evidence includes a three-iteration `SADDI+BNEZ` loop where
+the branch shares a fetch bundle with the final END, forward `J` skipping a
+prefetched EXEC record, completion backpressure, and invalid-target rejection.
+Performance optimization of not-taken fall-through remains optional follow-up.
 
 ## M4 — Measure one-slot utilization
 

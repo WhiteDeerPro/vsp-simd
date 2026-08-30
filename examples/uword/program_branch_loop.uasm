@@ -1,0 +1,11 @@
+# A three-iteration sequencer loop.  The branch and final END share one
+# four-word fetch bundle, intentionally exercising redirect of a prefetched
+# terminal record.
+
+    SMOVI rd=1 imm=3
+
+loop:
+    SADDI rd=1 rs1=1 imm=-1
+    BNEZ rs1=1 target=loop
+
+    CONTROL_END

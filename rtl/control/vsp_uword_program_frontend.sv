@@ -44,6 +44,9 @@ module vsp_uword_program_frontend #(
 );
   logic source_start_ready;
   logic source_start_valid;
+  /* verilator lint_off UNUSED */
+  logic source_redirect_ready_unused;
+  /* verilator lint_on UNUSED */
   logic store_write_ready;
   logic store_write_valid;
   logic store_req_valid;
@@ -122,6 +125,11 @@ module vsp_uword_program_frontend #(
     .start_ready_o(source_start_ready),
     .start_pc_i,
     .end_pc_i,
+    // This standalone framing harness remains a linear-stream component.
+    // Program-level CONTROL flow is owned by the cluster program wrapper.
+    .redirect_valid_i(1'b0),
+    .redirect_ready_o(source_redirect_ready_unused),
+    .redirect_pc_i('0),
     .store_req_valid_o(store_req_valid),
     .store_req_ready_i(store_req_ready),
     .store_req_pc_o(store_req_pc),

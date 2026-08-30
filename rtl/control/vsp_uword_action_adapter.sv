@@ -78,6 +78,16 @@ module vsp_uword_action_adapter #(
   output logic [STATE_REG_INDEX_W-1:0]              action_state_rs2_o,
   output logic [31:0]                               action_state_imm_o,
 
+  // Branches are CONTROL actions executed by the single-PC sequencing
+  // wrapper.  Like state actions, they remain visible at this ordered action
+  // boundary and must not be forwarded to the generic cluster controller.
+  output logic                                      action_is_branch_o,
+  output logic [vsp_sequencer_state_pkg::VSP_BRANCH_COND_W-1:0]
+                                                     action_branch_cond_o,
+  output logic [STATE_REG_INDEX_W-1:0]              action_branch_rs1_o,
+  output logic [STATE_REG_INDEX_W-1:0]              action_branch_rs2_o,
+  output logic signed [31:0]                        action_branch_offset_o,
+
   // The MEMORY decoder queries sequencer state combinationally.  Its resolved
   // base and all other descriptor fields must be sampled on action admission;
   // no downstream engine may live-read the state RF.
@@ -134,6 +144,12 @@ module vsp_uword_action_adapter #(
   logic [STATE_REG_INDEX_W-1:0] control_state_rs1;
   logic [STATE_REG_INDEX_W-1:0] control_state_rs2;
   logic [31:0] control_state_imm;
+  logic control_is_branch;
+  logic [vsp_sequencer_state_pkg::VSP_BRANCH_COND_W-1:0]
+      control_branch_cond;
+  logic [STATE_REG_INDEX_W-1:0] control_branch_rs1;
+  logic [STATE_REG_INDEX_W-1:0] control_branch_rs2;
+  logic signed [31:0] control_branch_offset;
 
   logic memory_out_valid;
   logic memory_legal;
@@ -192,7 +208,12 @@ module vsp_uword_action_adapter #(
     .state_rd_o(control_state_rd),
     .state_rs1_o(control_state_rs1),
     .state_rs2_o(control_state_rs2),
-    .state_imm_o(control_state_imm)
+    .state_imm_o(control_state_imm),
+    .is_branch_o(control_is_branch),
+    .branch_cond_o(control_branch_cond),
+    .branch_rs1_o(control_branch_rs1),
+    .branch_rs2_o(control_branch_rs2),
+    .branch_offset_o(control_branch_offset)
   );
 
   vsp_memory_uword_decoder #(
@@ -245,6 +266,11 @@ module vsp_uword_action_adapter #(
     action_state_rs1_o = '0;
     action_state_rs2_o = '0;
     action_state_imm_o = '0;
+    action_is_branch_o = 1'b0;
+    action_branch_cond_o = '0;
+    action_branch_rs1_o = '0;
+    action_branch_rs2_o = '0;
+    action_branch_offset_o = '0;
     action_memory_op_o = '0;
     action_memory_addr_mode_o = VSP_MEM_ADDR_MODE_UNIT_STRIDE;
     action_memory_addr_space_o = '0;
@@ -307,6 +333,11 @@ module vsp_uword_action_adapter #(
           action_state_rs1_o = control_state_rs1;
           action_state_rs2_o = control_state_rs2;
           action_state_imm_o = control_state_imm;
+          action_is_branch_o = control_is_branch;
+          action_branch_cond_o = control_branch_cond;
+          action_branch_rs1_o = control_branch_rs1;
+          action_branch_rs2_o = control_branch_rs2;
+          action_branch_offset_o = control_branch_offset;
           if (control_is_end && record_control_end_allowed_i) begin
             action_legal_o = 1'b1;
             action_decode_error_o =
@@ -317,6 +348,13 @@ module vsp_uword_action_adapter #(
             // forwarding one to the generic controller yields CONTROL_ERROR
             // instead of terminating the program.
             action_control_op_o = VSP_CONTROL_OP_W'(1);
+            action_legal_o = control_legal;
+            action_decode_error_o = DECODE_ERROR_W'(control_error);
+          end else if (control_is_branch) begin
+            // 2'h2 is intentionally undefined by vsp_action_pkg.  The
+            // sequencer wrapper intercepts every recognized branch record,
+            // including malformed ones that need an ordered decode error.
+            action_control_op_o = VSP_CONTROL_OP_W'(2);
             action_legal_o = control_legal;
             action_decode_error_o = DECODE_ERROR_W'(control_error);
           end else begin

@@ -18,6 +18,7 @@ constexpr uint8_t kMemory = 1;
 constexpr uint8_t kControl = 2;
 constexpr uint8_t kStatusOk = 0;
 constexpr uint8_t kStatusDecode = 1;
+constexpr uint8_t kStatusControl = 5;
 constexpr uint8_t kLoad = 0;
 constexpr uint8_t kStore = 1;
 constexpr uint8_t kLocal = 0;
@@ -393,9 +394,10 @@ void check_completion(const Completion& actual, uint8_t action_class,
 
 int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
-  if (argc != 3) {
+  if (argc != 4) {
     std::cerr << "usage: " << argv[0]
-              << " EXEC_PROGRAM.hex MEMORY_STATE_PROGRAM.hex\n";
+              << " EXEC_PROGRAM.hex MEMORY_STATE_PROGRAM.hex"
+              << " BRANCH_LOOP_PROGRAM.hex\n";
     return 2;
   }
 
@@ -415,6 +417,17 @@ int main(int argc, char** argv) {
       0x00000000U, 0xc0000000U};
   if (memory_state_program != memory_state_golden) {
     std::cerr << "generated MEMORY/state example differs from golden\n";
+    return 1;
+  }
+
+  const std::vector<uint32_t> branch_loop_program = read_hex(argv[3]);
+  const std::vector<uint32_t> branch_loop_golden = {
+      0xc4080000U, 0x00000003U,
+      0xc6084000U, 0xffffffffU,
+      0xc7820000U, 0xfffffff8U,
+      0xc0000000U};
+  if (branch_loop_program != branch_loop_golden) {
+    std::cerr << "generated branch-loop example differs from golden\n";
     return 1;
   }
 
@@ -441,6 +454,110 @@ int main(int argc, char** argv) {
             normal.results.size());
   expect_eq("normal issued no data-memory request", 0,
             normal.dmem_requests);
+
+  // The BNE and final END share the final four-word fetch bundle.  Taken
+  // iterations must revoke the prefetched END, while the third (not-taken)
+  // iteration redirects to fall-through and refetches that END.  Completion
+  // backpressure in run_until_terminal also checks the local branch parent.
+  program_store(dut, branch_loop_program);
+  launch(dut,
+         kBasePc + static_cast<uint32_t>(4 * branch_loop_program.size()),
+         0, 0x1, 0xd0);
+  Run branch_loop = run_until_terminal(dut);
+  expect_eq("branch loop completed", 1, branch_loop.done);
+  expect_eq("branch loop did not fail", 0, branch_loop.failed);
+  expect_eq("branch loop has no accumulated error", 0, branch_loop.error);
+  expect_eq("branch loop completion count", 8,
+            branch_loop.completions.size());
+  for (size_t index = 0; index < 7; ++index) {
+    check_completion(branch_loop.completions[index], kControl, 0,
+                     static_cast<uint8_t>(0xd0 + index), 0,
+                     kStatusOk, 0, false,
+                     "branch-loop CONTROL " + std::to_string(index));
+  }
+  check_completion(branch_loop.completions[7], kControl, 0, 0xd7, 0,
+                   kStatusOk, 0, true, "branch-loop END");
+  expect_eq("branch loop issued no data-memory request", 0,
+            branch_loop.dmem_requests);
+
+  // A forward J skips an otherwise legal EXEC record which was already in
+  // the same fetch bundle.  No younger action or result may become visible.
+  const std::vector<uint32_t> forward_jump = {
+      0xc7000000U, 0x0000000cU, 0x17822210U, 0xc0000000U};
+  program_store(dut, forward_jump);
+  launch(dut, kBasePc + 16, 0, 0x1, 0xe0);
+  Run jumped = run_until_terminal(dut);
+  expect_eq("forward jump completed", 1, jumped.done);
+  expect_eq("forward jump has no error", 0, jumped.error);
+  expect_eq("forward jump completion count", 2,
+            jumped.completions.size());
+  check_completion(jumped.completions[0], kControl, 0, 0xe0, 0,
+                   kStatusOk, 0, false, "forward J");
+  check_completion(jumped.completions[1], kControl, 0, 0xe1, 0,
+                   kStatusOk, 0, true, "forward J target END");
+  expect_eq("skipped EXEC has no result", 0, jumped.results.size());
+
+  // BEQ observes the sequencer state RF only after both older SMOVI actions
+  // retire.  Equal operands take the branch and suppress the younger EXEC.
+  const std::vector<uint32_t> equal_branch = {
+      0xc4080000U, 0x00000007U,
+      0xc4100000U, 0x00000007U,
+      0xc7422000U, 0x0000000cU,
+      0x17822210U, 0xc0000000U};
+  program_store(dut, equal_branch);
+  launch(dut, kBasePc + 32, 0, 0x1, 0xe8);
+  Run equal_taken = run_until_terminal(dut);
+  expect_eq("BEQ program completed", 1, equal_taken.done);
+  expect_eq("BEQ program has no error", 0, equal_taken.error);
+  expect_eq("BEQ completion count", 4, equal_taken.completions.size());
+  for (size_t index = 0; index < 3; ++index) {
+    check_completion(equal_taken.completions[index], kControl, 0,
+                     static_cast<uint8_t>(0xe8 + index), 0,
+                     kStatusOk, 0, false,
+                     "BEQ CONTROL " + std::to_string(index));
+  }
+  check_completion(equal_taken.completions[3], kControl, 0, 0xeb, 0,
+                   kStatusOk, 0, true, "BEQ target END");
+  expect_eq("BEQ skipped EXEC has no result", 0,
+            equal_taken.results.size());
+
+  // A decoded J may not target the exclusive launch end.  It retires as a
+  // runtime CONTROL error without redirecting, then the sequential final END
+  // remains able to close the stream.
+  const std::vector<uint32_t> invalid_target = {
+      0xc7000000U, 0x0000000cU, 0xc0000000U};
+  program_store(dut, invalid_target);
+  launch(dut, kBasePc + 12, 0, 0x1, 0xf0);
+  Run bad_target = run_until_terminal(dut);
+  expect_eq("bad target still reaches final END", 1, bad_target.done);
+  expect_eq("bad target does not transport-fail", 0, bad_target.failed);
+  expect_eq("bad target sets program error", 1, bad_target.error);
+  expect_eq("bad target completion count", 2,
+            bad_target.completions.size());
+  check_completion(bad_target.completions[0], kControl, 0, 0xf0, 0,
+                   kStatusControl, 0, false, "out-of-range J");
+  check_completion(bad_target.completions[1], kControl, 0, 0xf1, 0,
+                   kStatusOk, 0, true, "END after out-of-range J");
+
+  // A recognized but malformed branch stays on the sequencer-local CONTROL
+  // path.  It reports the decoder cause in order and never reaches the generic
+  // cluster controller or changes the PC.
+  const std::vector<uint32_t> misaligned_branch = {
+      0xc7000000U, 0x00000002U, 0xc0000000U};
+  program_store(dut, misaligned_branch);
+  launch(dut, kBasePc + 12, 0, 0x1, 0xf8);
+  Run malformed_branch = run_until_terminal(dut);
+  expect_eq("malformed branch still reaches final END", 1,
+            malformed_branch.done);
+  expect_eq("malformed branch sets program error", 1,
+            malformed_branch.error);
+  expect_eq("malformed branch completion count", 2,
+            malformed_branch.completions.size());
+  check_completion(malformed_branch.completions[0], kControl, 0, 0xf8, 0,
+                   kStatusDecode, kBadImmediate, false,
+                   "misaligned branch decode error");
+  check_completion(malformed_branch.completions[1], kControl, 0, 0xf9, 0,
+                   kStatusOk, 0, true, "END after malformed branch");
 
   // Exercise the reverse engine boundary as well: a cluster EXEC completion
   // must retire before the following sequencer-local state command can fire.

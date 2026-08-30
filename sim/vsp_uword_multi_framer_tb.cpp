@@ -48,6 +48,7 @@ void clear_inputs(Vvsp_uword_multi_framer& dut) {
   dut.record_ready_i = 0;
   dut.terminal_clear_i = 0;
   dut.stream_abort_i = 0;
+  dut.redirect_flush_i = 0;
   dut.protocol_error_clear_i = 0;
 }
 
@@ -319,6 +320,65 @@ int main(int argc, char** argv) {
   expect_eq("END abort preserves stop", 1, dut.stop_fetch_o);
   expect_eq("END abort preserves terminal PC", 0xa00, dut.terminal_pc_o);
   expect_eq("END abort is not EOF", 0, dut.record_delivery_done_o);
+
+  // Redirect is stronger than END/EOF transport state.  It suppresses every
+  // same-cycle dequeue, discards the held record and terminal stop, and lets
+  // the next stream establish continuity from an unrelated PC.
+  dut.redirect_flush_i = 1;
+  dut.record_ready_i = 0x1;
+  eval_low(dut);
+  expect_eq("redirect suppresses stale record accept", 0,
+            dut.record_accept_o);
+  expect_eq("redirect suppresses stale terminal stop", 0,
+            dut.stop_fetch_o);
+  expect_eq("redirect rejects concurrent bundle", 0, dut.bundle_ready_o);
+  tick(dut);
+  dut.redirect_flush_i = 0;
+  dut.record_ready_i = 0;
+  expect_eq("redirect drops terminal record", 0, dut.record_valid_o);
+  expect_eq("redirect clears terminal stop", 0, dut.stop_fetch_o);
+  expect_eq("redirect clears halted state", 0, dut.halted_o);
+  expect_eq("redirect clears terminal PC", 0, dut.terminal_pc_o);
+  expect_eq("redirect returns framer idle", 1, dut.idle_o);
+  send_bundle(dut, 0xd00, 1, true, {0x80000000U, 0, 0, 0});
+  expect_slot(dut, 0, 0xd00, 0x80000000U, 1, 1, 0, false, false,
+              "post-redirect unrelated stream");
+  expect_eq("post-redirect unrelated PC is contiguous", 0,
+            dut.protocol_error_o);
+
+  // Redirect also cancels a pending physical EOF without reporting successful
+  // record delivery.  It must not, however, acknowledge sticky diagnostics.
+  reset(dut);
+  send_bundle(dut, 0xe00, 1, true, {0x80000000U, 0, 0, 0});
+  expect_eq("EOF record visible before redirect", 1, dut.record_valid_o);
+  dut.redirect_flush_i = 1;
+  dut.record_ready_i = 0x1;
+  eval_low(dut);
+  expect_eq("EOF redirect suppresses accept", 0, dut.record_accept_o);
+  tick(dut);
+  dut.redirect_flush_i = 0;
+  dut.record_ready_i = 0;
+  expect_eq("EOF redirect emits no delivery pulse", 0,
+            dut.record_delivery_done_o);
+  expect_eq("EOF redirect clears record", 0, dut.record_valid_o);
+  expect_eq("EOF redirect returns idle", 1, dut.idle_o);
+
+  send_bundle(dut, 0xf00, 2, false,
+              {0xbc0000bbU, 0x11111111U, 0, 0});
+  send_bundle(dut, 0xf0c, 1, true,
+              {0x80000000U, 0, 0, 0});
+  expect_eq("redirect diagnostic setup error", 1, dut.protocol_error_o);
+  dut.redirect_flush_i = 1;
+  tick(dut);
+  dut.redirect_flush_i = 0;
+  expect_eq("redirect preserves sticky protocol error", 1,
+            dut.protocol_error_o);
+  expect_eq("diagnostic redirect still clears flow state", 1, dut.idle_o);
+  dut.protocol_error_clear_i = 1;
+  tick(dut);
+  dut.protocol_error_clear_i = 0;
+  expect_eq("explicit clear acknowledges preserved diagnostic", 0,
+            dut.protocol_error_o);
 
   dut.final();
   std::cout << "vsp_uword_multi_framer_tb: " << std::dec << checks

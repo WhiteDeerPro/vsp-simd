@@ -45,7 +45,7 @@ digraph vsp_current_integration {
       color="#b58b23"
     ];
     pc_source [
-      label="one linear byte-PC source\n1 pc_q / 1 fetch outstanding\nup to 4 words; PC += 4 x count"
+      label="one byte-PC source\n1 pc_q / 1 fetch outstanding\nsequential fetch + redirect poison/drain"
     ];
     framer [
       label="multi-record framer\n4 input words / up to 3 record views\ncross-bundle tail + END cutoff"
@@ -71,12 +71,17 @@ digraph vsp_current_integration {
     style=rounded;
 
     semantic_decode [
-      label="EXEC / CONTROL-state / MEMORY decode\nLOAD or STORE + address mode\nbase-state snapshot",
+      label="EXEC / CONTROL-state/branch / MEMORY decode\nLOAD or STORE + address mode\nbase-state snapshot",
       fillcolor="#ecf8ef",
       color="#4e8f62"
     ];
     state_engine [
-      label="sequencer-local state engine\n32 x 32-bit state per context\nSMOVI / SADD / SADDI + base query",
+      label="sequencer-local state engine\n32 x 32-bit state per context\nSMOVI / SADD / SADDI + read queries",
+      fillcolor="#ecf8ef",
+      color="#4e8f62"
+    ];
+    branch_control [
+      label="CONTROL branch\nJ / BEQ / BNE\nrange check + redirect/flush + completion",
       fillcolor="#ecf8ef",
       color="#4e8f62"
     ];
@@ -99,11 +104,19 @@ digraph vsp_current_integration {
     adapter -> semantic_decode [label="ordered record"];
     semantic_decode -> strict_controller [label="canonical action"];
     semantic_decode -> state_engine [label="state action"];
+    semantic_decode -> branch_control [label="branch"];
     state_engine -> semantic_decode [
       color="#8056a6",
       fontcolor="#684686",
       label="base query / completion"
     ];
+    state_engine -> branch_control [
+      color="#8056a6",
+      fontcolor="#684686",
+      label="pair read"
+    ];
+    branch_control -> pc_source [label="redirect"];
+    branch_control -> framer [label="younger-state flush"];
     strict_controller -> exec_cluster [label="decoded EXEC"];
     exec_cluster -> strict_controller [
       color="#8056a6",
@@ -216,7 +229,7 @@ digraph vsp_current_integration {
   }
 
   control_gap [
-    label="not implemented in product path:\nbranch/loop/redirect, scalar L/S,\nreduction-to-state, multi-PC, cache/MMU",
+    label="not implemented in product path:\nscalar L/S, CALL/RET, reduction-to-state,\nbranch prediction, multi-PC, cache/MMU",
     shape=note,
     style="filled,dashed",
     fillcolor="#fff0f0",

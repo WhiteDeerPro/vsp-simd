@@ -224,8 +224,9 @@ address space/context、request backpressure、load data、store data/strobe，�
 state RF。
 
 该闭环仍只消费 framer slot 0，并在全局 single-active controller 下逐项推进；它没有
-接入 `vsp_ordered_action_window`，也不证明 multi-record 并发 admission、计算/搬运
-重叠或高吞吐 memory supply 已实现；program path 也没有 loop/branch/redirect。
+接入 `vsp_ordered_action_window`，也没有实现 multi-record 并发 admission、计算/搬运
+重叠或高吞吐 memory supply；program path 已有严格串行的
+`J/BEQ/BNE` redirect，但仍没有 memory/action overlap。
 
 物理 local SRAM、DMA、
 cache/MMU adapter、packetizer/gearbox 和系统级 ingress/capture FIFO 也未集成；

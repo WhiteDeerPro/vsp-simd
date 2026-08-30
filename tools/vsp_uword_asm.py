@@ -66,6 +66,13 @@ STATE_OPS = {
     "sadd": 1,
     "saddi": 2,
 }
+BRANCH_CONDITIONS = {
+    "j": 0,
+    "beq": 1,
+    "bne": 2,
+    "beqz": 1,
+    "bnez": 2,
+}
 MEMORY_OPS = {
     "vload": 0,
     "vstore": 1,
@@ -254,6 +261,82 @@ def encode_state(tokens: list[str], operation: str,
     header |= rs1 << 14
     header |= rs2 << 9
     return [header] if immediate is None else [header, immediate]
+
+
+def resolve_branch_target(text: str, symbols: dict[str, int],
+                          line_number: int) -> int:
+    """Resolve a branch target as a label or an absolute byte PC."""
+    if text in symbols:
+        return symbols[text]
+    try:
+        target = int(text, 0)
+    except ValueError as error:
+        raise AssemblyError(
+            f"line {line_number}: undefined branch target {text!r}"
+        ) from error
+    if target < 0:
+        raise AssemblyError(
+            f"line {line_number}: branch target PC must be non-negative"
+        )
+    return target
+
+
+def encode_branch(tokens: list[str], operation: str, line_number: int,
+                  current_pc: int, symbols: dict[str, int]) -> list[int]:
+    """Encode a fixed two-word sequencer CONTROL-flow record."""
+    named, positional = split_arguments(tokens, line_number)
+    if positional:
+        raise AssemblyError(
+            f"line {line_number}: {operation.upper()} fields must use key=value syntax"
+        )
+
+    target_text = take_named(named, "target", None, line_number)
+    rs1 = 0
+    rs2 = 0
+    if operation != "j":
+        rs1 = require_range(
+            "rs1", parse_integer(take_named(named, "rs1", None, line_number),
+                                  line_number),
+            0, STATE_REGS - 1, line_number,
+        )
+        if operation in {"beq", "bne"}:
+            rs2 = require_range(
+                "rs2", parse_integer(
+                    take_named(named, "rs2", None, line_number), line_number
+                ),
+                0, STATE_REGS - 1, line_number,
+            )
+
+    if named:
+        unknown = ", ".join(sorted(named))
+        raise AssemblyError(
+            f"line {line_number}: unknown {operation.upper()} fields: {unknown}"
+        )
+
+    target_pc = resolve_branch_target(target_text, symbols, line_number)
+    if target_pc & 0x3:
+        raise AssemblyError(
+            f"line {line_number}: branch target PC 0x{target_pc:x} is not word aligned"
+        )
+    displacement = target_pc - current_pc
+    if displacement < -(1 << 31) or displacement > (1 << 31) - 1:
+        raise AssemblyError(
+            f"line {line_number}: branch displacement {displacement} "
+            "does not fit signed 32 bits"
+        )
+
+    # CONTROL branch profile:
+    #   [31:28] major C, [27:26] one body word, [25:24] branch family 3,
+    #   [23:22] condition, [21:17] rs1, [16:12] rs2, [11:0] zero.
+    # The body is a signed byte displacement relative to this header's PC.
+    header = 0
+    header |= 0xC << 28
+    header |= 1 << 26
+    header |= 3 << 24
+    header |= BRANCH_CONDITIONS[operation] << 22
+    header |= rs1 << 17
+    header |= rs2 << 12
+    return [header, displacement & 0xFFFFFFFF]
 
 
 def encode_memory(tokens: list[str], operation: str,
@@ -477,7 +560,8 @@ def encode_opaque_record(major: int, tokens: list[str],
     return [header, *body]
 
 
-def encode_statement(statement: str, line_number: int) -> list[int]:
+def encode_statement(statement: str, line_number: int, current_pc: int = 0,
+                     symbols: dict[str, int] | None = None) -> list[int]:
     normalized = statement.replace(",", " ")
     try:
         tokens = shlex.split(normalized, comments=False, posix=True)
@@ -501,6 +585,11 @@ def encode_statement(statement: str, line_number: int) -> list[int]:
         return encode_reduce(arguments, line_number)
     if operation in STATE_OPS:
         return encode_state(arguments, operation, line_number)
+    if operation in BRANCH_CONDITIONS:
+        return encode_branch(
+            arguments, operation, line_number, current_pc,
+            {} if symbols is None else symbols,
+        )
     if operation in MEMORY_OPS:
         return encode_memory(arguments, operation, line_number)
     if operation == "memory":
@@ -518,8 +607,9 @@ def assemble_text(text: str, base_pc: int) -> Assembly:
     if base_pc < 0 or (base_pc & 0x3):
         raise AssemblyError("base PC must be a non-negative multiple of four")
 
-    words: list[SourceWord] = []
+    statements: list[tuple[int, str]] = []
     symbols: dict[str, int] = {}
+    word_count = 0
     for line_number, original in enumerate(text.splitlines(), 1):
         statement = original.split("#", 1)[0].strip()
         if not statement:
@@ -534,14 +624,26 @@ def assemble_text(text: str, base_pc: int) -> Assembly:
                 raise AssemblyError(f"line {line_number}: label may not start with a digit")
             if label in symbols:
                 raise AssemblyError(f"line {line_number}: duplicate label {label!r}")
-            symbols[label] = base_pc + 4 * len(words)
+            symbols[label] = base_pc + 4 * word_count
             statement = remainder.strip()
             if not statement:
                 break
         if not statement:
             continue
 
-        encoded = encode_statement(statement, line_number)
+        statements.append((line_number, statement))
+        operation = statement.replace(",", " ").split(None, 1)[0].lower()
+        if operation in BRANCH_CONDITIONS:
+            word_count += 2
+        else:
+            word_count += len(encode_statement(statement, line_number))
+
+    words: list[SourceWord] = []
+    for line_number, statement in statements:
+        current_pc = base_pc + 4 * len(words)
+        encoded = encode_statement(
+            statement, line_number, current_pc=current_pc, symbols=symbols
+        )
         for part, value in enumerate(encoded, 1):
             words.append(
                 SourceWord(

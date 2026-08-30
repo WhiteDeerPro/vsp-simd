@@ -27,9 +27,9 @@ EXPECTED = [
 ]
 
 
-def expect_error(source: str) -> None:
+def expect_error(source: str, base_pc: int = 0) -> None:
     try:
-        asm.assemble_text(source, 0)
+        asm.assemble_text(source, base_pc)
     except asm.AssemblyError:
         return
     raise AssertionError(f"source unexpectedly assembled: {source!r}")
@@ -117,6 +117,64 @@ def main() -> int:
         "scatter": 0x208,
     }
 
+    branches = asm.assemble_text(
+        """
+        entry: J target=forward
+        back: BEQ rs1=3 rs2=4 target=entry
+        forward: BNE rs1=31 rs2=1 target=back
+        BEQZ rs1=5 target=done
+        BNEZ rs1=6 target=forward
+        done: CONTROL_END
+        """,
+        0x100,
+    )
+    assert [word.value for word in branches.words] == [
+        0xC7000000,
+        0x00000010,
+        0xC7464000,
+        0xFFFFFFF8,
+        0xC7BE1000,
+        0xFFFFFFF8,
+        0xC74A0000,
+        0x00000010,
+        0xC78C0000,
+        0xFFFFFFF0,
+        0xC0000000,
+    ]
+    assert branches.symbols == {
+        "entry": 0x100,
+        "back": 0x108,
+        "forward": 0x110,
+        "done": 0x128,
+    }
+
+    absolute_branches = asm.assemble_text(
+        "J target=0x100\n"
+        "BEQZ rs1=0 target=0x208\n",
+        0x200,
+    )
+    assert [word.value for word in absolute_branches.words] == [
+        0xC7000000,
+        0xFFFFFF00,
+        0xC7400000,
+        0x00000000,
+    ]
+
+    displacement_boundaries = asm.assemble_text(
+        "J target=0x7ffffffc", 0
+    )
+    assert [word.value for word in displacement_boundaries.words] == [
+        0xC7000000,
+        0x7FFFFFFC,
+    ]
+    negative_displacement_boundary = asm.assemble_text(
+        "J target=0", 0x80000000
+    )
+    assert [word.value for word in negative_displacement_boundary.words] == [
+        0xC7000000,
+        0x80000000,
+    ]
+
     state_word_boundaries = asm.assemble_text(
         "SMOVI rd=0 imm=0xffffffff\n"
         "SADDI rd=31 rs1=31 imm=-2147483648\n",
@@ -167,6 +225,22 @@ def main() -> int:
     expect_error("SADD rd=1 rs1=2 rs2=3 imm=0")
     expect_error("SADDI rd=1 rs1=2")
     expect_error("SADDI rd=1 rs1=2 rs2=0 imm=3")
+    expect_error("J")
+    expect_error("J target=missing")
+    expect_error("J target=2")
+    expect_error("J target=-4")
+    expect_error("J target=0 target=4")
+    expect_error("J rs1=0 target=0")
+    expect_error("J somewhere")
+    expect_error("BEQ rs1=1 target=0")
+    expect_error("BEQ rs1=1 rs2=32 target=0")
+    expect_error("BNE rs1=-1 rs2=0 target=0")
+    expect_error("BEQZ target=0")
+    expect_error("BEQZ rs1=1 rs2=0 target=0")
+    expect_error("BNEZ rs1=1 mystery=0 target=0")
+    expect_error("J target=0x80000000", 0)
+    expect_error("J target=0", 0x80000004)
+    expect_error("again: J target=again\nagain: CONTROL_END")
     expect_error("VLOAD vrf=1 span=4")
     expect_error("VLOAD sbase=1 span=4")
     expect_error("VLOAD sbase=1 vrf=1")
@@ -197,8 +271,8 @@ def main() -> int:
         raise AssertionError("unaligned base PC unexpectedly accepted")
 
     print(
-        "vsp_uword_asm_tb: exact EXEC, state, sequential/indexed MEMORY "
-        "images and rejection checks passed"
+        "vsp_uword_asm_tb: exact EXEC, state, branch, sequential/indexed "
+        "MEMORY images and rejection checks passed"
     )
     return 0
 

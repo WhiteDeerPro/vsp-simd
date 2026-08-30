@@ -26,6 +26,7 @@ uword 路径目前可执行：
 
 - profile-v0 EXEC；
 - sequencer-local `SMOVI`、`SADD`、`SADDI`；
+- single-PC `J`、`BEQ`、`BNE`（`BEQZ/BNEZ` 为 assembler 伪指令）；
 - `VLOAD`、`VSTORE`、`VGATHER`、`VSCATTER` MEMORY record；
 - 最终 `CONTROL.END` 与有序 action completion。
 
@@ -59,8 +60,14 @@ next record header = record_start_pc + 4 * record_word_count
 ```
 
 默认 fetch 最多返回四个 word，因此满 bundle 被接收后通常表现为 `PC + 16`，短 bundle
-则可能 `+4/+8/+12`。这不是每条操作固定 16 byte，也不是四个 PC。当前没有 branch、
-loop redirect、CALL/RET 或异常重启 PC。
+则可能 `+4/+8/+12`。这不是每条操作固定 16 byte，也不是四个 PC。CONTROL branch
+使用相对 header PC 的 signed byte displacement 更新同一个 PC；当前仍没有 CALL/RET、
+间接跳转、预测或异常重启 PC。
+
+branch 解析时，strict single-active 已保证更老 action 完成、没有年轻 action 进入执行
+engine。program source 会丢弃 held bundle，并对唯一的旧 outstanding response 做
+poison/drain；multi-record framer 同时清除年轻 word、continuity、EOF 和预取 END 状态。
+首版对 taken 与 not-taken 都执行这套 redirect/refetch，优先保证一种恢复合同。
 
 multi-record framer 可以同时看见最多三条完整 record，但产品 wrapper 只把 record slot 0
 送入 single-action holding。execution wrapper 当前有一个 issue slot；它只是某拍把一项
@@ -157,6 +164,11 @@ indexed lane access都要等待当前 response。request、response 和 parent c
 可见时查询 base；action 接受后，后续 state 写不能改变在途 descriptor。state engine
 不持有 PC，也不直接访问 dmem。
 
+`J/BEQ/BNE` 由 program wrapper 的 CONTROL-flow path 执行。`BEQ/BNE` 使用 state RF 的
+无副作用双源 query；目标经 widened arithmetic 检查，避免 PC 模回绕伪装成合法地址。
+合法 taken target 必须 4-byte 对齐并落在 launch 的 `[start_pc,end_pc)` 内。运行时非法
+目标产生有序 `CONTROL_ERROR` completion 且不重定向。
+
 `CONTROL.END` 等待 EXEC queue/ingress/tracker/completion、MEMORY parent 与 VRF arbiter
 达到强静止后退休。成功 END completion 被接收时产生单拍 `program_done`。它不清 RF、
 不转移 group owner，也不等同于 host interrupt。
@@ -177,8 +189,8 @@ indexed lane access都要等待当前 response。request、response 和 parent c
 
 ## 7. 后续边界 `[候选]`
 
-当前仍缺少 loop/branch/redirect、scalar load/store、reduction/count 写 state、CALL/RET、
-CSR、特权态和中断入口。未来若把多 record admission/window 接入产品路径，需要显式
+当前仍缺少 scalar load/store、reduction/count 写 state、CALL/RET/间接跳转、关系比较
+branch、CSR、特权态和中断入口。未来若把多 record admission/window 接入产品路径，需要显式
 描述 state RAW/WAW、resolved base、VRF row 和 MEMORY 依赖；不能把更多 record view
 或 issue slot 当成多 PC。
 

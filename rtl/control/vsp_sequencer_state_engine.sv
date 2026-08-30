@@ -37,6 +37,20 @@ module vsp_sequencer_state_engine #(
   output logic [STATE_W-1:0]                        base_read_data_o,
   output logic                                      base_read_legal_o,
 
+  // CONTROL-flow gets a separate, combinational two-source view.  It is a
+  // query rather than a state command: accepting a branch never changes the
+  // state RF and never allocates this engine's completion register.  The
+  // strict single-active wrapper currently prevents this query from racing a
+  // MEMORY base snapshot, while the separate interface keeps that policy out
+  // of the RF implementation.
+  input  logic                                      control_read_valid_i,
+  input  logic [CONTEXT_ID_W-1:0]                   control_read_context_i,
+  input  logic [STATE_REG_INDEX_W-1:0]              control_read_rs1_i,
+  input  logic [STATE_REG_INDEX_W-1:0]              control_read_rs2_i,
+  output logic [STATE_W-1:0]                        control_read_rs1_data_o,
+  output logic [STATE_W-1:0]                        control_read_rs2_data_o,
+  output logic                                      control_read_legal_o,
+
   // Every accepted command produces exactly one registered completion.
   output logic                                      cpl_valid_o,
   input  logic                                      cpl_ready_i,
@@ -66,6 +80,15 @@ module vsp_sequencer_state_engine #(
   logic [STATE_W-1:0] command_rs1_data;
   logic [STATE_W-1:0] command_rs2_data;
   logic [STATE_W-1:0] command_result;
+  logic control_pair_selected;
+  logic [CONTEXT_ID_W-1:0] pair_read_context;
+  logic [STATE_REG_INDEX_W-1:0] pair_read_rs1;
+  logic [STATE_REG_INDEX_W-1:0] pair_read_rs2;
+  logic pair_read_context_legal;
+  logic pair_read_rs1_legal;
+  logic pair_read_rs2_legal;
+  logic [STATE_W-1:0] pair_read_rs1_data;
+  logic [STATE_W-1:0] pair_read_rs2_data;
 
   integer context_index;
   integer register_index;
@@ -103,17 +126,40 @@ module vsp_sequencer_state_engine #(
   end
   assign command_legal = command_status == VSP_STATE_CPL_OK;
 
+  // State arithmetic and CONTROL comparison are mutually exclusive in the
+  // strict wrapper, so they share the same physical two-read view.  A direct
+  // integration presenting both requests gives the state command priority;
+  // the CONTROL query reports illegal for that cycle instead of inferring two
+  // additional RF read ports.
+  assign control_pair_selected = control_read_valid_i && !cmd_valid_i;
+  assign pair_read_context = control_pair_selected ?
+      control_read_context_i : cmd_context_i;
+  assign pair_read_rs1 = control_pair_selected ? control_read_rs1_i :
+                                                 cmd_rs1_i;
+  assign pair_read_rs2 = control_pair_selected ? control_read_rs2_i :
+                                                 cmd_rs2_i;
+  assign pair_read_context_legal = int'(pair_read_context) < CONTEXT_COUNT;
+  assign pair_read_rs1_legal = int'(pair_read_rs1) < STATE_REGS;
+  assign pair_read_rs2_legal = int'(pair_read_rs2) < STATE_REGS;
+
   always_comb begin
-    command_rs1_data = '0;
-    command_rs2_data = '0;
-    if (command_context_legal && command_rs1_legal &&
-        !(ZERO_REGISTER && (cmd_rs1_i == '0))) begin
-      command_rs1_data = state_q[int'(cmd_context_i)][int'(cmd_rs1_i)];
+    pair_read_rs1_data = '0;
+    pair_read_rs2_data = '0;
+    if (pair_read_context_legal && pair_read_rs1_legal &&
+        !(ZERO_REGISTER && (pair_read_rs1 == '0))) begin
+      pair_read_rs1_data =
+          state_q[int'(pair_read_context)][int'(pair_read_rs1)];
     end
-    if (command_context_legal && command_rs2_legal &&
-        !(ZERO_REGISTER && (cmd_rs2_i == '0))) begin
-      command_rs2_data = state_q[int'(cmd_context_i)][int'(cmd_rs2_i)];
+    if (pair_read_context_legal && pair_read_rs2_legal &&
+        !(ZERO_REGISTER && (pair_read_rs2 == '0))) begin
+      pair_read_rs2_data =
+          state_q[int'(pair_read_context)][int'(pair_read_rs2)];
     end
+  end
+
+  always_comb begin
+    command_rs1_data = control_pair_selected ? '0 : pair_read_rs1_data;
+    command_rs2_data = control_pair_selected ? '0 : pair_read_rs2_data;
 
     unique case (cmd_op_i)
       VSP_STATE_OP_SMOVI: command_result = cmd_imm_i;
@@ -139,6 +185,16 @@ module vsp_sequencer_state_engine #(
       base_read_data_o =
           state_q[int'(base_read_context_i)][int'(base_read_reg_i)];
     end
+  end
+
+  always_comb begin
+    control_read_legal_o = control_pair_selected &&
+        pair_read_context_legal && pair_read_rs1_legal &&
+        pair_read_rs2_legal;
+    control_read_rs1_data_o = control_read_legal_o ?
+        pair_read_rs1_data : '0;
+    control_read_rs2_data_o = control_read_legal_o ?
+        pair_read_rs2_data : '0;
   end
 
   assign cpl_valid_o = cpl_valid_q;

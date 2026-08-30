@@ -58,6 +58,10 @@ void clear_inputs(Vvsp_sequencer_state_engine& dut) {
   dut.base_read_valid_i = 0;
   dut.base_read_context_i = 0;
   dut.base_read_reg_i = 0;
+  dut.control_read_valid_i = 0;
+  dut.control_read_context_i = 0;
+  dut.control_read_rs1_i = 0;
+  dut.control_read_rs2_i = 0;
   dut.cpl_ready_i = 0;
 }
 
@@ -80,6 +84,21 @@ uint32_t read_state(Vvsp_sequencer_state_engine& dut, uint8_t context,
   const uint32_t value = dut.base_read_data_o;
   dut.base_read_valid_i = 0;
   return value;
+}
+
+void expect_control_read(Vvsp_sequencer_state_engine& dut, uint8_t context,
+                         uint8_t rs1, uint8_t rs2, bool legal,
+                         uint32_t rs1_data, uint32_t rs2_data,
+                         const std::string& name) {
+  dut.control_read_valid_i = 1;
+  dut.control_read_context_i = context;
+  dut.control_read_rs1_i = rs1;
+  dut.control_read_rs2_i = rs2;
+  eval_low(dut);
+  expect_eq(name + " legal", legal, dut.control_read_legal_o);
+  expect_eq(name + " rs1", rs1_data, dut.control_read_rs1_data_o);
+  expect_eq(name + " rs2", rs2_data, dut.control_read_rs2_data_o);
+  dut.control_read_valid_i = 0;
 }
 
 struct Command {
@@ -170,6 +189,20 @@ int main(int argc, char** argv) {
   expect_completion(dut, addi, kOk);
   expect_eq("SADDI source equals destination", 0x1020303cu,
             read_state(dut, 0, 1));
+  expect_control_read(dut, 0, 1, 3, true, 0x1020303cu, 0x10203030u,
+                      "CONTROL pair query");
+  expect_control_read(dut, 0, 0, 2, true, 0u, 0xfffffff0u,
+                      "CONTROL pair query keeps r0 zero");
+  dut.control_read_valid_i = 1;
+  dut.control_read_context_i = 0;
+  dut.control_read_rs1_i = 1;
+  dut.control_read_rs2_i = 3;
+  drive_command(dut, {kSadd, 0, 0x15, 4, 1, 2, 0});
+  eval_low(dut);
+  expect_eq("state command wins shared pair-read ports", 0,
+            dut.control_read_legal_o);
+  dut.cmd_valid_i = 0;
+  dut.control_read_valid_i = 0;
 
   // Back-to-back RAW is possible when the previous completion is consumed on
   // the same edge that accepts the next state command.
@@ -215,6 +248,8 @@ int main(int argc, char** argv) {
             read_state(dut, 0, 3));
   expect_eq("bad register query returns zero", 0u, read_state(dut, 0, 7,
                                                                false));
+  expect_control_read(dut, 0, 1, 7, false, 0u, 0u,
+                      "bad CONTROL pair query");
 
   // Reset clears state and an unconsumed completion, but no program PC or
   // backing memory is owned by this engine.

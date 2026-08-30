@@ -66,7 +66,7 @@ physical `SIMD group` 没有对应关系，文档不得把二者简称为同一�
 | vector memory engine | 把一项 `UNIT_STRIDE` 或 `INDEX_U8` parent command 分解成 VRF child transaction 与 dmem beat |
 | VRF arbiter | 在 memory client 和 cluster VRF endpoint 之间选择 request，并把 completion/response 返回原 client |
 | sequencer | 提供 action、地址状态和顺序控制的上级单元；SIMD group 不自行取指 |
-| sequencer state engine | 保存地址等 32-bit state 并执行 `SMOVI/SADD/SADDI`；不持有 PC、不发 dmem request，也不是独立 scalar CPU |
+| sequencer state engine | 保存地址等 32-bit state 并执行 `SMOVI/SADD/SADDI`，同时为 branch 提供无副作用双源读取；不持有 PC、不发 dmem request，也不是独立 scalar CPU |
 
 必须区分三种常见的 “slot”：framer record slot 是同一 bundle 中的结构位置，issue slot
 是瞬时发射口，group-local slot 是 endpoint 编号。三者都不是线程或独立 PC。
@@ -79,7 +79,8 @@ physical `SIMD group` 没有对应关系，文档不得把二者简称为同一�
 | dispatch class | **internal action dispatch category**；决定 action 进入 `EXEC`、`MEMORY` 或 `CONTROL` 路径，不属于编程模型 |
 | `EXEC` | 进入 SIMD group execution path 的 dispatch class；当前产品入口承载算术、逻辑、窄化与 reduction，不承载寄存器全域 VROUTE |
 | `MEMORY` | 进入 vector memory engine 的 dispatch class；同时承载 `UNIT_STRIDE` 与 `INDEX_U8` |
-| `CONTROL` | 进入 controller-local/state path 的 dispatch class；当前包含 state action 和最终 `END` |
+| `CONTROL` | 进入 controller-local/state path 的 dispatch class；当前包含 state action、`J/BEQ/BNE` 和最终 `END` |
+| branch redirect | sequencer-local CONTROL action 对唯一 program PC 的更新；会清除尚未发射的年轻 fetch/framer 状态，不创建新 context 或 PC |
 | `END` | 等待 EXEC、MEMORY、VRF arbiter 和完成路径强静止后退休的流结束动作；不清 RF、不转移 owner |
 | action completion | action 的统一有序退休记录；保留 class/context/tag/requested-group-mask 与 status |
 | `program_done` | 成功 `END` completion 被接收时的单拍脉冲；不等同于 host interrupt |
