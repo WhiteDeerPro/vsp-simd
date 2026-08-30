@@ -1,6 +1,7 @@
 module simd_group_completion_tracker #(
-  // The first integration profile has four SIMD4 groups and two issue slots.
-  // Entry count is an implementation capacity, not an instruction-set limit.
+  // Allocation width remains parameterized for scheduler experiments.  The
+  // executable product profile currently supplies one issue slot; entry count
+  // is an implementation capacity, not an instruction-set limit.
   parameter int GROUP_COUNT     = 4,
   parameter int ALLOC_SLOTS     = 2,
   parameter int CONTEXT_COUNT   = 2,

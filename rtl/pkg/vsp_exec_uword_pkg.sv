@@ -3,14 +3,13 @@ package vsp_exec_uword_pkg;
   // the canonical EXEC boundary.  Profile v0 deliberately targets the
   // current SIMD4 shape (8-bit physical lanes, 32-bit accumulators,
   // 16/8/4 VRF/ARF/MRF rows).  It is not an architectural instruction-set
-  // encoding. Format D names a register-indexed vector route action: both
-  // the source data row and the byte-index row are VRF operands.  Its cluster
-  // capture/route/commit implementation is handled downstream of this package.
+  // encoding. Register-to-register routing is intentionally not assigned an
+  // executable format in this profile; it remains an independently driven
+  // cluster experiment.
   localparam int VSP_EXEC_UWORD_W = 32;
   localparam int VSP_EXEC_UWORD_FORMAT_W = 4;
-  // Format-D route_io_mode.  LOCAL is a self-contained route with no
-  // implicit cross-slot rendezvous.  Every nonzero value is a dependent
-  // route-wave role and therefore also carries an admission barrier.
+  // Internal route-wave roles retained for the standalone route experiment.
+  // They are not decoded from a profile-v0 EXEC word.
   localparam int VSP_EXEC_ROUTE_IO_W = 2;
   localparam logic [VSP_EXEC_ROUTE_IO_W-1:0]
       VSP_EXEC_ROUTE_IO_LOCAL     = 2'b00;
@@ -31,38 +30,13 @@ package vsp_exec_uword_pkg;
   localparam logic [VSP_ROUTE_TERMINAL_KIND_W-1:0]
       VSP_ROUTE_TERMINAL_CANCEL = 2'd2;
 
-  // Route-mode predicates are kept next to the encoding so predecode,
-  // canonical expansion, and scheduling metadata cannot silently disagree.
-  // LOCAL is role-complete even though neither encoded role bit is set.
-  function automatic logic vsp_exec_route_mode_dependent(
-      input logic [VSP_EXEC_ROUTE_IO_W-1:0] mode);
-    vsp_exec_route_mode_dependent = |mode;
-  endfunction
-
-  function automatic logic vsp_exec_route_mode_has_source(
-      input logic [VSP_EXEC_ROUTE_IO_W-1:0] mode);
-    vsp_exec_route_mode_has_source =
-        (mode == VSP_EXEC_ROUTE_IO_LOCAL) || mode[1];
-  endfunction
-
-  function automatic logic vsp_exec_route_mode_has_destination(
-      input logic [VSP_EXEC_ROUTE_IO_W-1:0] mode);
-    vsp_exec_route_mode_has_destination =
-        (mode == VSP_EXEC_ROUTE_IO_LOCAL) || mode[0];
-  endfunction
-
+  // Pairing remains an internal property of the standalone route-wave
+  // protocol, not an instruction predecode result.
   function automatic logic vsp_exec_route_mode_pair_required(
       input logic [VSP_EXEC_ROUTE_IO_W-1:0] mode);
     vsp_exec_route_mode_pair_required =
         mode == VSP_EXEC_ROUTE_IO_DEP_IN ||
         mode == VSP_EXEC_ROUTE_IO_DEP_OUT;
-  endfunction
-
-  function automatic logic vsp_exec_route_mode_role_complete(
-      input logic [VSP_EXEC_ROUTE_IO_W-1:0] mode);
-    vsp_exec_route_mode_role_complete =
-        mode == VSP_EXEC_ROUTE_IO_LOCAL ||
-        mode == VSP_EXEC_ROUTE_IO_DEP_INOUT;
   endfunction
 
   typedef enum logic [VSP_EXEC_UWORD_FORMAT_W-1:0] {
@@ -75,8 +49,7 @@ package vsp_exec_uword_pkg;
     VSP_EXEC_UWORD_FMT_WIDE_CONVERT = 4'h7,
     VSP_EXEC_UWORD_FMT_WADD_WSUB    = 4'h8,
     VSP_EXEC_UWORD_FMT_COMPACT      = 4'h9,
-    VSP_EXEC_UWORD_FMT_MRF_LOGIC    = 4'ha,
-    VSP_EXEC_UWORD_FMT_ROUTE        = 4'hd
+    VSP_EXEC_UWORD_FMT_MRF_LOGIC    = 4'ha
   } vsp_exec_uword_format_e;
 
   // ALU-format sub-functions.  Values 21..31 remain available to a later
@@ -177,18 +150,10 @@ package vsp_exec_uword_pkg;
       VSP_EXEC_UWORD_FMT_WIDE_CONVERT,
       VSP_EXEC_UWORD_FMT_WADD_WSUB,
       VSP_EXEC_UWORD_FMT_COMPACT,
-      VSP_EXEC_UWORD_FMT_MRF_LOGIC,
-      VSP_EXEC_UWORD_FMT_ROUTE:
+      VSP_EXEC_UWORD_FMT_MRF_LOGIC:
         vsp_exec_uword_format_defined = 1'b1;
       default: vsp_exec_uword_format_defined = 1'b0;
     endcase
-  endfunction
-
-  function automatic logic vsp_exec_uword_is_route(
-      input logic [VSP_EXEC_UWORD_W-1:0] word);
-    vsp_exec_uword_is_route =
-        word[VSP_EXEC_UWORD_W-1 -: VSP_EXEC_UWORD_FORMAT_W] ==
-            VSP_EXEC_UWORD_FMT_ROUTE;
   endfunction
 
   // Record framing needs to know whether an EXEC base word owns the following

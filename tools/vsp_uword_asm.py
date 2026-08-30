@@ -69,25 +69,21 @@ STATE_OPS = {
 MEMORY_OPS = {
     "vload": 0,
     "vstore": 1,
+    "vgather": 0,
+    "vscatter": 1,
 }
+INDEXED_MEMORY_OPS = {"vgather", "vscatter"}
 MEMORY_ADDR_SPACES = {
     "local": 0,
     "physical": 1,
     "translated": 2,
 }
-ROUTE_IO_MODES = {
-    "local": 0,
-    "in": 1,
-    "out": 2,
-    "inout": 3,
-}
-
 # Profile-v0 semantic records use the current default widths of the state and
 # memory engines. Opaque MEMORY/CONTROL remain available below for framing
 # and rejection tests which intentionally need records outside this profile.
 STATE_REGS = 32
 MEMORY_VRF_ROWS = 16
-MEMORY_MAX_SPAN_BYTES = 16
+MEMORY_MAX_EXPLICIT_SPAN_BYTES = 31
 MEMORY_OFFSET_W = 16
 
 
@@ -136,15 +132,6 @@ def parse_boolean(text: str, name: str, line_number: int) -> int:
     if lowered in {"0", "false", "no", "off"}:
         return 0
     raise AssemblyError(f"line {line_number}: {name} expects a boolean")
-
-
-def parse_route_io_mode(text: str, line_number: int) -> int:
-    """Parse a Format-D route role by symbolic name or numeric encoding."""
-    lowered = text.lower()
-    if lowered in ROUTE_IO_MODES:
-        return ROUTE_IO_MODES[lowered]
-    return require_range("io", parse_integer(text, line_number), 0, 3,
-                         line_number)
 
 
 def split_arguments(tokens: list[str], line_number: int) -> tuple[dict[str, str], list[str]]:
@@ -295,16 +282,34 @@ def encode_memory(tokens: list[str], operation: str,
                       line_number),
         0, STATE_REGS - 1, line_number,
     )
+    if operation == "vgather":
+        data_row_field = "vd"
+    elif operation == "vscatter":
+        data_row_field = "vs"
+    else:
+        data_row_field = "vrf"
     vrf = require_range(
-        "vrf", parse_integer(take_named(named, "vrf", None, line_number),
-                             line_number),
+        data_row_field,
+        parse_integer(take_named(named, data_row_field, None, line_number),
+                      line_number),
         0, MEMORY_VRF_ROWS - 1, line_number,
     )
-    span = require_range(
-        "span", parse_integer(take_named(named, "span", None, line_number),
-                              line_number),
-        1, MEMORY_MAX_SPAN_BYTES, line_number,
-    )
+    op = MEMORY_OPS[operation]
+    indexed = operation in INDEXED_MEMORY_OPS
+    span = 0
+    index = 0
+    if not indexed:
+        span = require_range(
+            "span", parse_integer(take_named(named, "span", None, line_number),
+                                  line_number),
+            0, MEMORY_MAX_EXPLICIT_SPAN_BYTES, line_number,
+        )
+    else:
+        index = require_range(
+            "vi", parse_integer(take_named(named, "vi", None, line_number),
+                                line_number),
+            0, MEMORY_VRF_ROWS - 1, line_number,
+        )
     offset = encode_signed_immediate(
         take_named(named, "offset", "0", line_number), "offset",
         MEMORY_OFFSET_W, line_number,
@@ -319,12 +324,16 @@ def encode_memory(tokens: list[str], operation: str,
     header = 0
     header |= 0xB << 28
     header |= 1 << 26
-    header |= MEMORY_OPS[operation] << 25
+    header |= op << 25
     header |= MEMORY_ADDR_SPACES[space_name] << 23
     header |= addr_context << 15
     header |= sbase << 10
     header |= vrf << 6
-    header |= span << 1
+    if not indexed:
+        header |= span << 1
+    else:
+        header |= index << 2
+        header |= 1
     return [header, offset]
 
 
@@ -447,56 +456,6 @@ def encode_reduce(tokens: list[str], line_number: int) -> list[int]:
     )
 
 
-def encode_route(tokens: list[str], line_number: int) -> list[int]:
-    """Encode one VRF-indexed vector gather operation."""
-    named, positional = split_arguments(tokens, line_number)
-    if positional:
-        raise AssemblyError(
-            f"line {line_number}: route fields must use key=value syntax"
-        )
-
-    if "vs" in named and "va" in named:
-        raise AssemblyError(
-            f"line {line_number}: route source may use vs or legacy va, not both"
-        )
-    if "vs" in named:
-        source_name = "vs"
-    elif "va" in named:
-        source_name = "va"
-    else:
-        raise AssemblyError(f"line {line_number}: missing required field 'vs'")
-    vs = require_range(
-        source_name,
-        parse_integer(take_named(named, source_name, None, line_number),
-                      line_number),
-        0, 15, line_number,
-    )
-    vi = require_range(
-        "vi", parse_integer(take_named(named, "vi", None, line_number),
-                            line_number),
-        0, 15, line_number,
-    )
-    vd = require_range(
-        "vd", parse_integer(take_named(named, "vd", None, line_number),
-                            line_number),
-        0, 15, line_number,
-    )
-    route_io = parse_route_io_mode(
-        take_named(named, "io", "local", line_number), line_number
-    )
-
-    if named:
-        unknown = ", ".join(sorted(named))
-        raise AssemblyError(f"line {line_number}: unknown route fields: {unknown}")
-
-    base = 0xD << 28
-    base |= route_io << 26
-    base |= vs << 22
-    base |= vd << 18
-    base |= vi << 6
-    return [base]
-
-
 def encode_opaque_record(major: int, tokens: list[str],
                          line_number: int) -> list[int]:
     named, positional = split_arguments(tokens, line_number)
@@ -540,8 +499,6 @@ def encode_statement(statement: str, line_number: int) -> list[int]:
         return encode_alu(arguments, True, line_number)
     if operation == "exec_reduce":
         return encode_reduce(arguments, line_number)
-    if operation == "exec_route":
-        return encode_route(arguments, line_number)
     if operation in STATE_OPS:
         return encode_state(arguments, operation, line_number)
     if operation in MEMORY_OPS:

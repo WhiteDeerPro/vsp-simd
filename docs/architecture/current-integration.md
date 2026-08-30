@@ -1,70 +1,56 @@
 # 当前控制与内存集成状态
 
-本页只回答“哪些模块现在确实连在一起”。它把严格 uword 程序闭环、decoded
-MEMORY 参考闭环、独立并发候选和仿真模型分开，避免把“模块已有”误读为“程序路径
-已经使用它”。
+本页只回答“当前哪些模块确实连在同一条程序路径中”。独立实验 RTL 与仿真模型单列，
+避免把模块存在误读为产品路径已经采用。
 
 ![当前控制与内存集成状态](current-integration.svg)
 
 Graphviz 源文件为 [`current-integration.dot`](current-integration.dot)。
 
-## 1. 三条已经能运行的参考路径 `[RTL事实]`
+## 1. 当前可运行闭环 `[RTL事实]`
 
-前两条入口不同并复用同一 vector memory engine；第三条是尚未绑定程序前端的
-dependency-route 执行闭环：
+当前有一个 encoded uword 程序入口和一个 decoded MEMORY 参考入口；二者最终复用同一
+strict controller、execution cluster 和 vector memory engine：
 
-1. uword 程序路径：behavioral control store → linear byte-PC source →
-   multi-record framer → **slot 0** holding/action adapter → strict controller。
-   profile-v0 EXEC、sequencer-local `SMOVI/SADD/SADDI`、两词
-   `VLOAD/VSTORE` 与最终 `CONTROL.END` 都能执行和有序退休。现有回归已经运行
-   `state address → VLOAD → EXEC → VSTORE → END`，并检查真实 dmem 地址、数据与
-   byte strobe。
-2. decoded MEMORY 路径：外部直接提供完整 MEMORY descriptor，经 strict controller
-   进入 vector memory engine，再通过 VRF arbiter 和 group state endpoint 完成
-   LOAD/STORE。该路径已和 EXEC、END 做过端到端参考回归。
-3. route-wave 路径：外部提供带 participant frontier/token 的 `DEP_OUT/DEP_IN`
-   fragments，rendezvous table 在执行 admission 之前配对；frontier 均到达后，controller
-   保持稳定的 source/destination union-resource 请求。grant 与真实 register-route engine
-   command 同拍接受后，engine 从各自 mask 捕获 VRF source/index，经显式
-   `ROUTE_RESULT` 寄存级再写回 destination mask，最后为两个 participant 保存独立
-   completion。它是可执行 RTL 闭环，但尚未连接 PC、framer、queue 或 ordered window。
+```text
+launch(start_pc,end_pc,context,group_mask,tag_seed)
+  -> one linear byte PC
+  -> behavioral control store
+  -> 4-word fetch bundle / multi-record framing
+  -> record slot 0 holding + semantic action adapter
+  -> strict single-active EXEC / MEMORY / CONTROL controller
+  -> one-issue-slot, four-SIMD4 execution/memory integration
+```
 
-因此，“encoded 程序能用地址状态驱动 LOAD/STORE”与“外部 decoded descriptor 入口
-仍可独立使用”都成立。encoded MEMORY 不是独立的新内存实现：semantic decoder 在
-action admission 读取 state base，现有 memory engine 接收快照后的 descriptor。
+uword 路径目前可执行：
 
-`vsp_uword_multi_framer` 最多可同时暴露三条 record，`vsp_ordered_action_window`
-也已有四项窗口、两个 EXEC view 和一个 side view；结构 predecoder 会把非零 route
-mode 标成 `barrier-before`，并区分需要配对的 `DEP_IN/DEP_OUT`。window 能让这类 entry
-等到所有更老项真正退休后才暴露。`vsp_route_rendezvous_table` 既可独立验证，也已由
-`vsp_route_wave_controller` 使用：收集两个 partial role、比较 participant retirement
-token，并对 illegal/conflict/flush 产生可背压 terminal。strict wrapper 仍只消费 slot 0；
-predecoder、window、route-wave fragment 入口、late-decode holding stage 与 class engines
-尚未组成并发 program path。尤其不能把 strict controller 放在 rendezvous 前面：它的
-global-single-active ownership 会让先到 half 等待 completion，并阻止 peer 到达。
+- profile-v0 EXEC；
+- sequencer-local `SMOVI`、`SADD`、`SADDI`；
+- `VLOAD`、`VSTORE`、`VGATHER`、`VSCATTER` MEMORY record；
+- 最终 `CONTROL.END` 与有序 action completion。
 
-route engine 中的 `ROUTE_RESULT` 是 timing/ownership boundary：它切断完整 gather 组合
-结果到首次 VRF write request 的路径。capture 和 commit 仍串行，一个 engine 仍只接纳
-一个 active parent；当前没有宣称固定总延迟或 `II=1`。
+decoded MEMORY 入口则直接提交已经解析的 descriptor，便于单独验证 engine。encoded
+MEMORY 并没有复制一套内存实现：semantic decoder 在 admission 时读取 sequencer state
+base，形成稳定 descriptor，随后仍进入同一个 vector memory engine。
 
-rendezvous table 可以在一个 parent RUN 时继续收集别的 key，但 controller 仍一次只让一个
-parent 经过 LAUNCH/RUN/FANOUT。table terminal 在背压时保持原 payload；匹配的 flush/
-epoch advance 由 controller 在 `parent_fire` 前转成双 CANCEL，RUN 中已经接受的 VRF
-事务则继续完成，不做回滚。ready terminal 的选择是 RR 而非 age-order；当前独立入口
-要求这些 waves 可重排。未来 program binding 若要求 age order，必须在 terminal 被捕获前
-限制 frontier/admission，或采用 age-aware terminal 仲裁；仅在 LAUNCH 后压低 resource
-ready 不会让表重选较老 wave。这个入口因此既不是完整 program path，也不是 `II=1`
-route pipeline。
+当前集成参数必须按下表理解：
 
-`vsp_ordered_ifetch_model` 仍是尚未绑定到 strict program path 的独立 I-side bundle
-endpoint，需要 launch address metadata/fault adapter。与它不同，
-`vsp_sequencer_state_engine`、CONTROL/MEMORY semantic decoder 和 action adapter 已经
-接入 strict wrapper；它们仍不在独立的并发 action-window reference 中。
+| 项目 | 当前产品参考实例 | 当前 profile 参数上限 |
+|---|---:|---:|
+| program PC | 1 | 当前没有多 PC profile |
+| issue slot | 1 | 其他数量仅为可参数化/独立实验，不表示线程数 |
+| SIMD group | 4 | 16 |
+| physical byte lane | 16 | 64 |
+| 分布式 VRF row 宽度 | 16 byte | 64 byte |
 
-## 2. PC 为什么有时表现为 `+16` `[RTL事实]`
+每个 SIMD group 固定贡献 4 个 8-bit physical lane。16-group/64-byte 是当前 memory
+engine 与 wrapper 的参数合法上限，不表示现有产品参考实例已经部署 16 group。
 
-PC 是 control-word stream 的 **byte fetch cursor**。每个 32-bit word 都占 4 byte，
-不论它是 EXEC base、extension，还是 MEMORY/CONTROL body：
+## 2. 单 PC、fetch 与 issue slot `[RTL事实]`
+
+program source 只有一个 `pc_q`、一个 `[start_pc,end_pc)` launch range 和一个 fetch
+outstanding。PC 是 control-word stream 的 byte cursor；每个 32-bit base/body/extension
+word 都占 4 byte：
 
 ```text
 word address       = bundle_base_pc + 4 * word_index
@@ -72,26 +58,34 @@ next bundle base   = bundle_base_pc + 4 * accepted_word_count
 next record header = record_start_pc + 4 * record_word_count
 ```
 
-默认一次请求最多四个 word，所以满 bundle 被下游接受后通常是 `PC + 16`；最后一个
-短 bundle 分别可能 `+4/+8/+12`。这不是“每条指令固定 16 byte”，也不是 data-memory
-地址规则。source PC 在 bundle 交付时推进，不等待其中 action 执行或退休；当前也没有
-branch/loop redirect。
+默认 fetch 最多返回四个 word，因此满 bundle 被接收后通常表现为 `PC + 16`，短 bundle
+则可能 `+4/+8/+12`。这不是每条操作固定 16 byte，也不是四个 PC。当前没有 branch、
+loop redirect、CALL/RET 或异常重启 PC。
 
-## 3. 向量取数与 AGU `[RTL事实 + 分层说明]`
+multi-record framer 可以同时看见最多三条完整 record，但产品 wrapper 只把 record slot 0
+送入 single-action holding。execution wrapper 当前有一个 issue slot；它只是某拍把一项
+command 交给执行前端的瞬时端口，不保存 PC、不拥有程序，也不是 hardware thread。
+execution context 同样只是所有权、队列和 completion 身份，当前没有 context-local PC。
 
-semantic MEMORY record 在 admission 后形成一条 decoded vector-memory parent：
+## 3. 两种 MEMORY 地址模式 `[RTL事实]`
+
+semantic MEMORY record 在 admission 后形成以下 parent descriptor：
 
 ```text
-LOAD/STORE + context/tag
-           + address-space/address-context
-           + base_eaddr + signed offset
-           + group mask + VRF row + span_bytes
+LOAD / STORE + UNIT_STRIDE / INDEX_U8
+context + tag + group mask
+address-space + address-context
+base_eaddr + signed offset
+data VRF row
+UNIT_STRIDE: resolved span_bytes
+INDEX_U8:    index VRF row, span_bytes = 0
 ```
 
-当前 engine 内同时包含 span planner、unit-stride AGU、VRF child sequencing、dmem
-request/response 和 parent completion。默认每个 group 的 VRF row 为 4 byte。选中
-group 按编号升序接收连续 memory beat；稀疏 mask 只改变目的 group，不在内存地址中
-制造洞；每个 beat 的最低地址 byte 对应该 group 的 lane 0。例如：
+### 3.1 `UNIT_STRIDE`
+
+从 `base_eaddr + signed offset` 开始按地址连续搬运。被选 group 按编号升序消费连续的
+4-byte beat；稀疏 group mask 只改变 VRF 目的/来源，不在内存地址中制造洞。最后一个
+group 可通过 byte mask 只提交部分 byte。例如：
 
 ```text
 group_mask = 4'b1011, span_bytes = 10, eaddr0 = 0x100
@@ -101,82 +95,103 @@ group_mask = 4'b1011, span_bytes = 10, eaddr0 = 0x100
 0x108..0x109 -> group 3, VRF[row], byte mask 0011
 ```
 
-它不表示一次完成一个 10-byte 原子 memory access；当前会顺序执行三个 beat。
-LOAD 的每个 beat 等 memory response 和 VRF write completion；STORE 先等 VRF read
-completion/data，再等 memory write ack。随后才推进下一 beat。
+它不是一次 10-byte 原子访问，而是三个顺序 beat。LOAD 的每个 beat 等待 dmem response
+和 VRF write completion；STORE 先等待 VRF read data/completion，再等待 dmem write ack。
 
-AGU 只负责把 descriptor/beat index 变为 effective address 和 beat metadata。
-outstanding 数量、response correlation、fault 顺序和 parent retirement 属于 transaction
-engine。当前两者只是合在 `vsp_vector_memory_engine` 中，并不意味着以后必须合在一起。
+uword header 中保存的是五位 `span code`，不是下游 engine 的最终宽度：code `0` 表示
+“每个被选 group 搬满 4 byte”，action adapter 按已经捕获的 `group_mask` 将其解析为
+`4 * popcount(group_mask)` byte；code `1..31` 表示显式 byte span。这样 16-group profile
+可用 code `0` 表达完整 64-byte 传输。需要大于 31 byte 且带尾部 partial group 的线性
+传输应拆成多条 command；进入 engine 的 `span_bytes` 已经是普通非零 byte 数。
+
+### 3.2 `INDEX_U8`
+
+每个被选 group 的四个 physical byte lane 都从分布式 `vi` row 读取 unsigned 8-bit
+offset：
+
+```text
+byte_eaddr(group,lane) = base_eaddr + signed_offset + vi[group][lane]
+```
+
+`LOAD + INDEX_U8` 是 gather：每个 lane 发一个对齐的普通 LOAD beat，从响应 word 中选择
+目标 byte，四个结果组成该 group 的 `vd` row。`STORE + INDEX_U8` 是 scatter：engine
+先读 `vi` 和 `vs` row，再为每个 lane 发一个只打开目标 byte strobe 的普通 STORE beat。
+group 与 lane 都按编号升序执行；重复 scatter offset 因而由较晚 lane 最后覆盖。
+
+内部 assembler 使用：
+
+```text
+VGATHER  sbase=<state row> vd=<data row> vi=<index row> [offset/space/addr_context]
+VSCATTER sbase=<state row> vs=<data row> vi=<index row> [offset/space/addr_context]
+```
+
+二者仍是 MEMORY record：header bit 25 选择 LOAD/STORE，bit 0 选择 `INDEX_U8`，`[5:2]`
+保存 index VRF row，bit 1 保留为零。`VLOAD/VSTORE` 的 bit 0 保持零，`[5:1]` 是上述
+`span code`。`INDEX_U8` 的 decoded span 始终为零；其传输量由被选 group 数决定。
 
 ## 4. 当前 outstanding 合同 `[RTL事实]`
 
-vector memory engine 是 `1 active parent + 1 dmem beat outstanding`。`dmem_req/rsp`
-没有 transaction ID，每个 accepted LOAD 或 STORE beat 都必须严格返回一条 response；
-STORE 的 response 是 write acknowledgement。request、response 与 parent completion
-都允许 ready/valid 背压。
+vector memory engine 是：
 
-无 ID 接口仍可允许多个 outstanding，但只能按 request 顺序返回，并且 requester 需要
-FIFO 保存每个 beat 的 group/address/fault-retirement metadata。若以后允许乱序返回，
-则必须增加 transaction ID 与 scoreboard/reorder 状态。尤其 STORE 多飞行会改变当前
-stop-on-first、partial-commit 的可观察边界，不能只把深度参数调大。
+```text
+1 active MEMORY parent + 1 dmem beat outstanding
+```
 
-新增的 `sim/models/vsp_ordered_dmem_model.sv` 是该逻辑口的可执行仿真模型：
+`dmem_req/rsp` 没有 transaction ID。每个 accepted LOAD 或 STORE beat 必须严格返回一条
+response；STORE response 是 write acknowledgement。下一条 unit-stride beat或下一条
+indexed lane access都要等待当前 response。request、response 和 parent completion 均
+支持 ready/valid 背压。
 
-- byte-addressed、little-endian backing array；
-- STORE byte strobe 与每个 STORE 一条 acknowledgement；
-- 地址空间、对齐、范围和 beat-shape fault；
-- 可配置固定响应延迟与 FIFO ordered outstanding 深度；
-- response 背压稳定，reset 丢弃在途 response 但保留 backing bytes；
-- 独立 init/peek sideband，明确不冒充 VSP 发出的 memory transaction。
+这种合同让 fault、partial commit 和 retirement 顺序明确。允许多个无 ID outstanding
+需要 requester 用 FIFO 保存每个 beat 的 group/lane/address/fault metadata，并要求严格
+按请求顺序响应；允许乱序响应还必须增加 transaction ID 与 scoreboard/reorder 状态。
+因此不能仅把一个深度参数调大就宣称多 outstanding。
 
-它不是物理 SRAM、cache、MMU 或 DMA。默认模型 depth=4 是为了验证一般的无 ID 有序
-合同；当前 vector memory engine 实际只会占用其中一项。
+`vsp_ordered_dmem_model` 可模拟更深的无 ID ordered endpoint，但当前 engine 实际只占用
+一项。它是 byte-array 协议模型，不是 D-cache、SRAM、MMU 或 DMA。
 
-与它独立的 `sim/models/vsp_ordered_ifetch_model.sv` 对 read-only program bundle
-提供同类 executable contract：byte PC、1–4 word packed response、address-space/fault、
-固定延迟和 FIFO ordered outstanding。当前 program source 仍是单 outstanding，并直接
-连接 behavioral control store；I-side 模型尚未接入 wrapper。两套模型不共享 ready、
-response queue 或 outstanding domain。
+## 5. CONTROL、state 与结束 `[RTL事实]`
 
-I-cache/D-cache 的预期边界、共享物理端口的位置和一致性待办见
-[I-side / D-side 内存模型边界](memory-hierarchy.md)。fetch bundle 的 16-byte 上限不是
-I-cache line，4-byte dmem beat 也不是 D-cache line。
+`vsp_sequencer_state_engine` 当前每 context 有 32 个 32-bit state register，register 0
+恒零；`SMOVI/SADD/SADDI` 按模 \(2^{32}\) 回绕。MEMORY decoder 只在完整合法 record
+可见时查询 base；action 接受后，后续 state 写不能改变在途 descriptor。state engine
+不持有 PC，也不直接访问 dmem。
 
-## 5. 地址服务的后续边界 `[候选]`
+`CONTROL.END` 等待 EXEC queue/ingress/tracker/completion、MEMORY parent 与 VRF arbiter
+达到强静止后退休。成功 END completion 被接收时产生单拍 `program_done`。它不清 RF、
+不转移 group owner，也不等同于 host interrupt。
 
-建议保持以下分层：
+## 6. 独立实验与仿真模块 `[experimental]`
+
+以下模块仍可独立编译和测试，但没有连接当前 PC/framer/action-adapter 产品路径：
+
+- `vsp_ordered_action_window`：多 entry、多个 candidate view 的依赖/退休实验；
+- `vsp_cluster_register_route_engine`：VRF 寄存器重排实验；
+- `vsp_route_rendezvous_table`、`vsp_route_wave_controller`、
+  `vsp_cluster_route_wave_pipeline`：participant 配对、frontier 与 fan-out 实验；
+- `vsp_ordered_ifetch_model`：尚未替换 behavioral control store 的 I-side 协议模型。
+
+当前 assembler 不提供 `EXEC_ROUTE`/`VROUTE`，产品 execution wrapper 也把内部 route
+控制固定为禁用。实验 route RTL 的存在不表示当前程序支持全域寄存器路由、多 PC wave
+或跨线程 rendezvous。
+
+## 7. 后续边界 `[候选]`
+
+当前仍缺少 loop/branch/redirect、scalar load/store、reduction/count 写 state、CALL/RET、
+CSR、特权态和中断入口。未来若把多 record admission/window 接入产品路径，需要显式
+描述 state RAW/WAW、resolved base、VRF row 和 MEMORY 依赖；不能把更多 record view
+或 issue slot 当成多 PC。
+
+地址侧建议继续保持以下逻辑分层：
 
 ```text
 MEMORY semantic decode / scalar-address state
-        -> vector transfer planner
-        -> unit-stride AGU
-        -> outstanding / response / fault transaction engine
-        -> dmem effective-address port
-        -> translation + protection + local/cache router
-        -> physical SRAM/cache/SoC memory
+  -> vector transfer planner + UNIT_STRIDE/INDEX_U8 AGU
+  -> outstanding / response / fault transaction engine
+  -> dmem effective-address port
+  -> translation + protection + local/cache router
+  -> physical SRAM/cache/SoC memory
 ```
 
-每个 dmem beat 都带自己的 effective address、address space 和 address context。未来跨页
-时应逐 beat 翻译，不能只翻译 parent base 后默认相邻 virtual page 对应相邻 physical
-page。control-store fetch 与 data-memory 也应保持两个逻辑前端；即使它们最后共享
-SRAM/cache，合流位置也是下游仲裁，不是让 data AGU 修改 PC。
-
-## 6. Sequencer 地址/控制侧完成度 `[RTL事实 + 候选]`
-
-`vsp_sequencer_state_engine` 默认每 execution
-context 32 个 32-bit state register，register 0 恒零；支持 `SMOVI`、`SADD`、
-`SADDI`，按模 \(2^{32}\) 回绕；一项 registered completion 可背压；组合 base query
-供 MEMORY admission 快照。CONTROL decoder 输出的合法 state action 在 strict wrapper
-内被送到该 engine；其 completion 与 cluster completion 在同一有序出口汇合。MEMORY
-decoder 只在完整合法记录可见时查询 base，memory action 被接纳后由现有 engine 保存
-descriptor，后续 state 写不能改变在途访问。state engine 本身仍不持有 PC，也不访问
-dmem。
-
-当前没有 `SET_GMASK`、loop/branch/redirect、
-scalar load/store、reduction/count 写 state、CALL/RET、CSR、特权态或中断入口。
-当前 state/MEMORY 绑定只属于 global single-active、slot-0 strict closure；把它移入
-多 record admission/window 时，还必须把 state RAW/WAW、resolved base 与 MEMORY/VRF
-依赖写入 window metadata。之后再按负载证据增加 group-mask state 和计数 loop；
-redirect 必须单独扩展 program source 并清理 framer/window 中的年轻记录。具体边界见
-[Sequencer 标量/地址状态](../design/sequencer-state.md)。
+control-store fetch 与 data-memory 保持两个逻辑前端；即使以后共享 SRAM/cache，也应在
+下游仲裁处合流，而不是让 data AGU 修改程序 PC。

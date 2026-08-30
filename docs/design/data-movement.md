@@ -13,8 +13,9 @@
 > 可配置 FIFO outstanding 的有序仿真 endpoint，但不代表物理 SRAM 已实现。
 > 动态 owner/resource controller、物理 local SRAM、MMU/cache 与 DMA 仍待实现。
 > 本文不规定总线宽度、SRAM 组织或 DMA 描述符格式。
-> 跨 lane 路由已从本文剥离：它不再是独立的数据搬运 class，而是 Vector ALU 内的
-> gather 级，见[路由](../architecture/routing.md)。
+> 当前 MEMORY engine 同时支持 unit-stride 与 unsigned-byte indexed addressing；
+> `INDEX_U8+LOAD/STORE` 分别形成 gather/scatter。产品路径不再提供跨 group 的
+> register-to-register route，见[路由边界](../architecture/routing.md)。
 
 ## 1. 控制动作与传输数据分离 `[候选]`
 
@@ -48,19 +49,17 @@ sequencer/controller 发起或许可 program-level memory action；vector memory
 地址推进、beat 计数和 command/subrequest completion 状态；SIMD4 只接受已经带数据的叶端
 state-write beat。这样不会因为加入数据供应而让 SIMD4 获得自行取数或地址执行能力。
 
-## 2. 普通填充与跨 lane 路由分开 `[边界]`
+## 2. 连续搬运与 indexed memory `[RTL事实]`
 
 连续或条带化的 RF fill 首先考虑 bank select、demux 和分周期写入，不经过任何跨
 lane 置换网络。这条路径的职责是把外部数据搬进 VRF，不负责重排。
 
-数据进入 VRF 之后的跨 lane 重排属于 Vector ALU 的 gather 级
-（`DR[lane] = SR[IR[lane]]`），不是数据搬运动作：它不访问 memory，也不需要
-parent/child completion 协议。因此本文只保留 memory 侧边界，路由语义、网络
-拓扑选择和 gather 的实现状态统一由[路由](../architecture/routing.md)记录。
-
-这条划分的实际效果是：降低内存压力的手段有两条彼此独立的路径。需要跨 lane
-重排时优先用寄存器内 gather，避免 STORE→改地址→LOAD 的往返；只有数据尚未进入
-VRF，或重排跨出单条 gather 的寻址范围时，才退回 memory 路径。
+数据依赖的跨 group 选择当前直接属于 MEMORY class：索引 VRF row 为每个物理 lane
+提供 unsigned 8-bit byte offset，地址为 `base + signed_offset + index[lane]`。
+LOAD 是 gather，STORE 是 scatter。实际 4-group profile 在 full group mask 下搬运 16 个
+byte，这些 byte 可落在 256-byte window 的任意 16 个位置；参数化上限是
+16 group/64 byte。稀疏 group mask 按每个被选 group 减少四个 transfer。
+这不是把整个 256-byte window 一次搬完。
 
 只有要求把 `4M` 个输入 byte 在一个周期任意映射到 `4N` 个目的 lane，才直接推导出
 矩形 `4M × 4N` crossbar。顺序 fill、banked SRAM、若干 ingress lane 和多拍
@@ -82,7 +81,8 @@ completed/failed group mask、committed bytes 和 partial。重试仍未设计�
 两者都不是当前 profile 的承诺。gearbox 可以让外部 burst、local SRAM bank 和叶端
 state-write 使用不同宽度。
 
-八个 SIMD4 在每周期各执行一次双源 byte-vector 操作时，逻辑 RF 读量是
+下面只取一个假设的 8-group 扩展点说明计量方法，不表示当前 4-group 实例已经部署
+八组。八个 SIMD4 在每周期各执行一次双源 byte-vector 操作时，逻辑 RF 读量是
 `8 × 2 × 4 = 64 byte/cycle`；它不是外部唯一数据摄入率。若 A、B 的平均寄存器内
 复用次数分别为 `R_A`、`R_B`，忽略中间值和边界流量的粗略 fill 需求为：
 
@@ -100,23 +100,40 @@ outstanding memory beat。命令为：
 
 ```text
 LOAD/STORE + exec_context/tag
+           + UNIT_STRIDE/INDEX_U8 address mode
            + addr_space + addr_context
            + base_eaddr + signed offset
-           + group mask + VRF row + span_bytes
+           + group mask + data VRF row
+           + index VRF row + span_bytes
 ```
 
-`span_bytes` 是编译器已选择的一个连续合并 span，不是“等宽数组”。
-engine 不观察地址并自动合并独立 command。有效 group 按编号升序映射
-到连续 4-byte beat；最后一 beat 可只使用低位 byte tail。命令要求
-4-byte 对齐，且 `ceil(span_bytes/4) = popcount(group_mask)`。
+进入 engine 的 `span_bytes` 是已解析的连续合并 span，不是“等宽数组”。engine
+不观察地址并自动合并独立 command。uword 的五位 `span code` 中，code `0` 由 action
+adapter 按捕获的 group mask 解析为 `4 * popcount(group_mask)` byte，code `1..31` 是
+显式 span；因此完整 16-group 线性传输可表达为 64 byte。若需要大于 31 byte 又带
+partial tail，软件拆成多条 command。有效 group 按编号升序映射到连续 4-byte beat；
+最后一 beat 可只使用低位 byte tail。命令要求 4-byte 对齐，且解析后满足
+`ceil(span_bytes/4) = popcount(group_mask)`。
 
-- LOAD：memory read response 先被缓存，再发出对应 group 的 masked VRF
+`INDEX_U8` 的 decoded `span_bytes=0`，它与 `UNIT_STRIDE` 的 code-zero sentinel 由地址
+模式区分；该模式按 group 升序、lane 升序访问全部选中 group 的
+四个 byte lane。gather 允许重复 index 形成 memory broadcast；scatter 的重复地址按
+该遍历顺序串行写入，最后一个 lane 获胜。scatter 不是原子操作，遇错后已提交 byte
+不回滚。`bytes_committed` 统计成功的 lane transfer 数，不是去重后的物理地址数。
+gather 只有在一个 group 的四个读取全部成功后才写该 group VRF row。
+
+- unit-stride LOAD：memory read response 先被缓存，再发出对应 group 的 masked VRF
   state-write child，收到 child completion 后才推进下一 beat；
-- STORE：发出 VRF read/export child；child completion 和 data response 可任意
+- unit-stride STORE：发出 VRF read/export child；child completion 和 data response 可任意
   顺序到达，两者都收齐后才发 memory write，并等待 write ack；每个 accepted
   read 即使报错也必须各产生一条 completion 和一条 response；
 - 只支持 VRF。ARF 需先用 `NSLICE`/`NCLIP` 转换到 VRF 再 STORE；
 - 每个 accepted parent 恰好一条可背压 completion。
+
+indexed engine 读取 index row；scatter 再读取 data row。每个 byte 被降为普通、对齐
+的 4-byte dmem beat：gather 从返回 beat 选择一个 byte，scatter 用 one-hot write strobe。
+因此下游 MMU/cache 不需要理解 vector index。当前仍只有一个 outstanding memory beat；
+延迟会随 VRF/dmem backpressure 变化，不是固定周期，也不能每拍接收一条新命令。
 
 `exec_context` 是 sequencer/owner 身份；`addr_context` 是交给未来地址
 服务的 opaque handle，两者不是同一命名空间。`addr_space` 明确区分
@@ -158,11 +175,15 @@ VRF-only read/write subrequest。参考实现一次只允许一个 accepted subr
 被接受。仲裁和 owner capture 解决的是 child 返回归属，不提供 program-level
 class ordering、寄存器依赖或 group ownership 判定。
 
-`vsp_cluster_memory_wrapper` 当前以一个 MEMORY client 实例化该 arbiter，把 vector
+`vsp_cluster_memory_wrapper` 当前以唯一的 MEMORY client 实例化该 arbiter，把 vector
 memory engine 的 LOAD state-write 和 STORE state-read 接到
-`simd_cluster_exec`。arbiter 的多 client 接口为以后并接其他 VRF-only engine
+`simd_cluster_exec`。arbiter 的参数化接口为以后并接其他 VRF-only engine
 留出边界，但当前 wrapper 只有一个 client，也没有在 EXEC 与 MEMORY 两个独立 command
 入口之间建立统一顺序。
+
+因此 decoded memory wrapper 单独复用时，调用者必须保证会访问同一 VRF state 的
+EXEC/MEMORY 不交错；产品 uword 路径由 strict single-active controller 提供这项顺序。
+indexed engine 的快照粒度是当前 group，不是整条分布式向量的原子快照。
 
 `vsp_cluster_controller_wrapper` 保留上述两个叶端入口，在更外层只暴露一个 ordered
 action lane。它在 MEMORY 发往 engine 前执行 common context/owner precheck，把

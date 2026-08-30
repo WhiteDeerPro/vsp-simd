@@ -1,102 +1,73 @@
-# Scatter operations and histogram sketches
+# Indexed gather/scatter guide
 
-> **Status — architecture/program draft.** This document records mappings to
-> currently available primitives and possible future extensions. It is not an
-> ISA promise, an executable RTL regression, or evidence that indexed memory
-> gather/scatter is connected. Current route truth lives in
-> [architecture/routing.md](architecture/routing.md).
+The current MEMORY engine supports data-dependent byte addressing directly.
+This is the active replacement for the retired cluster register-route path.
 
-## Keep three operations separate
+## Operations
 
-1. `EXEC_ROUTE` is a VRF-indexed **register gather** over one route domain.
-   Each destination byte reads its source index from another VRF row;
-   duplicate source indices are legal and mean multicast. It does not form
-   memory addresses. Its blocking cluster capture/commit path is connected;
-   `00=LOCAL` is self-contained and has no implicit cross-slot barrier.
-   The engine also accepts role-complete `DEP_INOUT`, but the current upstream
-   path does not prove its cross-slot drain precondition. `DEP_IN/DEP_OUT` are
-   currently ordered rejects with no VRF traffic.
-2. The current vector memory path moves a contiguous span from
-   `sbase + offset`. It does not consume a vector of addresses.
-3. Scatter writes `value[i]` to an address selected by `index[i]`. Equal
-   indices create a write conflict and require an ordering, merge, atomic, or
-   rejection rule. No current VSP instruction provides that contract.
+```text
+VGATHER  sbase=B vd=D vi=I [offset=K]
+    D[lane] = MEM[state[B] + signed(K) + uint8(I[lane])]
 
-The standalone wider gather RTL is a routing experiment and is not connected
-to the cluster command/writeback path. It must not be used as evidence for a
-callable memory gather operation.
+VSCATTER sbase=B vs=S vi=I [offset=K]
+    MEM[state[B] + signed(K) + uint8(I[lane])] = S[lane]
+```
 
-## Mapping a small histogram today
+The actual four-group profile operates on 16 byte lanes.  Each index is an
+unsigned byte offset, so the sixteen lanes may select sixteen positions in a
+256-byte window.  The parameterized scaling limit is sixteen groups (64 byte
+lanes) using the same window.
 
-For a four-bin byte histogram, avoid scatter entirely. Turn each lane into a
-0/1 equality predicate and reduce it:
+Every selected group activates all four of its lanes.  There is not yet an
+independent per-byte predicate for indexed memory.  Use the group mask to
+select whole SIMD4 groups.
+
+## Ordering
+
+The reference engine serializes lanes in `(group number, lane number)` order.
+This makes behavior reproducible:
+
+- duplicate gather offsets broadcast the same memory byte;
+- duplicate scatter offsets are permitted and the later lane wins;
+- only one memory request is outstanding;
+- the first fault terminates the parent command;
+- completed scatter bytes remain visible after a later fault.
+
+This ordered scatter is not an atomic read-modify-write.  A histogram increment
+still needs a dedicated atomic operation, a private-bin algorithm, or a
+software merge phase.
+
+## Example
 
 ```text
 SMOVI rd=1 imm=0x1000
-VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0
 
-# bin_id = pixel >> 6; v2 = all ones
-EXEC_ALU_RI op=shr_u mode=byte va=0 vd=1 imm=6
-EXEC_ALU_RR op=xor mode=byte va=1 vb=1 vd=2
-EXEC_ALU_RI op=add mode=byte va=2 vd=2 imm=1
+# VRF row 2 must already contain sixteen byte offsets.
+VGATHER  space=local addr_context=0 sbase=1 vd=3 vi=2
 
-# Predicate for bin k=0. Repeat with immediates 1, 2 and 3.
-EXEC_ALU_RI op=absdiff_u mode=byte va=1 vd=3 imm=0
-EXEC_ALU_RI op=min_u mode=byte va=3 vd=4 imm=1
-EXEC_ALU_RR op=sub mode=byte va=2 vb=4 vd=5
-EXEC_REDUCE op=sum_u va=5
+# Perform ordinary vector work on row 3, then place the results back at the
+# indexed positions.  Equal indices are resolved by the deterministic order.
+VSCATTER space=local addr_context=0 sbase=1 vs=3 vi=2
 ```
 
-The full assemblable example is
-[`examples/uword/histogram_4bin_test.uasm`](../examples/uword/histogram_4bin_test.uasm).
-`EXEC_REDUCE` produces a completion for each selected SIMD4 group. A host or
-sequencer still has to aggregate those partial counts across groups and input
-tiles. That aggregation/storage path is not supplied by the example.
+Both pseudo-ops are two-word MEMORY records.  They share the normal address
+space/context, signed offset, action tag and completion path with `VLOAD` and
+`VSTORE`.  Indexed mode decodes an actual span of zero; the selected group mask
+sets its transfer count.  In unit-stride mode, encoded span code zero instead
+means all selected groups (`4 * popcount(group_mask)` bytes), while codes 1
+through 31 are explicit byte spans.  The address-mode bit keeps these two zero
+meanings unambiguous.
 
-This technique costs work proportional to the number of bins. It is useful for
-small fixed classifications; it is not a good general replacement for a
-256-bin atomic histogram.
+## Memory-system boundary
 
-## Program-level fallbacks
+Internally, each indexed byte becomes an aligned 4-byte D-side request:
 
-- **Tile then merge:** compute small local histograms or other partial results,
-  then merge them at a level with suitable scalar/atomic support.
-- **Serialize explicit stores:** when the program can enumerate destinations,
-  issue ordinary `VSTORE` transactions in a defined order. This preserves
-  semantics but gives up scatter parallelism.
-- **Transform the algorithm:** sorting/grouping indices before updates can turn
-  conflicting random writes into runs and reductions, but the transformation
-  itself needs a proven mapping and is workload-dependent.
+- gather aligns down and selects one byte from the returned beat;
+- scatter aligns down and emits one-hot byte write strobe/data.
 
-Register routing can rearrange values after they are loaded. It cannot reduce
-the number of random memory transactions when the addresses themselves are
-data-dependent, and it cannot define the winner for duplicate scatter indices.
+Thus cache, MMU/TLB and local-memory adapters continue to see ordinary
+effective-address loads/stores.  Future coalescing may merge lanes that hit one
+beat or cache line without changing the programming semantics.
 
-## Boundary for a future indexed-memory engine
-
-If workloads justify an indexed memory path, treat it as a separate address and
-request engine beside the current contiguous path. Its contract must state at
-least:
-
-- index element width, scale, base address and address-space/context source;
-- active-lane and out-of-range/fault behavior;
-- maximum outstanding requests and response reordering tags;
-- coalescing and cache-line split rules;
-- duplicate-address behavior for scatter (ordered last-writer, atomic merge,
-  serialized lanes, or illegal);
-- cancellation, fault completion and backpressure stability;
-- how returned lanes commit atomically or partially to VRF.
-
-The existing contiguous memory command boundary should remain usable without
-this engine. Indexed requests can share the downstream D-side translation and
-cache interfaces once those interfaces exist, but should not be hidden inside
-the register-route engine.
-
-## What is intentionally not claimed
-
-- cooperative `DEP_OUT`/`DEP_IN` route-wave rendezvous and its full retirement
-  drain are not connected; slot/queue empty alone is not a sufficient drain;
-- no current indexed load/store command;
-- no current atomic histogram update;
-- no current automatic 16-lane count collection;
-- no measured performance advantage for the sketches above.
+See [routing.md](architecture/routing.md) for the architectural trade-off and
+[data-movement.md](design/data-movement.md) for the full memory pipeline.

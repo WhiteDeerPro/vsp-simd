@@ -4,7 +4,7 @@ module vsp_cluster_controller_wrapper #(
   // scalable, but the outer action lane is still globally single-active; this
   // parameterization does not imply matching controller concurrency.
   parameter int GROUP_COUNT       = 4,
-  parameter int ISSUE_SLOTS       = 2,
+  parameter int ISSUE_SLOTS       = 1,
   parameter int QUEUE_DEPTH       = 4,
   parameter int TRACKER_ENTRIES   = 4,
   parameter int LANES             = 4,
@@ -13,7 +13,7 @@ module vsp_cluster_controller_wrapper #(
   parameter int VREGS             = 16,
   parameter int AREGS             = 8,
   parameter int MREGS             = 4,
-  parameter int CONTEXT_COUNT     = 2,
+  parameter int CONTEXT_COUNT     = 1,
   parameter int TAG_W             = 8,
   parameter int RESOURCE_W        = 8,
   parameter int SIMD4_ID_W        = 8,
@@ -63,11 +63,15 @@ module vsp_cluster_controller_wrapper #(
   output logic                                      action_exec_extension_required_diag_o,
 
   input  logic [vsp_pkg::VSP_MEM_OP_W-1:0]         action_memory_op_i,
+  input  logic [vsp_pkg::VSP_MEM_ADDR_MODE_W-1:0]
+                                                     action_memory_addr_mode_i,
   input  logic [vsp_pkg::VSP_MEM_ADDR_SPACE_W-1:0] action_memory_addr_space_i,
   input  logic [ADDR_CONTEXT_W-1:0]                 action_memory_addr_context_i,
   input  logic [MEM_EADDR_W-1:0]                    action_memory_base_eaddr_i,
   input  logic signed [MEM_OFFSET_W-1:0]            action_memory_eaddr_offset_i,
   input  logic [VRF_ADDR_W-1:0]                     action_memory_vrf_row_i,
+  input  logic [VRF_ADDR_W-1:0]
+                                                     action_memory_index_vrf_row_i,
   input  logic [SPAN_BYTES_W-1:0]                   action_memory_span_bytes_i,
 
   input  logic [GROUP_COUNT-1:0]                    group_owner_valid_i,
@@ -166,14 +170,12 @@ module vsp_cluster_controller_wrapper #(
   import vsp_exec_uword_pkg::*;
 
   localparam int IMM_W = 4 * ELEM_W;
-  localparam int NARROW_W = LANES * ELEM_W;
   localparam int EXEC_PAYLOAD_W = RESOURCE_W + 1 + SIMD_OP_W + ELEM_MODE_W +
       (3*VRF_ADDR_W) + 1 + IMM_W + (2*ARF_ADDR_W) + 1 +
-      (3*MRF_ADDR_W) + 4 + REDUCE_OP_W + 1 + VSP_EXEC_ROUTE_IO_W + ROUTE_OP_W +
-      (LANES*INDEX_W) + INDEX_W + OFFSET_W + (2*NARROW_W);
-  localparam int MEMORY_PAYLOAD_W = VSP_MEM_OP_W + VSP_MEM_ADDR_SPACE_W +
-      ADDR_CONTEXT_W + MEM_EADDR_W + MEM_OFFSET_W + VRF_ADDR_W +
-      SPAN_BYTES_W;
+      (3*MRF_ADDR_W) + 4 + REDUCE_OP_W;
+  localparam int MEMORY_PAYLOAD_W = VSP_MEM_OP_W + VSP_MEM_ADDR_MODE_W +
+      VSP_MEM_ADDR_SPACE_W + ADDR_CONTEXT_W + MEM_EADDR_W + MEM_OFFSET_W +
+      (2*VRF_ADDR_W) + SPAN_BYTES_W;
   localparam int EXEC_CPL_PAYLOAD_W = (3*GROUP_COUNT) + 4;
   localparam int MEMORY_CPL_PAYLOAD_W = VSP_MEM_OP_W +
       VSP_MEM_CPL_STATUS_W + VSP_MEM_FAULT_CAUSE_W + MEM_EADDR_W +
@@ -201,14 +203,6 @@ module vsp_cluster_controller_wrapper #(
   logic expand_reduce_enable;
   logic [REDUCE_OP_W-1:0] expand_reduce_op;
   logic expand_export_narrow;
-  logic expand_route_enable;
-  logic [VSP_EXEC_ROUTE_IO_W-1:0] expand_route_io_mode;
-  logic [ROUTE_OP_W-1:0] expand_route_op;
-  logic [7:0] expand_route_index;
-  logic [1:0] expand_route_broadcast_index;
-  logic [2:0] expand_route_slide_amount;
-  logic [31:0] expand_route_lower;
-  logic [31:0] expand_route_upper;
 
   logic selected_action_legal;
   logic [DECODE_ERROR_W-1:0] selected_decode_error;
@@ -248,21 +242,15 @@ module vsp_cluster_controller_wrapper #(
   logic exec_write_mrf;
   logic exec_reduce_enable;
   logic [REDUCE_OP_W-1:0] exec_reduce_op;
-  logic exec_route_enable;
-  logic [VSP_EXEC_ROUTE_IO_W-1:0] exec_route_io_mode;
-  logic [ROUTE_OP_W-1:0] exec_route_op;
-  logic [(LANES*INDEX_W)-1:0] exec_route_index;
-  logic [INDEX_W-1:0] exec_route_broadcast_index;
-  logic [OFFSET_W-1:0] exec_route_slide_amount;
-  logic [NARROW_W-1:0] exec_route_lower;
-  logic [NARROW_W-1:0] exec_route_upper;
 
   logic [VSP_MEM_OP_W-1:0] memory_op;
+  logic [VSP_MEM_ADDR_MODE_W-1:0] memory_addr_mode;
   logic [VSP_MEM_ADDR_SPACE_W-1:0] memory_addr_space;
   logic [ADDR_CONTEXT_W-1:0] memory_addr_context;
   logic [MEM_EADDR_W-1:0] memory_base_eaddr;
   logic [MEM_OFFSET_W-1:0] memory_eaddr_offset;
   logic [VRF_ADDR_W-1:0] memory_vrf_row;
+  logic [VRF_ADDR_W-1:0] memory_index_vrf_row;
   logic [SPAN_BYTES_W-1:0] memory_span_bytes;
 
   logic raw_exec_cpl_valid;
@@ -340,14 +328,6 @@ module vsp_cluster_controller_wrapper #(
     .reduce_enable_o(expand_reduce_enable),
     .reduce_op_o(expand_reduce_op),
     .export_narrow_o(expand_export_narrow),
-    .route_enable_o(expand_route_enable),
-    .route_io_mode_o(expand_route_io_mode),
-    .route_op_o(expand_route_op),
-    .route_index_o(expand_route_index),
-    .route_broadcast_index_o(expand_route_broadcast_index),
-    .route_slide_amount_o(expand_route_slide_amount),
-    .route_lower_o(expand_route_lower),
-    .route_upper_o(expand_route_upper),
     .requires_result_o(expand_requires_result_unused),
     .result_has_narrow_o(expand_result_has_narrow_unused),
     .result_has_reduce_o(expand_result_has_reduce_unused),
@@ -372,30 +352,26 @@ module vsp_cluster_controller_wrapper #(
       expand_src_arf, expand_dst_arf, expand_mask_enable, expand_mask_addr,
       expand_select_mask_addr, expand_dst_mrf, expand_write_vrf,
       expand_write_arf, expand_write_mrf, expand_reduce_enable,
-      expand_reduce_op, expand_route_enable, expand_route_io_mode,
-      expand_route_op,
-      expand_route_index, expand_route_broadcast_index,
-      expand_route_slide_amount, expand_route_lower, expand_route_upper};
+      expand_reduce_op};
 
   assign action_memory_payload = {
-      action_memory_op_i, action_memory_addr_space_i,
+      action_memory_op_i, action_memory_addr_mode_i,
+      action_memory_addr_space_i,
       action_memory_addr_context_i, action_memory_base_eaddr_i,
       action_memory_eaddr_offset_i, action_memory_vrf_row_i,
+      action_memory_index_vrf_row_i,
       action_memory_span_bytes_i};
 
   assign {exec_exact_resource, exec_export_narrow, exec_op, exec_elem_mode,
           exec_src_a, exec_src_b, exec_use_imm, exec_imm, exec_dst_vrf,
           exec_src_arf, exec_dst_arf, exec_mask_enable, exec_mask_addr,
           exec_select_mask_addr, exec_dst_mrf, exec_write_vrf,
-          exec_write_arf, exec_write_mrf, exec_reduce_enable, exec_reduce_op,
-          exec_route_enable, exec_route_io_mode, exec_route_op,
-          exec_route_index,
-          exec_route_broadcast_index, exec_route_slide_amount,
-          exec_route_lower, exec_route_upper} = controller_exec_payload;
+          exec_write_arf, exec_write_mrf, exec_reduce_enable,
+          exec_reduce_op} = controller_exec_payload;
 
-  assign {memory_op, memory_addr_space, memory_addr_context,
+  assign {memory_op, memory_addr_mode, memory_addr_space, memory_addr_context,
           memory_base_eaddr, memory_eaddr_offset, memory_vrf_row,
-          memory_span_bytes} = controller_memory_payload;
+          memory_index_vrf_row, memory_span_bytes} = controller_memory_payload;
 
   assign raw_exec_cpl_payload = {
       raw_exec_cpl_group_mask, raw_exec_cpl_result_mask,
@@ -556,14 +532,6 @@ module vsp_cluster_controller_wrapper #(
     .exec_cmd_write_mrf_i(exec_write_mrf),
     .exec_cmd_reduce_enable_i(exec_reduce_enable),
     .exec_cmd_reduce_op_i(exec_reduce_op),
-    .exec_cmd_route_enable_i(exec_route_enable),
-    .exec_cmd_route_io_mode_i(exec_route_io_mode),
-    .exec_cmd_route_op_i(exec_route_op),
-    .exec_cmd_route_index_i(exec_route_index),
-    .exec_cmd_route_broadcast_index_i(exec_route_broadcast_index),
-    .exec_cmd_route_slide_amount_i(exec_route_slide_amount),
-    .exec_cmd_route_lower_i(exec_route_lower),
-    .exec_cmd_route_upper_i(exec_route_upper),
     .exec_cmd_context_error_o(exec_cmd_context_error_unused),
     .group_owner_valid_i(group_owner_valid_i),
     .group_owner_i(group_owner_i),
@@ -595,6 +563,7 @@ module vsp_cluster_controller_wrapper #(
     .mem_cmd_valid_i(controller_memory_valid),
     .mem_cmd_ready_o(controller_memory_ready),
     .mem_cmd_op_i(memory_op),
+    .mem_cmd_addr_mode_i(memory_addr_mode),
     .mem_cmd_exec_context_i(controller_memory_context),
     .mem_cmd_tag_i(controller_memory_tag),
     .mem_cmd_addr_space_i(memory_addr_space),
@@ -603,6 +572,7 @@ module vsp_cluster_controller_wrapper #(
     .mem_cmd_eaddr_offset_i(memory_eaddr_offset),
     .mem_cmd_group_mask_i(controller_memory_group_mask),
     .mem_cmd_vrf_row_i(memory_vrf_row),
+    .mem_cmd_index_vrf_row_i(memory_index_vrf_row),
     .mem_cmd_span_bytes_i(memory_span_bytes),
     .mem_cpl_valid_o(raw_memory_cpl_valid),
     .mem_cpl_ready_i(raw_memory_cpl_ready),

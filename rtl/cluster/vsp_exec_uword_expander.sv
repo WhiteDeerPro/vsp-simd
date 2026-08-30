@@ -40,22 +40,8 @@ module vsp_exec_uword_expander #(
   output logic [simd_pkg::REDUCE_OP_W-1:0]         reduce_op_o,
   output logic                                      export_narrow_o,
 
-  // Format D is a register-indexed vector route.  The source and index VRF
-  // addresses use the ordinary A/B fields.  These legacy local-route control
-  // outputs remain in the canonical bundle for interface compatibility, but
-  // a legal Format-D word always drives GATHER. Bits 27:26 preserve the
-  // route-wave mode.  LOCAL (00) is self-contained; dependent modes retain
-  // their OUT/IN roles for a future peer-aware admission stage.  Other
-  // immediate controls remain zero.
-  output logic                                      route_enable_o,
-  output logic [vsp_exec_uword_pkg::VSP_EXEC_ROUTE_IO_W-1:0]
-                                                     route_io_mode_o,
-  output logic [simd_pkg::ROUTE_OP_W-1:0]          route_op_o,
-  output logic [7:0]                                route_index_o,
-  output logic [1:0]                                route_broadcast_index_o,
-  output logic [2:0]                                route_slide_amount_o,
-  output logic [31:0]                               route_lower_o,
-  output logic [31:0]                               route_upper_o,
+  // Cross-group route controls are absent from this product-profile boundary.
+  // The independently driven routing experiments do not consume EXEC uwords.
 
   output logic                                      requires_result_o,
   output logic                                      result_has_narrow_o,
@@ -110,15 +96,6 @@ module vsp_exec_uword_expander #(
   logic raw_reduce_enable;
   logic [REDUCE_OP_W-1:0] raw_reduce_op;
   logic raw_export_narrow;
-  logic raw_route_enable;
-  logic [VSP_EXEC_ROUTE_IO_W-1:0] raw_route_io_mode;
-  logic [ROUTE_OP_W-1:0] raw_route_op;
-  logic [7:0] raw_route_index;
-  logic [1:0] raw_route_broadcast_index;
-  logic [2:0] raw_route_slide_amount;
-  logic [31:0] raw_route_lower;
-  logic [31:0] raw_route_upper;
-
   logic mode_legal;
   logic writeback_legal;
   logic reduce_legal;
@@ -169,15 +146,6 @@ module vsp_exec_uword_expander #(
     raw_reduce_enable = 1'b0;
     raw_reduce_op = REDUCE_OP_SUM_U;
     raw_export_narrow = 1'b0;
-    raw_route_enable = 1'b0;
-    raw_route_io_mode = VSP_EXEC_ROUTE_IO_LOCAL;
-    raw_route_op = ROUTE_OP_GATHER;
-    raw_route_index = '0;
-    raw_route_broadcast_index = '0;
-    raw_route_slide_amount = '0;
-    raw_route_lower = '0;
-    raw_route_upper = '0;
-
     unique case (format)
       VSP_EXEC_UWORD_FMT_ALU: begin
         unique case (base_word_i[27:23])
@@ -507,31 +475,6 @@ module vsp_exec_uword_expander #(
                     (raw_write_vrf || (base_word_i[19:16] == 4'h0));
       end
 
-      VSP_EXEC_UWORD_FMT_ROUTE: begin
-        // A route word names source-data, index and destination VRF rows.  It
-        // remains an EXEC-class byte-mode PASS_A action, but the route map is
-        // read from VRF-B rather than embedded in the word.  Broadcast and
-        // slide are expressed by constructing the corresponding index row.
-        raw_op = SIMD_OP_PASS_A;
-        raw_elem_mode = ELEM_MODE_BYTE;
-        // LOCAL consumes both operands and writes vd.  For a dependent
-        // fragment bit 1 publishes the source and bit 0 consumes the index
-        // and destination.  Partial fragments never execute separately.
-        raw_reads_vrf_a = vsp_exec_route_mode_has_source(
-            base_word_i[27:26]);
-        raw_reads_vrf_b = vsp_exec_route_mode_has_destination(
-            base_word_i[27:26]);
-        raw_src_a_addr = raw_reads_vrf_a ? base_word_i[25:22] : 4'h0;
-        raw_src_b_addr = raw_reads_vrf_b ? base_word_i[9:6] : 4'h0;
-        raw_dst_vrf_addr = raw_reads_vrf_b ? base_word_i[21:18] : 4'h0;
-        raw_write_vrf = raw_reads_vrf_b;
-        raw_route_enable = 1'b1;
-        raw_route_io_mode = base_word_i[27:26];
-        raw_route_op = ROUTE_OP_GATHER;
-        reserved_ok = (base_word_i[17:10] == 8'h00) &&
-                      (base_word_i[5:0] == 6'h00);
-      end
-
       default: begin
         // Safe defaults above form the canonical candidate for a bad format.
       end
@@ -603,7 +546,7 @@ module vsp_exec_uword_expander #(
     .write_arf_i(raw_write_arf),
     .write_mrf_i(raw_write_mrf),
     .reduce_enable_i(raw_reduce_enable),
-    .route_enable_i(raw_route_enable),
+    .route_enable_i(1'b0),
     .mode_legal_o(mode_legal),
     .writeback_legal_o(writeback_legal),
     .reduce_legal_o(reduce_legal),
@@ -676,14 +619,6 @@ module vsp_exec_uword_expander #(
     reduce_op_o = '0;
     export_narrow_o = 1'b0;
 
-    route_enable_o = 1'b0;
-    route_io_mode_o = VSP_EXEC_ROUTE_IO_LOCAL;
-    route_op_o = '0;
-    route_index_o = '0;
-    route_broadcast_index_o = '0;
-    route_slide_amount_o = '0;
-    route_lower_o = '0;
-    route_upper_o = '0;
 
     requires_result_o = 1'b0;
     result_has_narrow_o = 1'b0;
@@ -710,18 +645,6 @@ module vsp_exec_uword_expander #(
       reduce_enable_o = raw_reduce_enable;
       reduce_op_o = raw_reduce_enable ? raw_reduce_op : REDUCE_OP_SUM_U;
       export_narrow_o = raw_export_narrow;
-
-      route_enable_o = raw_route_enable;
-      route_io_mode_o = raw_route_enable ? raw_route_io_mode :
-                                            VSP_EXEC_ROUTE_IO_LOCAL;
-      route_op_o = raw_route_enable ? raw_route_op : ROUTE_OP_GATHER;
-      route_index_o = raw_route_enable ? raw_route_index : 8'h0;
-      route_broadcast_index_o = raw_route_enable ?
-                                    raw_route_broadcast_index : 2'h0;
-      route_slide_amount_o = raw_route_enable ?
-                                 raw_route_slide_amount : 3'h0;
-      route_lower_o = raw_route_enable ? raw_route_lower : 32'h0;
-      route_upper_o = raw_route_enable ? raw_route_upper : 32'h0;
 
       result_has_narrow_o = raw_export_narrow;
       result_has_reduce_o = raw_reduce_enable;

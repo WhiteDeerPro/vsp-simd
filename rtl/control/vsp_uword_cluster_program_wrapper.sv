@@ -5,7 +5,7 @@ module vsp_uword_cluster_program_wrapper #(
   parameter int FETCH_WORDS       = 4,
   parameter int ADMIT_SLOTS       = 3,
   parameter int GROUP_COUNT       = 4,
-  parameter int ISSUE_SLOTS       = 2,
+  parameter int ISSUE_SLOTS       = 1,
   parameter int QUEUE_DEPTH       = 4,
   parameter int TRACKER_ENTRIES   = 4,
   parameter int LANES             = 4,
@@ -14,7 +14,7 @@ module vsp_uword_cluster_program_wrapper #(
   parameter int VREGS             = 16,
   parameter int AREGS             = 8,
   parameter int MREGS             = 4,
-  parameter int CONTEXT_COUNT     = 2,
+  parameter int CONTEXT_COUNT     = 1,
   parameter int TAG_W             = 8,
   parameter int RESOURCE_W        = 8,
   parameter int SIMD4_ID_W        = 8,
@@ -204,6 +204,7 @@ module vsp_uword_cluster_program_wrapper #(
   logic [MEM_EADDR_W-1:0] adapter_memory_base_read_data;
   logic adapter_memory_base_read_legal;
   logic [vsp_pkg::VSP_MEM_OP_W-1:0] adapter_memory_op;
+  logic [vsp_pkg::VSP_MEM_ADDR_MODE_W-1:0] adapter_memory_addr_mode;
   logic [vsp_pkg::VSP_MEM_ADDR_SPACE_W-1:0]
       adapter_memory_addr_space;
   logic [VSP_MEMORY_UWORD_ADDR_CONTEXT_W-1:0]
@@ -212,8 +213,14 @@ module vsp_uword_cluster_program_wrapper #(
   logic signed [VSP_MEMORY_UWORD_OFFSET_W-1:0]
       adapter_memory_eaddr_offset;
   logic [VSP_MEMORY_UWORD_VRF_ROW_W-1:0] adapter_memory_vrf_row;
+  logic [VSP_MEMORY_UWORD_VRF_ROW_W-1:0]
+      adapter_memory_index_vrf_row;
+  // Narrow profiles intentionally consume only the resolved bits their
+  // physical group count can represent; all seven bits are live at 16 groups.
+  /* verilator lint_off UNUSED */
   logic [VSP_MEMORY_UWORD_SPAN_BYTES_W-1:0]
       adapter_memory_span_bytes;
+  /* verilator lint_on UNUSED */
   logic [PC_W-1:0] adapter_action_start_pc;
   logic adapter_action_is_end;
   logic adapter_end_allowed;
@@ -244,6 +251,7 @@ module vsp_uword_cluster_program_wrapper #(
   logic [ADDR_CONTEXT_W-1:0] action_memory_addr_context;
   logic signed [MEM_OFFSET_W-1:0] action_memory_eaddr_offset;
   logic [VRF_ADDR_W-1:0] action_memory_vrf_row;
+  logic [VRF_ADDR_W-1:0] action_memory_index_vrf_row;
   logic [SPAN_BYTES_W-1:0] action_memory_span_bytes;
 
   logic action_record_valid_q;
@@ -388,14 +396,18 @@ module vsp_uword_cluster_program_wrapper #(
       (!cluster_controller_busy && state_cmd_ready) :
       (!state_busy && cluster_action_ready);
 
-  // Current encoded MEMORY profile v0 uses the same widths as this program
-  // wrapper's reference parameters.  Explicit casts keep the semantic resize
-  // visible if a later integration experiments with smaller physical files.
+  // The adapter has already expanded UNIT_STRIDE span code zero into the
+  // ordinary byte count selected by the launch mask.  Explicit casts keep
+  // the decoded seven-bit profile visibly separate from narrower physical
+  // integrations; the 16-group reference profile naturally keeps all seven
+  // bits and can carry 64 bytes.
   assign action_memory_addr_context =
       ADDR_CONTEXT_W'(adapter_memory_addr_context);
   assign action_memory_eaddr_offset =
       MEM_OFFSET_W'($signed(adapter_memory_eaddr_offset));
   assign action_memory_vrf_row = VRF_ADDR_W'(adapter_memory_vrf_row);
+  assign action_memory_index_vrf_row =
+      VRF_ADDR_W'(adapter_memory_index_vrf_row);
   assign action_memory_span_bytes =
       SPAN_BYTES_W'(adapter_memory_span_bytes);
 
@@ -572,11 +584,13 @@ module vsp_uword_cluster_program_wrapper #(
     .memory_base_read_data_i(adapter_memory_base_read_data),
     .memory_base_read_legal_i(adapter_memory_base_read_legal),
     .action_memory_op_o(adapter_memory_op),
+    .action_memory_addr_mode_o(adapter_memory_addr_mode),
     .action_memory_addr_space_o(adapter_memory_addr_space),
     .action_memory_addr_context_o(adapter_memory_addr_context),
     .action_memory_base_eaddr_o(adapter_memory_base_eaddr),
     .action_memory_eaddr_offset_o(adapter_memory_eaddr_offset),
     .action_memory_vrf_row_o(adapter_memory_vrf_row),
+    .action_memory_index_vrf_row_o(adapter_memory_index_vrf_row),
     .action_memory_span_bytes_o(adapter_memory_span_bytes),
     .action_start_pc_o(adapter_action_start_pc),
     .action_is_control_end_o(adapter_action_is_end)
@@ -659,11 +673,13 @@ module vsp_uword_cluster_program_wrapper #(
     .action_exec_extension_required_diag_o(
         action_exec_extension_required_unused),
     .action_memory_op_i(adapter_memory_op),
+    .action_memory_addr_mode_i(adapter_memory_addr_mode),
     .action_memory_addr_space_i(adapter_memory_addr_space),
     .action_memory_addr_context_i(action_memory_addr_context),
     .action_memory_base_eaddr_i(adapter_memory_base_eaddr),
     .action_memory_eaddr_offset_i(action_memory_eaddr_offset),
     .action_memory_vrf_row_i(action_memory_vrf_row),
+    .action_memory_index_vrf_row_i(action_memory_index_vrf_row),
     .action_memory_span_bytes_i(action_memory_span_bytes),
     .group_owner_valid_i(group_owner_valid),
     .group_owner_i(group_owner),

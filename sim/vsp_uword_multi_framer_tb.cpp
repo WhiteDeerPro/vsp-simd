@@ -154,8 +154,8 @@ int main(int argc, char** argv) {
   dut.record_ready_i = 0;
   expect_slot(dut, 0, 0x104, 0xb0000011U, 1, 1, 1, false, false,
               "remaining oldest rebased");
-  expect_slot(dut, 2, 0x10c, 0xd0000000U, 1, 1, 0, false, false,
-              "fourth fetched record exposed");
+  expect_slot(dut, 2, 0x10c, 0xd0000000U, 1, 1, 3, false, false,
+              "fourth undefined record exposed");
   dut.record_ready_i = 0x7;
   tick(dut);
   dut.record_ready_i = 0;
@@ -258,8 +258,8 @@ int main(int argc, char** argv) {
   dut.record_ready_i = 0;
   expect_slot(dut, 0, 0x50c, 0x80000003U, 1, 1, 0, false, false,
               "old fourth record preserved");
-  expect_slot(dut, 1, 0x510, 0xd0000000U, 1, 1, 0, false, false,
-              "new first record appended");
+  expect_slot(dut, 1, 0x510, 0xd0000000U, 1, 1, 3, false, false,
+              "new first undefined record appended");
 
   // A transport fault may arrive while a record tail waits for another
   // bundle. Abort discards that state without claiming successful EOF and

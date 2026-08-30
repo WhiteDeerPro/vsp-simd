@@ -9,6 +9,23 @@ package vsp_pkg;
     VSP_MEM_OP_STORE = 1'b1
   } vsp_mem_op_e;
 
+  localparam int VSP_MEM_ADDR_MODE_W = 1;
+
+  typedef enum logic [VSP_MEM_ADDR_MODE_W-1:0] {
+    VSP_MEM_ADDR_MODE_UNIT_STRIDE = 1'b0,
+    VSP_MEM_ADDR_MODE_INDEX_U8    = 1'b1
+  } vsp_mem_addr_mode_e;
+
+  function automatic logic vsp_mem_addr_mode_defined(
+      input logic [VSP_MEM_ADDR_MODE_W-1:0] addr_mode);
+    unique case (addr_mode)
+      VSP_MEM_ADDR_MODE_UNIT_STRIDE,
+      VSP_MEM_ADDR_MODE_INDEX_U8:
+        vsp_mem_addr_mode_defined = 1'b1;
+      default: vsp_mem_addr_mode_defined = 1'b0;
+    endcase
+  endfunction
+
   // The vector memory engine carries an effective address plus its
   // address-space kind.
   // LOCAL and PHYSICAL bypass address translation in the future downstream

@@ -1,579 +1,156 @@
-# SIMD4 集群控制工作稿
+# SIMD4 cluster control
 
-本页并列记录已实现的 EXEC frontend/dispatcher/cluster integration 行为、事务正确性
-条件和后续 controller 候选。
-它不是一份整体生效的最终规格；各节状态分别标注。
+This page separates vector width from command issue bandwidth.  That distinction
+is the basis of the current one-PC/one-slot architecture.
 
-## 1. 当前 group profile `[里程碑基线]`
+## Current profile
 
-当前控制实验以一个 SIMD4 group 为调度颗粒：
+| Quantity | Implemented | Parameterized bound | Meaning |
+|---|---:|---:|---|
+| physical lanes per group | 4 | 4 in product wrapper | one SIMD4 RF/execution fragment |
+| groups | 4 | 16 | 16-byte actual vector, 64-byte maximum profile |
+| architectural PCs | 1 | 1 | one ordered program stream |
+| execution contexts | 1 | 1 in product wrapper | owner/completion identity, not a thread |
+| issue slots | 1 | generic lower blocks still parameterized | actions admitted to engines per cycle |
+| fetch words | 4 | parameterized | control-stream bandwidth, not issue count |
 
-```text
-4 × 8-bit physical byte lanes
-VRF row = 4 × 8 bit
-ARF row = 4 × 32 bit accumulator
-MRF row = 4 × 1 bit
-```
+One vector parent command carries a group mask.  A single slot can therefore
+start one operation across all four current groups, or across sixteen groups in
+the scale-limit profile.  Increasing group count increases the data width of a
+command; it does not create independent operations.
 
-BYTE/HALF/WORD 是同一个 SIMD4 内的 `4×8 / 2×16 / 1×32` 动态解释，不把
-多个 SIMD4 隐式拼成更宽的算术单元。参数化 RTL 可以继续帮助验证网络结构，
-当前集群控制模型不依赖大于四 lane 的 group；后续若出现明确负载证据，可以重新
-比较其他颗粒。
+## What a slot is
 
-## 2. 四个不同的数量 `[概念模型]`
-
-- `GROUP_COUNT`：集群包含多少个 SIMD4；
-- `CONTEXT_COUNT`：可保存多少条独立控制流的状态；
-- `QUEUE_COUNT`：能排队多少条独立微操作流；
-- `ISSUE_SLOTS`：一个周期最多发射多少条不同微操作。
-
-一个发射槽可以通过 `group_mask` 把同一条微操作同时交付多个 group，所以
-“激活了多少个 group”不等于“发射了多少条不同微操作”。队列数量也可以大于
-物理发射槽数量，由仲裁器分时选择。
-
-首版每个 context 每周期最多出现在一个 issue slot；同一 context 的队列严格
-FIFO。若以后需要同一任务内的多条独立流，应显式增加 stream/queue 身份，而不是
-让较年轻 uop 绕过未接受的同 context 队头。
-
-## 3. 发射单元数量 `[性能假说]`
-
-发射数量不是功能正确性的条件。一个槽理论上可以广播控制所有 group；以下范围
-是保证阵列增大后仍逐渐提高混合任务能力的实现 profile。
-
-下文记 `G = GROUP_COUNT`、`C = CONTEXT_COUNT`。
-
-对数建议下界：
-
-\[
-I_{log}(G)=
-\begin{cases}
-1,&G=1\\
-1+\lceil\log_4G\rceil,&G>1
-\end{cases}
-\]
-
-线性建议上界：
-
-\[
-I_{linear}(G)=
-\begin{cases}
-1,&G=1\\
-1+\lceil G/4\rceil,&G>1
-\end{cases}
-\]
-
-在“每 context 每周期只提供一个队头、每个 group 每周期至多接受一条操作”的
-基线下，非冗余的 group-execution 配置上界是：
-
-\[
-1\le ISSUE\_SLOTS\le\min(C,G)
-\]
-
-这里只是有效实现范围，不是 dispatcher 的功能正确性断言。当前 RTL 只要求三个
-计数参数为正；`ISSUE_SLOTS > min(C,G)` 仍可工作，只是多出的 group-dispatch slot
-不可能同周期都做有用且互不重叠的发射。以后若同一 issue fabric 同时服务
-controller-local、DMA 等非 group class，应分别按各引擎带宽核算，不能机械套用
-这个上界。
-
-自然的对数分桶是 `1→1、2..4→2、5..16→3、17..64→4`。SystemVerilog
-没有 `$clog4`；正整数参数可用 `ceil(log4(G)) = ($clog2(G)+1)/2` 计算。
-平衡配置的目标值为：
-
-\[
-I_{balanced}=\min(C,G,I_{log}(G))
-\]
-
-只有当 `C>=I_log(G)` 时，才存在建议的吞吐配置区间
-`I_log(G)..min(C,G,I_linear(G))`。context 数较少或面积优先的实现仍完全合法，
-不能因低于对数 profile 而触发 RTL 错误。
-
-## 4. Group 所有权 `[候选控制模型]`
-
-每个 group 保存 `owner_valid + owner_context`。普通发射只有在请求 mask 内的全部 group
-都属于发射 context 时才合法。所有权在一个 kernel phase 内保持稳定，只能在：
-
-1. 旧 context 不再发出涉及这些 group 的操作；
-2. 所有相关多周期操作和返回结果已经退休；
-3. cluster barrier 已经完成；
-
-之后重新配置。所有权变化不是每周期调度动作。
-
-## 5. 原子 multicast 与 backpressure `[RTL事实 + 正确性约束]`
-
-一条带多个 group 的微操作必须全有或全无地接受：
+An issue slot is a transient arbitration result:
 
 ```text
-accept = valid
-       && group_mask != 0
-       && every requested group is owned by context
-       && every requested group is ready
-       && this slot's shared resources are ready
-       && no accepted higher-priority slot overlaps the mask
+selected action + resolved group mask + resource grant
+                  │ one atomic accept
+                  ▼
+       selected engine / group ingress
 ```
 
-禁止只让 mask 的一部分 group 前进，否则各 group 的微码位置会发生分裂。
-同周期 mask 重叠时使用确定性的低槽号优先；失败槽保持有效并在以后重试。
+It is not:
 
-空 mask、无有效 owner 或 owner 不匹配不是可重试的资源等待。dispatcher 禁止
-所有 group 状态写入，并只在对应 `issue_reject_ready_i` 有效时给出
-`ready + reject`。frontend 只把有 credit 的 reject 视为 terminal，并在同拍
-pop 对应 queue head；无错误返回空间时必须保持 slot 和队头。
+- a hardware thread;
+- an independent PC;
+- a SIMD4 group;
+- a register-file bank;
+- a long-lived execution context.
 
-`group_ready` 表示 group-local 条件已满足。以下任一局部冲突都必须令
-相应 group 不 ready：
+The generic dispatcher represents each selected command with a slot number so
+each target group can select the same payload.  Queue pop, tracker allocation
+and every selected group ingress fire on the same acceptance edge.  If one
+required target cannot accept, none of the group children fire.
 
-- 本地多周期执行级或尚未退休的写回；
-- 配置、DMA 或跨组 gather 占用目标寄存器文件写口；
-- 物理化后无法在本周期提供的 RF bank/operand；
-- 该操作所需的返回队列没有空间。
+## Why one slot is sufficient now
 
-跨组 gather 网络、单实例 scalar-return 口、completion tracker 表项等共享资源是
-slot-specific 的：两条 mask 不相交的操作也可能竞争它们。上层 scheduler
-先按 uop 派生需求并完成仲裁，再通过每 slot 的 `slot_resource_ready_i`
-将获胜结果送入 dispatcher。该信号与 queue pop、tracker allocation 和全部
-目标 group fire 同拍 commit；不能只用一份与 slot 无关的 `group_ready`
-表达全部共享资源。将它置为全 1 时与原有只检查 group 的行为相同。
-对 malformed request，该信号不参与 reject；reject 仍只由对应的 error
-credit 决定，且不会产生 group fire。
+The executable controller is globally single-active: it waits for an action's
+completion to retire before accepting the next action.  More physical slots
+would therefore add mux, tracker and dependency state without increasing
+program throughput.
 
-因此现有 `cfg_*` 写优先行为不能在 cluster 中静默吞掉一条已经接受的执行写；
-外层控制器必须在接受前把这种冲突转换成 backpressure。
+Four groups and four VRF fragments do not imply four simultaneous operations.
+They mean one command may process sixteen bytes at once.  Likewise, a future
+sixteen-group cluster can process 64 bytes with the same one-slot contract.
 
-## 6. 跨组操作 `[blocking RTL 事实 + 调度扩展]`
+A second slot becomes useful only if all of these are true:
 
-普通逐元素操作只占用目的 group。涉及边界或跨组路由时需要声明更大的资源集合：
+1. the controller permits multiple active actions;
+2. their group/resource masks are proven independent;
+3. RF and shared engines have the required ports or arbitration;
+4. completion tracking can distinguish both actions;
+5. measured kernels show the one-slot admission point is a bottleneck.
 
-- 相邻 `SLIDE` 必须同时拥有并读取提供边界值的相邻 group，或者明确选择来自
-  ingress/zero 的边界；
-- 跨组 gather 是 cluster 操作，源和目的 group 的并集在该事务期间被占用；
-- 跨组路由采用独立阶段和显式写回，不无条件串入普通 ALU 组合路径。
+Do not choose slot count from group count alone.  Start at one; if profiling
+justifies overlap, compare two slots before considering larger values.
 
-跨组路由不是与 MEMORY 并列的独立 command class。当前 `fmt=0xd` 已把寄存器形式的
-lane gather 编入 EXEC，cluster wrapper 在普通 per-group EXEC 入口之前将其分流到
-`vsp_cluster_register_route_engine`：
+## EXEC dispatch
+
+`simd_cluster_exec` is the reusable decoded execution integration.  It contains:
+
+- issue queue/frontend experiments;
+- atomic group-mask dispatch;
+- per-group one-entry ingress;
+- SIMD4 transaction wrappers;
+- completion tracker, reject buffer and result collector;
+- VRF state-read/state-write endpoints for parent engines.
+
+The lower modules retain multi-slot and multi-context parameter tests to keep
+their handshakes general.  The product wrappers instantiate the single-slot,
+single-context profile.  These generic parameters are not a commitment to
+multi-PC execution.
+
+Ordinary vector arithmetic is independently executed by each selected group.
+Group-local route and boundary slide remain datapath features.  There is no
+product cross-group register-route action.
+
+## MEMORY dispatch
+
+The MEMORY class sends one parent descriptor to
+`vsp_vector_memory_engine`.  The engine owns its command until completion and
+serializes child work:
 
 ```text
-DR[lane] = SR[IR[lane]]
+parent MEMORY action
+      ├── VRF row read/write subrequests
+      └── ordinary aligned D-side beats
 ```
 
-索引向量 `IR` 由 VRF 提供，允许一对一置换与广播，不支持 scatter；同一条操作内
-不会出现多个源竞争写同一目的。当前默认四组 route domain 中，engine 经共享 VRF
-arbiter 串行捕获选中 group 的 source row，再捕获 index row；完整 snapshot 进入
-16-byte `vsp_vrf_gather`，结果随后逐组 masked commit。所有读取先于第一次写回，
-所以 `vd==vs` 或 `vd==vi` 安全；completion 在最后一项选中 group write 完成后产生。
-
-`fmt=0xd` 已增加 2-bit route dependency mode：`00=LOCAL`、`01=DEP_IN`、
-`10=DEP_OUT`、`11=DEP_INOUT`，且 `dependency=|mode`。`LOCAL` 是无隐式跨槽 barrier 的
-自包含 route；`DEP_INOUT` 是无需 half-descriptor peer 的 role-complete 形状，但仍带
-dependency barrier。当前 engine 接受 `LOCAL/DEP_INOUT`，并只使用
-一份 resolved `action_group_mask`：每个 bit 同时决定该 group 的 source/index capture
-和 destination commit，并整组展开成四个 destination byte。未选中的目的保持
-旧值；active destination 的 index 越界或指向未选中/无效 source 时，也关闭对应 byte
-write 并保留旧值，同时生成 invalid-element 诊断。该诊断不使 action illegal、rejected
-或 protocol error。engine 会合并 VRF response mask，但当前 endpoint 只回显全一 request
-mask；指令也不编码 MRF selector 或逐 byte predicate。选中组内可用 OOB index 得到
-tail-undisturbed；zero-fill 需预清目的值或选择显式有效零源。当前 wrapper 自身已有
-drain/互斥门控：pending VROUTE 等待既有 EXEC queue/
-tracker/completion、MEMORY 和 VRF arbiter 排空，同时阻止新 MEMORY；route busy 期间阻止
-普通 EXEC/MEMORY admission。外层 strict controller 还保持 program order，但不是
-snapshot/commit 不被交错的唯一保证。当前尚未形成可安全放宽该互斥的精确资源调度。
-
-目标 route dependency 是 barrier-before，而不是把 route 变成全局 serializing：
-participant 槽的 younger action 不得越过，但另一槽为到达同一会合点而执行的 older
-action 仍应推进。当前 blocking wrapper 的全局互斥更保守，是 single-active reference
-的实现边界，不表示 future concurrent scheduler 必须维持相同串行范围。现有
-ordered action window 只有全局 sequence，没有 flow/participant identity；因此它只能
-实现“本 entry 等全局旧项退休”，不能单靠 `barrier-before` 区分同槽 younger
-与另一槽的无关 younger。这项精确范围属于 future per-flow token/gate。
-
-更完整的并发调度模型仍可派生独立 mask：
-
-```text
-src_group_mask       本次 gather 读取的源 group
-dst_group_mask       写入的目的 group
-resource_group_mask  src_group_mask | dst_group_mask
-```
-
-未来 scheduler 可在 action 原子接受前解析这些 mask，完成精确资源预留；在 index
-capture 前不能推导真实 source 集合时，也可以显式提供 source mask，或保守占用完整
-route domain。当前 route engine 接口与独立 route-wave pipeline 已区分 source/destination
-mask；并行 VRF capture/commit、细粒度 predicate 和 resource-aware multi-action
-scheduling 仍是 blocking closure 之后的增强。
-
-`DEP_OUT` 与 `DEP_IN` 不能分别成为两个已接受的 outstanding 再互相等待。那会产生典型
-hold-and-wait：A 已占 source group 等 B，B 又因 A 占用的 group、route engine、队头或
-最后一个 completion credit 无法发射。正确同步点在 admission 之前：两个带显式
-`{context,epoch,route_id}` 的 descriptor 先配成一个 route-wave parent；首个 profile
-只配合同 context participant，tag 可不同。若使用 bounded rendezvous table，
-`fragment_capture` 可以 pop queue，但不分配 execution tracker/group/engine；无 table
-实现则要求所有 fragment 同时在 queue heads 可见。只有 `wave_accept` 才原子取得
-`src_group_mask | dst_group_mask` 和每个 participant 的 completion credit。parent 一旦
-进入执行，不再等待未来 action；完成后向各原 tag fan-out completion。
-
-在 dependency wave 接受前，两槽在会合点之前的操作还必须真实退休。只看到另一槽或
-queue 为空并不充分；drain 需要同时覆盖 ingress/holding、tracker、ordered reject 与
-completion、MEMORY outstanding，以及 shared VRF arbiter 中尚未完成的请求/响应。
-等待中的 fragment 不得设置全局 route busy 或阻塞另一槽推进其旧操作。独立
-route-wave pipeline 已用显式 participant frontier 验证该边界，但当前 multi-queue/
-program frontend 尚未提供真实 retirement frontier，也没有接入该 pipeline。
-
-`vsp_route_rendezvous_table` 采用小型 pre-admission entry，而不把
-half route 塞入 execution tracker：`{valid, context, epoch, route_id}` 作为匹配键，另存
-IN/OUT 各自的 participant、barrier token 和 opaque payload，以及 reject/cancel 状态。
-未来接线时，payload 中需要带入原 descriptor/tag 与 source/destination group summary，
-而 expected participant 和 completion-credit 属于外层 admission/resource 合同。
-table 覆盖 `EMPTY/COLLECT/DRAIN` 及可背压的 WAVE/REJECT/CANCEL terminal staging：
-它要求两 role 来自不同 participant，按各自单调 frontier 比较 token，并保留双方
-opaque payload。`vsp_route_wave_controller` 在它外面实现 LAUNCH/RUN/FANOUT；
-`vsp_cluster_route_wave_pipeline` 再把 LAUNCH 接到显式 union-resource grant 和真实
-VRF-backed route engine。只有这个 grant handshake 才属于 accepted outstanding；
-表内 COLLECT/DRAIN 不占 group、route engine 或 tracker，固定 fan-out registers 则在
-parent 启动前已可用。当前缺口是把 queue/ordered window 的真实 frontier 与资源仲裁器
-接到该独立闭环，而不是重新实现 table。
-table 还按 context 持久保存 current epoch fence；显式 advance 后，即使旧表项已经释放，
-晚到的旧 epoch fragment 也只会形成带原 identity 的 CANCEL，不会重新建立旧 wave。
-冲突或非法 fragment 若无法填入原 IN/OUT 槽，leaf 会额外保留 fault role/
-participant/token/payload。多个 ready key 之间以 round-robin 选 terminal；本表不实施
-architectural issue/retirement order。opaque sequence/tag 只能恢复 completion 退休顺序，
-不能撤销已经提交的 VRF 写回；未来 program path 必须保证同时 ready 的 waves 可重排，
-或在 controller 捕获 terminal 前用 admission/frontier gate 只暴露 age-eligible wave，
-也可以把 terminal 仲裁本身改为 age-aware。较年轻 wave 已进入 LAUNCH 后才阻塞 resource
-grant 并不足以恢复较老 wave 的执行机会。
-fault 与 cancel 同拍时 REJECT 优先；terminal 一旦进入可背压 staging 便保持稳定，
-后到 flush 不在表内改写已暴露 payload。controller 会记住 staged WAVE 的 kill；LAUNCH
-中的匹配 kill 还会组合撤销 parent valid，优先于同拍 ready。`parent_fire` 后进入 RUN，
-此后 flush/epoch advance 不回滚 VRF 事务，只影响尚未启动的 wave。
-
-`pair-required` 是结构预译码结果，不代表 fragment 已通过完整合法性检查。
-因此 capture 之前必须完成足以配对的 profile/key/role 检查；若采用晚译码，
-late-decode failure 必须用原 sequence/tag 将 entry 转成有序 reject/cancel，不得让
-malformed half 永久留在 `COLLECT`。
-
-RUN 完成后需要为两个 participant 保留两项 completion obligation。每项沿用原
-context/tag/mask/status，并独立遵守 ready/valid 稳定；共同 transport fault 可复制到两项，
-destination-byte invalid 只归属 destination participant。全部 completion capacity 必须在
-READY→RUN 前预留，避免 parent 已接受后因第二项 completion 无处落地而形成 hold-and-wait。
-当前 engine 仍是单 action/单 parent completion reference；route-wave controller 已把
-parent completion 转成两个独立 obligation。该 controller 的 LAUNCH/RUN/FANOUT 仍各
-只有一个 active wave，不代表 route engine 已支持多 outstanding 或 `II=1`。
-
-孤立 descriptor 只能由 out-of-band flush/epoch teardown、table 可观察的 stream-end 或
-系统 abort 取消；不能指望堵在它后面的普通 END/barrier 破局。当前可执行 program path
-尚无这个配对入口；独立 pipeline 已有入口但不持有 PC/queue。当前 strict engine 路径对
-`DEP_IN/DEP_OUT` 产生有序 reject 且不访问 VRF；`DEP_INOUT` 可进入
-engine，但上游尚未证明另一槽已 drain，因此只是 reference compatibility，不是双槽
-cooperative closure。
-`vsp_lane_gather` 与固定四次 group-word/local-route 继续作为综合 A/B reference；拓扑
-探索记录在[路由](../architecture/routing.md)，本页不重复。
-
-超出单条 gather 寻址范围的逻辑向量由 sequencer 拆成多次操作；多次操作不提供整个
-向量的原地原子性，源/目的重叠时需要 scratch/ping-pong 或编译器 cycle
-decomposition。
-
-ARF 的一个 row 是四个 32-bit accumulator，而不是单个 32-bit word。若未来把
-ARF 暴露到跨组路由，需要同时定义 packetizer：选择哪个 accumulator lane、哪些
-byte plane 以及如何写回。当前候选不增加 ARF 读口：VRF 源用 `PASS_A`、ARF 源用
-`NSLICE`，不做本地写回，直接在 group 的窄结果出口捕获 32-bit row 和 byte mask，
-进入 staging 后再写目的 VRF。这样支持"ARF slice 不先落本组 VRF 就外发"，同时
-避免形成 `RF→ALU→网络→RF` 的单拍长组合链。
-
-## 7. Operation legality `[RTL事实]`
-
-`elem_mode`、写回类别、route 与 reduction 不是任意正交组合。共享的
-`simd_uop_legal` 已按以下基线检查，非法组合整条事务零副作用：
-
-| 操作族 | mode | 合法写回 | route-A | narrow reduce |
-|---|---|---|---|---|
-| ADD/SUB、MIN/MAX、SHIFT | B/H/W | VRF | 是 | 仅 B |
-| CMPEQ/CMPGT | B/H/W | VRF 和/或 MRF | 是 | 否 |
-| AND/OR/XOR、PASS、SELECT | B/H/W | VRF | 是 | 仅 B |
-| SAT、AVG、ABSDIFF、ABS | B | VRF | 是 | 是 |
-| MUL/MAC | B | VRF 低 8 和/或 ARF | 是 | 低 8 结果 |
-| WIDEN | B | ARF | 是 | 否 |
-| WADD/WSUB | B | ARF | 仅 A | 否 |
-| RSHIFT_RND | B | ARF | 否 | 否 |
-| NSLICE/NCLIP | B | VRF | 否 | 是 |
-| COMPRESS/EXPAND | B/H/W | VRF 和/或 MRF | 是 | 仅 B |
-| MAND/MOR/MXOR/MNOT | canonical B | VRF 和/或 MRF | 否 | 否 |
-
-HALF/WORD 的普通运算禁止写 ARF，因为当前 `wide_o` 是各 physical byte 结果分别
-零扩展，不是一个 16/32-bit 逻辑元素。reduction 同样只读取 physical byte
-结果；完整宽值求和继续使用 NSLICE 与宽累加微码显式组成。
-
-## 8. 返回与同步 `[RTL 事实 + 暂行集成]`
-
-正常进入 group 的 `reduction value/index`、`compact count` 等 group response
-至少携带：
-
-```text
-context_id + group_id + operation/tag
-```
-
-由 DMA/local-memory 等独立引擎产生的 response 不强制带 `group_id`，至少携带：
-
-```text
-context_id + tag + engine/transaction_id
-```
-
-若某个 memory transaction 自身面向特定 group，可以附带 group/group-mask；这不是
-所有 memory response 的共同字段。
-
-dispatch 前发现的空 mask、owner mismatch、format/legality error 没有唯一
-`group_id`，它们的 completion 使用：
-
-```text
-context_id + tag + error_status + requested_group_mask
-```
-
-返回端必须有 valid/ready 或足够深且有容量证明的队列。拟浮点的尾数流和指数流
-通过 tag/token 在对齐、合并点同步，不要求两条 sequencer 永久锁步。
-
-已实现的 `simd_group_completion_tracker` 默认为
-`4 group / 2 alloc slot / 2 context / 4 entry`。multicast 在 dispatch 边界
-原子接受时，`simd_cluster_exec` 同拍提交 `context+tag`、accepted group mask 和
-expected result mask。`alloc_valid/ready` 只是候选与 credit；只有
-`alloc_commit` 写 entry，且 commit 必须对应同拍 group issue fire，避免
-tracker 单独分配。slot-specific `alloc_ready` 已通过 dispatcher 的 resource gate
-参与同一次 accept；commit diagnostic 与 entry chooser 分离，避免制造伪组合环。
-表满或 context+tag 尚在 live 时会对对应 slot 施加普通 backpressure。
-
-各物理 group 的 child completion 可乱序或同拍到达；每个 pending bit
-只清除一次，illegal 按 group mask 聚合。全部 child 收齐后生成一条
-无数据、可背压的 command completion，输出 RR 选择并在 stall 时保持稳定。
-expected result mask 独立跟踪；command completion 可先被接受，但
-entry/tag 必须保持 busy，直到 result collector 捕获所有 expected response 并发出
-per-group retire pulse。collector 使用公平 RR 和一个可背压输出寄存器；wrapper
-未获选择时继续保持自己的 result buffer，不丢弃同拍多 group response。
-unknown tag/context、wrong-group、duplicate child completion 和 result mismatch
-都会被消费并置 sticky protocol error。若 child `has_result` 与 allocation
-result mask 不同，tracker 以 child 实际回报修正 effective result mask，同时把
-command 标记 illegal；已提前观察到的 response retire 也参与对账，
-不会因 metadata mismatch 永久泄漏 tag。
-dispatch 前 reject 进入一项有容量的 buffer，并与正常 command completion 合并为
-同一可背压输出；每周期最多接收一个 reject，其余错误队头继续持有。barrier 等待内部
-pending mask 清零，不等待外部读取已缓冲 response。tag 在 collector 尚未安全捕获
-全部对应 result 前不得复用；捕获后 record 的保存与外部背压由 collector 承担。
-若以后采用 subtag、generation ID 或不同的结果聚合接口，这一模型可以替换。
-
-单 group wrapper 只返回 `context+tag`；tracker 的 child lane 代表物理
-`group_id`。cluster execution integration 已处理 EXEC child、pre-dispatch reject 和 group result，
-并已提供独立的 VRF state-read/write child 边界，但 cluster execution integration 本身仍不处理
-host completion、MEMORY parent、owner state 或 barrier。decoded MEMORY reference
-integration 位于其外层的 `vsp_cluster_memory_wrapper`；再外层的
-`vsp_cluster_controller_wrapper` 提供 strict ordered action 路径。
-
-## 9. 当前 group wrapper RTL 边界 `[RTL事实]`
-
-`simd_group_wrapper` 已包住一个 `simd_datapath`：
-
-- canonical decoded EXEC、state-write child 与 VRF state-read child 各有
-  valid/ready、context 和 tag；
-- 每周期三者最多接受一个，完全串行，因而不会触发裸 datapath 的 cfg 静默优先；
-- 每个 accepted child transaction 恰好产生一个 tagged group-child completion；
-- state-read 另产生独立、可背压的 tagged data response；接受 read 前同时检查
-  completion/response buffer credit，非法 read 返回零 data/mask；
-- 窄导出、reduction 和 compact count 进入独立 1-entry result buffer；
-- result 阻塞时，不需要 result 的事务仍可在 completion 有 credit 时推进；
-- VRF 用 `PASS_A` 无本地写回导出，ARF 当前用多次 `NSLICE` 组合导出；
-- invalid context/RF file/address、非法 EXEC 和非法窄导出形状均消费请求、零副作用并返回错误。
-
-当前 wrapper RTL 实现的是 VRF-only engine 可使用的单行 VRF state-read/write
-child endpoint，而不是 program-level `RF_FILL`。它不属于 `simd_op_e`；metadata
-与 write data 在叶端作为一个原子 beat 接受，data 不进入指令队列。
-`vsp_vector_memory_engine` 能把一个 VRF-only LOAD/STORE parent 分解为多个 child beat；
-当前 MEMORY reference integration 已把这些 child 接到 wrapper。
-
-## 10. 当前 EXEC frontend RTL 边界 `[RTL事实]`
-
-`simd_cluster_issue_frontend` 默认参考 profile 为 `4 group / 2 queue / 2
-slot`：
-
-- 仅接收已解析、已由可信上游验证的 EXEC payload、resolved
-  sideband 和 scheduling metadata；
-- 集成 `simd_issue_queue`、round-robin live-head 选择、每 slot opaque
-  locked shadow、显式 reject credit、terminal pop 和 `simd_issue_dispatch`；
-- 当前参考 profile 中 queue identity 同时作为 ownership context；未来多
-  stream/context 模型需要显式拆分身份；
-- owner 和 group ready 都是外部输入，frontend 不保存 owner table；
-- opaque storage 不代表 raw/hybrid/full-decoded adapter 已实现，也不赋予
-  payload representation-neutral 的执行语义。
-
-它单独仍不是 cluster integration 或 controller。`simd_cluster_exec` 在其外选择
-canonical bundle、原子写入 per-group ingress、实例化 group wrappers，并接入 tracker、
-reject buffer 与 result collector；`group_issue_slot_o` 是该 bundle mux 的稳定索引。
-owner state、encoded EXEC decoder/class router 和 barrier 仍在该 integration 之外，
-由更外层 reference controller 提供其中的 profile-v0 展开、strict routing 与 `END`。
-
-## 11. EXEC cluster integration RTL 边界 `[RTL事实]`
-
-`simd_cluster_exec` 的首个参考 profile 为 `4 group / 2 context / 2 slot`：
-
-```text
-full-decoded EXEC admission
-          ↓
-queue / RR slot / atomic dispatcher
-          ↓ accept + tracker alloc_commit
-per-group 1-entry EXEC ingress
-          ↓
-4 × simd_group_wrapper
-   ├─ EXEC child completion → command tracker
-   ├─ STATE_WRITE child completion → independent state return
-   ├─ VRF STATE_READ completion/data → independent state returns
-   └─ EXEC response → RR result collector → cluster result
-```
-
-- queue 保存 decoder 提供的 exact-resource metadata，并将稳定的 per-slot resource
-  request/group mask 暴露给外部仲裁器；tracker credit 与返回 grant 共同进入
-  per-slot resource gate；
-- 只有已经获得外部 grant、且所有目标 ingress 都可接收的 slot 才参与 tracker
-  allocation 预选；未获 grant 的低编号 slot 不会虚占唯一 tracker credit；
-- queue pop、tracker commit 和全部目标 ingress 写入在同一 accept 边沿发生；
-- ingress 把原子 admission 与各 wrapper 的独立仲裁解耦，后续接入 state-write 不会
-  让 multicast 只在部分 group fire；
-- result obligation 由共享 `simd_exec_requires_result` 同时供 wrapper 与 tracker
-  使用，避免两处形状判断漂移；
-- 可信、带 group ID 的 VRF state-read 与 state-write subrequest lane 允许外部 engine 接入
-  真实 RF data path；这些返回与 EXEC tracker 精确分流；
-- 多 group 的 state-write completion、state-read completion 和 state-read data
-  response 分别由 RR 选择；一旦输出在背压下可见，所选 group 会锁定到握手完成，
-  metadata/data 不会在 `valid && !ready` 时跳变；
-- 当前 canonical bundle 在 integration 入口已完全展开，内部私有 packed layout 不是
-  encoded instruction format；
-- `context_exec_quiescent` 只表示 tracker 中的 EXEC child 已清空，不包含仍在 queue
-  中的命令、尚未被 collector 接管的 result obligation 或 MEMORY inflight；controller
-  的当前全局 `END` 改用 `exec_quiescent && !mem_busy && !arbiter_busy`。其中
-  `exec_quiescent` 还覆盖 queue、group ingress、tracker、reject、ordered command
-  completion 以及尚未被 collector 接管的 wrapper response；已经被 result collector
-  保存的独立 data record 不再占执行侧状态。
-
-`simd_cluster_exec` 本体还没有 class router、动态 owner table、barrier、MEMORY parent、
-跨 group boundary staging 或 host/OS completion。因此此模块只称 cluster execution
-integration；strict class routing 和最小 `END` 位于外层 reference controller。跨组
-VROUTE 也不在本体的 per-group ingress 中执行，而由
-`vsp_cluster_memory_wrapper` 内的 register-route engine 截获并接回同一 EXEC
-completion boundary，不反向改变本模块的 ordinary EXEC 边界。
-
-## 12. 当前 decoded MEMORY / register-route integration `[RTL事实 + 里程碑基线]`
-
-`vsp_cluster_vrf_arbiter` 为多个 VRF-only parent client 提供一个共享 cluster child
-边界。它以 RR 在 client read/write request lane 间选择，一次只接受一个 child；
-read transaction 保持 client owner，直到 completion 与 data response 都各自完成，
-write transaction 保持到 completion。这个 owner 只是返回路由状态，不是 group
-ownership、scoreboard 或 program-order 状态。
-
-`vsp_cluster_memory_wrapper` 组合：
-
-```text
-decoded MEMORY → vector memory engine ─ client 0 ─┐
-register VROUTE → register-route engine ─ client 1 ┼→ shared VRF arbiter
-                                                   └→ group VRF state-read/write
-
-decoded ordinary EXEC → cluster execution integration → group datapath/RF
-
-dmem_* ↔ external data-memory logical boundary
-```
-
-`vsp_cluster_memory_wrapper` 以 MEMORY engine 和 register-route engine 两个独立 client
-使用该 arbiter；每次只允许一个 client 的一个 VRF subrequest 前进。EXEC 与 MEMORY
-各有独立 command/completion 端口，没有 common class router、统一
-error/completion mux 或 program-order enforcement。reference test 通过等待 LOAD
-completion 后提交 EXEC、再等待其 completion 后提交 STORE 来建立顺序；wrapper
-不会从两个入口自行推导数据依赖。
-
-wrapper 对 VROUTE 另有显式 admission interlock：route 只在 ordinary EXEC queue/
-tracker/completion、MEMORY engine/completion 与 VRF arbiter 全部排空后启动；pending
-route 优先阻止新 MEMORY，route busy 则阻止新 ordinary EXEC/MEMORY。既有事务先排空，
-不会在 route snapshot 或 commit 中途穿插。这项互斥独立于外层 strict class controller。
-
-arbiter 的 `CLIENT_COUNT` 仍是参数，多 client 仲裁已由单元测试覆盖。跨组 gather
-当前正是第二个 VRF-only client：它以 blocking transaction 串行捕获 `vs/vi` rows、
-组合 gather、再串行写回 `vd`。这是 wrapper 内的实现 client，不会把 VROUTE 改成
-新的 dispatch class；并行 RF 端口或更细粒度资源仲裁可以以后替换这段 transport。
-
-owner snapshot 仍由外部输入，EXEC resource grant 在此 reference integration 中固定为全可用；
-动态 owner/resource controller 尚未实现。`dmem_*`
-是 effective-address 逻辑边界；testbench 的 local-memory model 不等于物理 local
-SRAM RTL，也不包含 cache、MMU/TLB/PTW、DMA 或 coherence。当前 117 项端到端检查
-只支持“decoded LOAD→EXEC→STORE 接线可工作”的声明，不定义最终 ISA。
-
-### 12.1 Strict ordered action controller `[RTL事实 + 参考 profile]`
-
-`vsp_decoded_action_controller` 接受一条统一 action 流，并按
-`EXEC/MEMORY/CONTROL` class 选择 child engine。`vsp_cluster_controller_wrapper`
-在它前方组合 profile-v0 EXEC expander，在它后方连接上述 EXEC/MEMORY integration：
-
-```text
-ordered action stream
-       │
-       ├─ EXEC packet → profile-v0 expander → EXEC cluster
-       ├─ MEMORY descriptor ────────────────→ memory engine
-       └─ CONTROL.END → wait strong quiescence
-                                  │
-                                  └→ unified ordered completion
-```
-
-首个 profile 的行为边界是：
-
-- 全局一次只保存一个 active action；目标 child command fire 后，必须观察其 child
-  completion，并等待统一 completion 被上游接收，才接受下一 action；
-- class、context、control-op、owner 或 EXEC decode 错误不进入 child engine，直接形成
-  带原 `context+tag+requested_group_mask` 的 ordered completion；单项错误不会在
-  硬件中自动取消后续流。controller-local error 的 class-specific engine detail
-  规范为零，以 common status 与 requested mask 为准；decode cause 只在 status 为
-  `DECODE_ERROR` 时有效，未由上游/profile decoder细分的 envelope error 可以返回零 cause；
-- EXEC/MEMORY child completion 身份必须匹配 active `context+tag`；unexpected 或
-  mismatch completion 被消费并置 sticky protocol error，mismatch 的 active action
-  以 protocol-error status 退休；
-- EXEC data result 与 command completion 独立。`END` 等待 tracker 清空，因此所有
-  result obligation 已被内部 collector 接管，但不直接检查外部 result 口是否为空；
-  若有限 collector 已满，外部背压会间接阻止剩余 obligation 被接管，`END` 仍会等待；
-- `program_done` 只在成功的 `END` completion 握手时脉冲一次；completion 被背压时
-  payload 保持，不能重复产生 done。它表示 END 已退休，不累计此前 action error，
-  也不会因 sticky protocol error 自动改成失败；上层若需要 kernel-success 语义，
-  必须同时维护 action status 或检查 protocol diagnostics；
-- owner table 当前仍是稳定的外部 snapshot；resource metadata 在 strict non-overlap
-  profile 中显式为零，不能据此推导并发 resource scheduler 已完成。snapshot 至少从
-  action accept 保持到对应 child completion；以后可由 controller-local owner table
-  代替该输入合同。
-
-generic action controller 接受 child completion 与 command handshake 同拍返回，也接受
-更晚的寄存返回；当前接入的 EXEC 与 MEMORY engine 使用后者。该 profile 用于先验证
-跨 class 顺序、错误与结束语义，不限制后续改为 per-context active action 或多
-engine 并发。
-
-## 13. 当前 dispatcher RTL 边界 `[RTL事实]`
-
-`simd_issue_dispatch` 只实现以下组合策略：
-
-- context/group 所有权检查；
-- 错误命令的无副作用 reject；
-- 多 group 原子接受；
-- group ready 聚合；
-- 重叠 mask 的固定优先级；
-- 每个 group 选择被接受的 issue slot；
-- 空 mask、所有权错误、backpressure 和冲突诊断。
-
-它只分发槽号，不携带完整操作 bundle，也不保存 owner table。这使控制策略能够
-先被穷举验证，而不预先规定指令格式或 sequencer 状态组织。
-
-## 14. 后续实验顺序 `[计划]`
-
-1. 以已有 EXEC profile-v0 expander 为 canonical 解析基线，实现
-   compact-uword admission predecode，并把当前 full-decoded admission 重排到
-   selected-head late decode/class-router 边界；terminal/pop 由最终 engine fire 或
-   error sink 回传；
-2. 在当前 strict class router/program-order/error-completion 基线上增加动态 owner
-   state、context-scoped barrier/quiescent、resource-aware scheduling 与多 active
-   action；把外部 owner/grant 配置逐步收进有状态 controller；
-3. 保留当前 vector-memory→shared VRF arbiter→wrapper 接线，在 `dmem_*` 下游比较并接入
-   物理 local SRAM、cache/MMU adapter 或 DMA 边界；
-4. 保留已接入的 blocking 16-byte VROUTE 和独立 route-wave pipeline 作为语义基线；
-   出现吞吐依据后，比较并行 capture/commit、多 outstanding result stages、细粒度
-   predicate 与替代 crossbar hierarchy，不回侵现有 class/retire 合同；
-5. 在 vector memory engine 下游接 DMA/地址空间 adapter，再依据实测比较二维地址
-   与多 outstanding，不在
-   SIMD group 内处理 cache coherence；
-6. 用 Gaussian、SAD、完整乘积求和及拟浮点微码测量队列深度、交换占用和发射
-   数量，再决定流水、bank 和专用卷积加速。
-
-逐阶段接口、验收条件和延期项见[开发路线](development-roadmap.md)。
+For `UNIT_STRIDE`, each selected group transfers one four-byte row, with an
+optional final low-byte tail.  Encoded span code zero means all selected rows
+(`4 * popcount(group_mask)` bytes); codes 1 through 31 give an explicit span.
+For `INDEX_U8`, each selected lane supplies an unsigned byte offset; LOAD is
+gather and STORE is scatter, and the decoded span remains zero.
+
+Per-group/per-lane requests are internal microsequence steps, not issue slots.
+The current engine has one active parent and one outstanding memory beat.
+
+`vsp_cluster_vrf_arbiter` currently serves one MEMORY client.  Its parameterized
+client interface remains a reusable implementation boundary, but the former
+register-route client is no longer instantiated in the product wrapper.
+
+## CONTROL dispatch
+
+CONTROL state actions operate on sequencer address state.  `END` waits for the
+integrated EXEC/MEMORY boundary to become strongly quiescent, then retires
+through the common completion path.  The sequencer state engine has no PC,
+branch unit or scalar load/store port; the program source owns the single PC.
+
+## Ownership, legality and backpressure
+
+Before any child side effect, the controller checks class, context, group mask,
+owner snapshot and class-specific decode.  An invalid action becomes an ordered
+reject with the original identity; it does not partially fire selected groups.
+
+Under `valid && !ready`, payload and identity remain stable.  Accepted child
+completions must match the active context/tag.  Unexpected or mismatched
+completions set sticky protocol error and are handled through the ordered active
+action rather than silently reassigned.
+
+EXEC data results and command completion are separate channels.  Completion
+may retire after the internal collector has accepted a result even while the
+external result consumer is backpressured; bounded collector capacity still
+indirectly prevents unlimited progress.
+
+## Retired route-wave direction
+
+The former register VROUTE path required source/destination masks,
+rendezvous fragments, participant retirement barriers and multi-slot fan-out.
+It is no longer connected to the controller, memory wrapper or EXEC expander.
+Format `0xd` is undefined in the current uword stream.
+
+The isolated route engine, Bênes/Omega/crossbar and route-wave tests are kept as
+experimental design records and run only via the optional experimental-routing
+Make targets.  They do not define current scheduling behavior.
+
+## Next control work
+
+1. Keep the single-slot baseline and finish representative indexed-memory
+   programs.
+2. Add loop/redirect with explicit younger-record flush semantics.
+3. Measure EXEC utilization, VRF contention and memory wait time.
+4. If one-slot admission is visible in those traces, add a two-action window
+   and exact ordinary EXEC/MEMORY hazard metadata.
+5. Scale from four to sixteen groups without changing the one-parent command
+   semantics; only then reconsider additional issue bandwidth.

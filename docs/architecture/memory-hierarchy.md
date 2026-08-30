@@ -82,8 +82,9 @@ execution context 负责 action 所有权和 completion 回送；address context
 - fault 与 partial-commit 顺序继续由 vector memory transaction engine 可观察；
 - DMA/host 与 VSP 共享数据时需要明确 clean/invalidate/ownership 协议；当前不声明
   hardware coherence；
-- indexed gather/scatter 若以后需要，应作为独立 address/request engine 接到 D-side，
-  不修改 I-side，也不让 cache 猜测 vector register 语义。
+- 当前 `INDEX_U8` gather/scatter 已在 vector memory engine 内逐 lane 形成普通 D-side
+  request；cache 不猜测 vector register 语义。未来 coalescer 或 gather/scatter 加速器仍应
+  保持在 D-side request 层，不修改 I-side 合同。
 
 首个物理版本可以完全没有 cache：I-side 接 program SRAM，D-side 接 local SRAM，
 再由 DMA 在 kernel 启动/结束边界搬运。逻辑拆分仍然成立。

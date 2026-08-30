@@ -25,9 +25,17 @@ package vsp_uword_pkg;
   //          [22:15] address context
   //          [14:10] state base-register index
   //          [9:6]   VRF row
-  //          [5:1]   byte span
-  //          [0]     reserved       = 0
+  //          [5:1]   LOAD/STORE byte-span code
+  //          [5:2]   GATHER/SCATTER index VRF row
+  //          [1]     GATHER/SCATTER reserved = 0
+  //          [0]     address mode   = 0 UNIT_STRIDE, 1 INDEX_U8
   //   word 1 [31:0]  signed address offset
+  //
+  // For UNIT_STRIDE, span code 0 means four bytes for every group selected
+  // by the launch envelope.  Codes 1..31 are explicit byte spans.  The
+  // decoder preserves code 0 as a sentinel; the action adapter resolves it
+  // against the captured launch group mask before a memory command is
+  // issued.  INDEX_U8 continues to decode a zero span payload.
   //
   // The offset word must be a canonical sign extension of the downstream
   // MEM_OFFSET_W (16 in profile v0).  These constants describe the current
@@ -37,11 +45,16 @@ package vsp_uword_pkg;
   localparam int VSP_MEMORY_UWORD_ADDR_CONTEXT_W = 8;
   localparam int VSP_MEMORY_UWORD_STATE_REG_W = 5;
   localparam int VSP_MEMORY_UWORD_VRF_ROW_W = 4;
-  localparam int VSP_MEMORY_UWORD_SPAN_BYTES_W = 5;
+  localparam int VSP_MEMORY_UWORD_SPAN_CODE_W = 5;
+  localparam int VSP_MEMORY_UWORD_SPAN_BYTES_W = 7;
   localparam int VSP_MEMORY_UWORD_OFFSET_W = 16;
-  localparam int VSP_MEMORY_UWORD_MAX_SPAN_BYTES = 16;
+  localparam int VSP_MEMORY_UWORD_GROUP_BYTES = 4;
+  localparam int VSP_MEMORY_UWORD_MAX_EXPLICIT_SPAN_BYTES =
+      (1 << VSP_MEMORY_UWORD_SPAN_CODE_W) - 1;
+  localparam int VSP_MEMORY_UWORD_MAX_SPAN_BYTES = 64;
 
   localparam int VSP_MEMORY_UWORD_OP_BIT = 25;
+  localparam int VSP_MEMORY_UWORD_ADDR_MODE_BIT = 0;
   localparam int VSP_MEMORY_UWORD_ADDR_SPACE_MSB = 24;
   localparam int VSP_MEMORY_UWORD_ADDR_SPACE_LSB = 23;
   localparam int VSP_MEMORY_UWORD_ADDR_CONTEXT_MSB = 22;
@@ -52,7 +65,9 @@ package vsp_uword_pkg;
   localparam int VSP_MEMORY_UWORD_VRF_ROW_LSB = 6;
   localparam int VSP_MEMORY_UWORD_SPAN_BYTES_MSB = 5;
   localparam int VSP_MEMORY_UWORD_SPAN_BYTES_LSB = 1;
-  localparam int VSP_MEMORY_UWORD_RESERVED_BIT = 0;
+  localparam int VSP_MEMORY_UWORD_INDEX_VRF_ROW_MSB = 5;
+  localparam int VSP_MEMORY_UWORD_INDEX_VRF_ROW_LSB = 2;
+  localparam int VSP_MEMORY_UWORD_INDEX_RESERVED_BIT = 1;
 
   // The current stream profile gives END one canonical, body-free CONTROL
   // header.  Keep recognition here so every stateful framer applies the same

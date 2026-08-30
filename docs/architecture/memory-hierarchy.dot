@@ -52,13 +52,12 @@ digraph vsp_memory_hierarchy {
     color="#b58b23"
   ];
   memory_decode [
-    label="future MEMORY semantic decoder\nsnapshot sbase + signed offset",
-    style="rounded,dashed,filled",
-    fillcolor="#f6f6f6",
-    color="#999999"
+    label="MEMORY semantic decoder\nsnapshot sbase + signed offset\nUNIT_STRIDE / INDEX_U8",
+    fillcolor="#fff7dc",
+    color="#b58b23"
   ];
   vector_memory [
-    label="vector memory engine\nspan planner + unit-stride AGU\ncurrently 1 dmem beat outstanding"
+    label="vector memory engine\nunit-stride + indexed byte AGU\ncurrently 1 dmem beat outstanding"
   ];
   dmem_model [
     label="ordered D-side memory model\nLOAD / STORE + strobe + ack\nexecutable protocol reference",

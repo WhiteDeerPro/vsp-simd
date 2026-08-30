@@ -4,6 +4,12 @@
 > 工作回答和重新评估条件。某个回答被多次引用，不会因此自动升级为架构决定。
 >
 > 最近整理：2026-08-26。
+>
+> 2026-08-30 的当前 profile 已收束为单 PC、单 issue slot、4 group/16 byte 实装，
+> 16 group/64 byte 为参数上限；跨 group register route 与 route-wave 不再进入产品路径，
+> 改用 MEMORY `INDEX_U8` gather/scatter。与此冲突的旧问答只保留为推理历史，当前事实
+> 以[术语表](../architecture/terminology.md)和
+> [current integration](../architecture/current-integration.md)为准。
 
 ## 如何阅读
 

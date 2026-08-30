@@ -1,7 +1,7 @@
 module simd_cluster_exec #(
-  // The first integration profile is four SIMD4 groups, two ordered
-  // contexts and two issue slots.  These are implementation parameters, not
-  // encoded instruction fields.
+  // This reusable block retains parameterized contexts and issue slots for
+  // scheduler experiments.  The executable product wrappers currently bind
+  // both to one; none of these parameters are encoded instruction fields.
   parameter int GROUP_COUNT     = 4,
   parameter int ISSUE_SLOTS     = 2,
   parameter int QUEUE_DEPTH     = 4,

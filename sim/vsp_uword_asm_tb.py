@@ -53,48 +53,17 @@ def main() -> int:
     )
     assert [word.value for word in negative.words] == [0x10000230, 0xFF]
 
-    route_and_reduce = asm.assemble_text(
+    reductions = asm.assemble_text(
         """
-        EXEC_ROUTE vs=1 vi=3 vd=2
-        EXEC_ROUTE vs=3 vi=4 vd=5 io=local
-        EXEC_ROUTE va=4 vi=6 vd=7 io=in
-        EXEC_ROUTE vs=1 vi=3 vd=2 io=out
-        EXEC_ROUTE vs=1 vi=3 vd=2 io=inout
-        EXEC_ROUTE vs=1 vi=3 vd=2 io=3
         EXEC_REDUCE op=min_u va=1
         EXEC_REDUCE op=max_u va=1
         """,
         0,
     )
-    assert [word.value for word in route_and_reduce.words] == [
-        0xD04800C0,
-        0xD0D40100,
-        0xD51C0180,
-        0xD84800C0,
-        0xDC4800C0,
-        0xDC4800C0,
+    assert [word.value for word in reductions.words] == [
         0x1A020003,
         0x1A020005,
     ]
-    numeric_route_io = asm.assemble_text(
-        "\n".join(
-            f"EXEC_ROUTE vs=1 vi=3 vd=2 io={mode}"
-            for mode in range(4)
-        ),
-        0,
-    )
-    assert [word.value for word in numeric_route_io.words] == [
-        0xD04800C0,
-        0xD44800C0,
-        0xD84800C0,
-        0xDC4800C0,
-    ]
-    route_pc = asm.assemble_text(
-        "route: EXEC_ROUTE vs=1 vi=0 vd=2\n"
-        "next: CONTROL_END\n",
-        0x100,
-    )
-    assert route_pc.symbols == {"route": 0x100, "next": 0x104}
 
     state_and_memory = asm.assemble_text(
         """
@@ -129,6 +98,25 @@ def main() -> int:
         "end": 0x124,
     }
 
+    indexed_memory = asm.assemble_text(
+        """
+        gather: VGATHER sbase=5 vd=6 vi=7 offset=12
+        scatter: VSCATTER space=translated addr_context=0x12 sbase=3 \
+                          vs=2 vi=4 offset=-8
+        """,
+        0x200,
+    )
+    assert [word.value for word in indexed_memory.words] == [
+        0xB400159D,
+        0x0000000C,
+        0xB7090C91,
+        0xFFFFFFF8,
+    ]
+    assert indexed_memory.symbols == {
+        "gather": 0x200,
+        "scatter": 0x208,
+    }
+
     state_word_boundaries = asm.assemble_text(
         "SMOVI rd=0 imm=0xffffffff\n"
         "SADDI rd=31 rs1=31 imm=-2147483648\n",
@@ -142,13 +130,16 @@ def main() -> int:
     ]
 
     memory_defaults = asm.assemble_text(
-        "VLOAD sbase=0 vrf=0 span=1\n"
+        "VLOAD sbase=0 vrf=0 span=0\n"
+        "VLOAD sbase=1 vrf=2 span=31\n"
         "VSTORE space=physical addr_context=255 sbase=31 vrf=15 "
         "span=16 offset=-32768\n",
         0,
     )
     assert [word.value for word in memory_defaults.words] == [
-        0xB4000002,
+        0xB4000000,
+        0x00000000,
+        0xB40004BE,
         0x00000000,
         0xB6FFFFE0,
         0xFFFF8000,
@@ -162,21 +153,7 @@ def main() -> int:
         "EXEC_ALU_RR op=add mode=half va=0 vb=1 vd=2 reduce=sum_u"
     )
     expect_error("EXEC_ALU_RR op=add va=0 vb=1 vd=2 write=0")
-    expect_error("EXEC_ROUTE vs=1 vd=2")
-    expect_error("EXEC_ROUTE vi=1 vd=2")
-    expect_error("EXEC_ROUTE vs=1 vi=2")
-    expect_error("EXEC_ROUTE vs=16 vi=1 vd=2")
-    expect_error("EXEC_ROUTE vs=1 vi=16 vd=2")
-    expect_error("EXEC_ROUTE vs=1 vi=2 vd=16")
-    expect_error("EXEC_ROUTE vs=1 vi=2 vd=3 io=-1")
-    expect_error("EXEC_ROUTE vs=1 vi=2 vd=3 io=4")
-    expect_error("EXEC_ROUTE vs=1 vi=2 vd=3 io=dependent")
-    expect_error("EXEC_ROUTE vs=1 va=1 vi=2 vd=3")
-    expect_error("EXEC_ROUTE op=gather vs=1 vi=2 vd=3")
-    expect_error("EXEC_ROUTE op=broadcast va=1 vd=2 lane=0")
-    expect_error("EXEC_ROUTE op=slide_down va=1 vd=2 amount=1")
-    expect_error("EXEC_ROUTE vs=1 vi=2 vd=3 mask=m0")
-    expect_error("EXEC_ROUTE vs=1 vi=2 vd=3 write=0")
+    expect_error("EXEC_ROUTE vs=1 vi=2 vd=3")
     expect_error("EXEC_REDUCE op=none va=1")
     expect_error("EXEC_REDUCE op=min_u va=1 export=1")
     expect_error("MEMORY 0 1 2 3")
@@ -196,12 +173,22 @@ def main() -> int:
     expect_error("VLOAD space=reserved sbase=1 vrf=1 span=4")
     expect_error("VLOAD sbase=32 vrf=1 span=4")
     expect_error("VLOAD sbase=1 vrf=16 span=4")
-    expect_error("VLOAD sbase=1 vrf=1 span=0")
-    expect_error("VLOAD sbase=1 vrf=1 span=17")
+    expect_error("VLOAD sbase=1 vrf=1 span=32")
+    expect_error("VLOAD sbase=1 vrf=1 span=64")
     expect_error("VLOAD sbase=1 vrf=1 span=4 addr_context=256")
     expect_error("VLOAD sbase=1 vrf=1 span=4 offset=-32769")
+    expect_error("VLOAD sbase=1 vrf=1 span=4 index=0")
     expect_error("VSTORE sbase=1 vrf=1 span=4 offset=32768")
     expect_error("VSTORE sbase=1 vrf=1 span=4 mystery=1")
+    expect_error("VGATHER vd=1 vi=0")
+    expect_error("VGATHER sbase=1 vi=0")
+    expect_error("VGATHER sbase=1 vd=1")
+    expect_error("VGATHER sbase=1 vd=1 vi=16")
+    expect_error("VGATHER sbase=1 vd=1 vi=0 span=4")
+    expect_error("VGATHER sbase=1 vrf=1 vi=0")
+    expect_error("VSCATTER sbase=1 vs=1 vi=-1")
+    expect_error("VSCATTER sbase=1 vs=1 vi=0 offset=32768")
+    expect_error("VSCATTER sbase=1 vd=1 vi=0")
     try:
         asm.assemble_text("CONTROL_END", 2)
     except asm.AssemblyError:
@@ -210,8 +197,8 @@ def main() -> int:
         raise AssertionError("unaligned base PC unexpectedly accepted")
 
     print(
-        "vsp_uword_asm_tb: exact EXEC, state, MEMORY images and rejection "
-        "checks passed"
+        "vsp_uword_asm_tb: exact EXEC, state, sequential/indexed MEMORY "
+        "images and rejection checks passed"
     )
     return 0
 

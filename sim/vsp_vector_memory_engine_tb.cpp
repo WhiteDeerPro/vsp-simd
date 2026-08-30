@@ -15,6 +15,9 @@ constexpr unsigned kRowBytes = 4;
 constexpr unsigned kOpLoad = 0;
 constexpr unsigned kOpStore = 1;
 
+constexpr unsigned kAddrModeUnitStride = 0;
+constexpr unsigned kAddrModeIndexU8 = 1;
+
 constexpr unsigned kAddrSpaceLocal = 0;
 constexpr unsigned kAddrSpacePhysical = 1;
 constexpr unsigned kAddrSpaceTranslated = 2;
@@ -67,6 +70,13 @@ uint32_t memory_word(uint32_t address) {
   return 0x9e3779b9u ^ (address * 0x01010101u);
 }
 
+uint32_t pack_bytes(std::array<uint8_t, kRowBytes> bytes) {
+  uint32_t word = 0;
+  for (unsigned lane = 0; lane < kRowBytes; ++lane)
+    word |= uint32_t{bytes[lane]} << (8 * lane);
+  return word;
+}
+
 uint32_t vrf_word(unsigned context, unsigned tag, unsigned group) {
   return 0x40000000u | (context << 28) | (tag << 12) |
          (group * 0x01010101u);
@@ -84,6 +94,7 @@ void tick(Vvsp_vector_memory_engine& dut) {
 void clear_inputs(Vvsp_vector_memory_engine& dut) {
   dut.cmd_valid_i = 0;
   dut.cmd_op_i = kOpLoad;
+  dut.cmd_addr_mode_i = kAddrModeUnitStride;
   dut.cmd_exec_context_i = 0;
   dut.cmd_tag_i = 0;
   dut.cmd_addr_space_i = kAddrSpaceLocal;
@@ -92,6 +103,7 @@ void clear_inputs(Vvsp_vector_memory_engine& dut) {
   dut.cmd_eaddr_offset_i = 0;
   dut.cmd_group_mask_i = 0;
   dut.cmd_vrf_row_i = 0;
+  dut.cmd_index_vrf_row_i = 0;
   dut.cmd_span_bytes_i = 0;
   dut.dmem_req_ready_i = 0;
   dut.dmem_rsp_valid_i = 0;
@@ -131,6 +143,8 @@ struct Command {
   unsigned span = 0;
   unsigned addr_space = kAddrSpaceLocal;
   unsigned addr_context = 0;
+  unsigned addr_mode = kAddrModeUnitStride;
+  unsigned index_vrf_row = 0;
 };
 
 struct RunOptions {
@@ -143,6 +157,13 @@ struct RunOptions {
   unsigned memory_fault_cause = kFaultBus;
   int store_rsp_error_group = -1;
   unsigned store_rsp_error_mask = 0;
+  // Indexed accesses issue one memory transaction per active byte lane.
+  // This selects an exact request ordinal without changing the group-based
+  // fault injection retained by the unit-stride regressions.
+  int memory_fault_request = -1;
+  bool model_vrf_rows = false;
+  std::array<uint32_t, kGroups> index_words{};
+  std::array<uint32_t, kGroups> data_words{};
 };
 
 struct WriteRecord {
@@ -171,6 +192,7 @@ struct RunResult {
   uint32_t fault_eaddr = 0;
   std::vector<WriteRecord> vrf_writes;
   std::vector<unsigned> vrf_reads;
+  std::vector<unsigned> vrf_read_rows;
   std::vector<MemoryRecord> memory_requests;
 };
 
@@ -185,6 +207,7 @@ std::vector<unsigned> selected_groups(unsigned mask) {
 void drive_command(Vvsp_vector_memory_engine& dut, const Command& command) {
   dut.cmd_valid_i = 1;
   dut.cmd_op_i = command.store ? kOpStore : kOpLoad;
+  dut.cmd_addr_mode_i = command.addr_mode;
   dut.cmd_exec_context_i = command.exec_context;
   dut.cmd_tag_i = command.tag;
   dut.cmd_addr_space_i = command.addr_space;
@@ -193,6 +216,7 @@ void drive_command(Vvsp_vector_memory_engine& dut, const Command& command) {
   dut.cmd_eaddr_offset_i = static_cast<uint16_t>(command.eaddr_offset);
   dut.cmd_group_mask_i = command.group_mask;
   dut.cmd_vrf_row_i = command.vrf_row;
+  dut.cmd_index_vrf_row_i = command.index_vrf_row;
   dut.cmd_span_bytes_i = command.span;
 }
 
@@ -375,7 +399,12 @@ RunResult run_command(Vvsp_vector_memory_engine& dut, const Command& command,
 
     if (cmd_fire) command_pending = false;
     if (mem_req_fire) {
-      const unsigned group = groups.empty() ? 0 : groups[memory_index];
+      const unsigned request_ordinal = memory_index;
+      const unsigned group_position =
+          command.addr_mode == kAddrModeIndexU8
+              ? request_ordinal / kRowBytes
+              : request_ordinal;
+      const unsigned group = groups.empty() ? 0 : groups[group_position];
       result.memory_requests.push_back(
           {unsigned(dut.dmem_req_op_o), uint32_t(dut.dmem_req_eaddr_o),
            unsigned(dut.dmem_req_addr_space_o),
@@ -384,7 +413,9 @@ RunResult run_command(Vvsp_vector_memory_engine& dut, const Command& command,
            unsigned(dut.dmem_req_wstrb_o)});
       mem_response_pending = true;
       mem_response_fault_cause =
-          options.memory_fault_group == static_cast<int>(group)
+          (options.memory_fault_request ==
+               static_cast<int>(request_ordinal) ||
+           options.memory_fault_group == static_cast<int>(group))
               ? options.memory_fault_cause : kFaultNone;
       mem_response_data = memory_word(dut.dmem_req_eaddr_o);
       ++memory_index;
@@ -403,13 +434,22 @@ RunResult run_command(Vvsp_vector_memory_engine& dut, const Command& command,
     if (write_cpl_fire) write_completion_pending = false;
     if (read_fire) {
       result.vrf_reads.push_back(dut.vrf_read_group_o);
+      result.vrf_read_rows.push_back(dut.vrf_read_row_o);
       read_completion_pending = true;
       read_response_pending = true;
       child_context = dut.vrf_read_exec_context_o;
       child_tag = dut.vrf_read_tag_o;
       child_group = dut.vrf_read_group_o;
       child_mask = dut.vrf_read_mask_o;
-      child_data = vrf_word(child_context, child_tag, child_group);
+      if (options.model_vrf_rows &&
+          dut.vrf_read_row_o == command.index_vrf_row) {
+        child_data = options.index_words.at(child_group);
+      } else if (options.model_vrf_rows &&
+                 dut.vrf_read_row_o == command.vrf_row) {
+        child_data = options.data_words.at(child_group);
+      } else {
+        child_data = vrf_word(child_context, child_tag, child_group);
+      }
     }
     if (read_cpl_fire) read_completion_pending = false;
     if (read_rsp_fire) read_response_pending = false;
@@ -484,7 +524,10 @@ void expect_success(const Command& command, const RunResult& result) {
   expect_eq("success requested mask", command.group_mask, result.requested);
   expect_eq("success completed mask", command.group_mask, result.completed);
   expect_eq("success failed mask", 0, result.failed);
-  expect_eq("success bytes", command.span, result.bytes);
+  const unsigned expected_bytes = command.addr_mode == kAddrModeIndexU8
+                                      ? popcount(command.group_mask) * kRowBytes
+                                      : command.span;
+  expect_eq("success bytes", expected_bytes, result.bytes);
   expect_eq("success is not partial", 0, result.partial);
   expect_eq("success has no memory fault", kFaultNone, result.fault_cause);
   expect_eq("success has no fault eaddr", 0, result.fault_eaddr);
@@ -533,10 +576,104 @@ void check_mapping(const Command& command, const RunResult& result) {
   }
 }
 
+unsigned byte_at(uint32_t word, unsigned lane) {
+  return (word >> (8 * lane)) & 0xffu;
+}
+
+void check_indexed_gather(const Command& command, const RunOptions& options,
+                          const RunResult& result) {
+  const std::vector<unsigned> groups = selected_groups(command.group_mask);
+  const uint32_t window_base = command.base_eaddr + command.eaddr_offset;
+  expect_eq("gather one index read per group", groups.size(),
+            result.vrf_reads.size());
+  expect_eq("gather one destination write per group", groups.size(),
+            result.vrf_writes.size());
+  expect_eq("gather one memory read per active lane",
+            groups.size() * kRowBytes, result.memory_requests.size());
+
+  unsigned request = 0;
+  for (unsigned group_position = 0; group_position < groups.size();
+       ++group_position) {
+    const unsigned group = groups[group_position];
+    expect_eq("gather index read group", group,
+              result.vrf_reads[group_position]);
+    expect_eq("gather index read row", command.index_vrf_row,
+              result.vrf_read_rows[group_position]);
+
+    uint32_t expected_gathered = 0;
+    for (unsigned lane = 0; lane < kRowBytes; ++lane, ++request) {
+      const unsigned offset = byte_at(options.index_words[group], lane);
+      const uint32_t byte_eaddr = window_base + offset;
+      const uint32_t beat_eaddr = byte_eaddr & ~(kRowBytes - 1u);
+      const unsigned beat_lane = byte_eaddr & (kRowBytes - 1u);
+      const MemoryRecord& memory = result.memory_requests[request];
+      expect_eq("gather aligned request", beat_eaddr, memory.eaddr);
+      expect_eq("gather request operation", kOpLoad, memory.op);
+      expect_eq("gather request has no write strobe", 0, memory.strobe);
+      expect_eq("gather address space", command.addr_space,
+                memory.addr_space);
+      expect_eq("gather address context", command.addr_context,
+                memory.addr_context);
+      expected_gathered |=
+          byte_at(memory_word(beat_eaddr), beat_lane) << (8 * lane);
+    }
+
+    const WriteRecord& write = result.vrf_writes[group_position];
+    expect_eq("gather destination group", group, write.group);
+    expect_eq("gather full-row write mask", 0xf, write.mask);
+    expect_eq("gather byte extraction", expected_gathered, write.data);
+  }
+}
+
+void check_indexed_scatter(const Command& command,
+                           const RunOptions& options,
+                           const RunResult& result) {
+  const std::vector<unsigned> groups = selected_groups(command.group_mask);
+  const uint32_t window_base = command.base_eaddr + command.eaddr_offset;
+  expect_eq("scatter index and data read per group", groups.size() * 2,
+            result.vrf_reads.size());
+  expect_eq("scatter has no VRF destination write", 0,
+            result.vrf_writes.size());
+  expect_eq("scatter one memory write per active lane",
+            groups.size() * kRowBytes, result.memory_requests.size());
+
+  unsigned request = 0;
+  for (unsigned group_position = 0; group_position < groups.size();
+       ++group_position) {
+    const unsigned group = groups[group_position];
+    expect_eq("scatter index read group", group,
+              result.vrf_reads[group_position * 2]);
+    expect_eq("scatter index read row", command.index_vrf_row,
+              result.vrf_read_rows[group_position * 2]);
+    expect_eq("scatter data read group", group,
+              result.vrf_reads[group_position * 2 + 1]);
+    expect_eq("scatter data read row", command.vrf_row,
+              result.vrf_read_rows[group_position * 2 + 1]);
+
+    for (unsigned lane = 0; lane < kRowBytes; ++lane, ++request) {
+      const unsigned offset = byte_at(options.index_words[group], lane);
+      const unsigned data_byte = byte_at(options.data_words[group], lane);
+      const uint32_t byte_eaddr = window_base + offset;
+      const uint32_t beat_eaddr = byte_eaddr & ~(kRowBytes - 1u);
+      const unsigned beat_lane = byte_eaddr & (kRowBytes - 1u);
+      const MemoryRecord& memory = result.memory_requests[request];
+      expect_eq("scatter aligned request", beat_eaddr, memory.eaddr);
+      expect_eq("scatter request operation", kOpStore, memory.op);
+      expect_eq("scatter one-hot strobe", 1u << beat_lane, memory.strobe);
+      expect_eq("scatter byte placement", data_byte << (8 * beat_lane),
+                memory.data);
+      expect_eq("scatter address space", command.addr_space,
+                memory.addr_space);
+      expect_eq("scatter address context", command.addr_context,
+                memory.addr_context);
+    }
+  }
+}
+
 void check_single_flight_ordering(Vvsp_vector_memory_engine& dut) {
   const Command first{false, 0, 0x60, 0x6800, 0, 0x1, 2, 4,
                       kAddrSpaceTranslated, 0x11};
-  const Command second{false, 1, 0x61, 0x6c00, 0, 0x2, 3, 4,
+  const Command second{false, 0, 0x61, 0x6c00, 0, 0x2, 3, 4,
                        kAddrSpacePhysical, 0x22};
 
   clear_inputs(dut);
@@ -679,7 +816,7 @@ int main(int argc, char** argv) {
 
   // A negative signed displacement is sign-extended before alignment/range
   // checks.  This is a distinct parent tag, not merged with the prior command.
-  Command negative_load{false, 1, 0x11, 0x2040, -0x20, 0x5, 4, 8,
+  Command negative_load{false, 0, 0x11, 0x2040, -0x20, 0x5, 4, 8,
                         kAddrSpacePhysical, 0x03};
   result = run_command(dut, negative_load, {true}, rng);
   expect_success(negative_load, result);
@@ -692,7 +829,7 @@ int main(int argc, char** argv) {
       {true, -1, -1, false, false, 0},
       {true, -1, -1, false, true, 3}}};
   for (unsigned order = 0; order < store_orders.size(); ++order) {
-    Command store{true, order & 1u, 0x20 + order,
+    Command store{true, 0, 0x20 + order,
                   0x3000u + order * 0x100u, 0,
                   order == 1 ? 0x9u : 0x6u, 7, 6};
     result = run_command(dut, store, store_orders[order], rng);
@@ -700,12 +837,136 @@ int main(int argc, char** argv) {
     check_mapping(store, result);
   }
 
+  // INDEX_U8 first snapshots one index row per selected group, then lowers
+  // every byte lane to an aligned ordinary memory read.  The first group has
+  // a repeated offset, and both groups exercise different byte positions in
+  // the returned 32-bit beats.
+  Command indexed_gather;
+  indexed_gather.tag = 0x28;
+  indexed_gather.base_eaddr = 0x9001;
+  indexed_gather.eaddr_offset = 2;
+  indexed_gather.group_mask = 0x5;
+  indexed_gather.vrf_row = 9;
+  indexed_gather.span = 0;
+  indexed_gather.addr_space = kAddrSpaceTranslated;
+  indexed_gather.addr_context = 0x71;
+  indexed_gather.addr_mode = kAddrModeIndexU8;
+  indexed_gather.index_vrf_row = 6;
+  RunOptions gather_options;
+  gather_options.random_backpressure = true;
+  gather_options.completion_stall = 4;
+  gather_options.model_vrf_rows = true;
+  gather_options.index_words[0] = pack_bytes({0, 1, 4, 1});
+  gather_options.index_words[2] = pack_bytes({2, 8, 0xff, 5});
+  result = run_command(dut, indexed_gather, gather_options, rng);
+  expect_success(indexed_gather, result);
+  check_indexed_gather(indexed_gather, gather_options, result);
+  expect_eq("gather duplicate offset emits duplicate aligned beat",
+            result.memory_requests[1].eaddr,
+            result.memory_requests[3].eaddr);
+
+  // SCATTER snapshots index then data for each group and emits exactly one
+  // byte strobe per lane.  Offset five is used by group 0 lanes 0/2 and by
+  // the final lane of group 1; request order therefore makes 0x23 the
+  // deterministic last-writer value.
+  Command indexed_scatter;
+  indexed_scatter.store = true;
+  indexed_scatter.tag = 0x29;
+  indexed_scatter.base_eaddr = 0xa002;
+  indexed_scatter.eaddr_offset = 1;
+  indexed_scatter.group_mask = 0x3;
+  indexed_scatter.vrf_row = 10;
+  indexed_scatter.span = 0;
+  indexed_scatter.addr_space = kAddrSpacePhysical;
+  indexed_scatter.addr_context = 0x72;
+  indexed_scatter.addr_mode = kAddrModeIndexU8;
+  indexed_scatter.index_vrf_row = 7;
+  RunOptions scatter_options;
+  scatter_options.random_backpressure = true;
+  scatter_options.store_rsp_first = true;
+  scatter_options.completion_stall = 3;
+  scatter_options.model_vrf_rows = true;
+  scatter_options.index_words[0] = pack_bytes({5, 1, 5, 7});
+  scatter_options.index_words[1] = pack_bytes({0, 3, 1, 5});
+  scatter_options.data_words[0] = pack_bytes({0x10, 0x11, 0x12, 0x13});
+  scatter_options.data_words[1] = pack_bytes({0x20, 0x21, 0x22, 0x23});
+  result = run_command(dut, indexed_scatter, scatter_options, rng);
+  expect_success(indexed_scatter, result);
+  check_indexed_scatter(indexed_scatter, scatter_options, result);
+  expect_eq("scatter repeated offset shares aligned beat",
+            result.memory_requests[0].eaddr,
+            result.memory_requests[7].eaddr);
+  expect_eq("scatter repeated offset shares byte strobe",
+            result.memory_requests[0].strobe,
+            result.memory_requests[7].strobe);
+  expect_eq("scatter earliest duplicate byte", 0x10,
+            result.memory_requests[0].data & 0xffu);
+  expect_eq("scatter middle duplicate byte", 0x12,
+            result.memory_requests[2].data & 0xffu);
+  expect_eq("scatter highest lane writes duplicate last", 0x23,
+            result.memory_requests[7].data & 0xffu);
+
+  // A fault on the third SCATTER request retains the two acknowledged byte
+  // stores, marks the current group failed, and reports the original byte
+  // address rather than the aligned dmem beat.
+  Command indexed_fault = indexed_scatter;
+  indexed_fault.tag = 0x2a;
+  indexed_fault.base_eaddr = 0xb001;
+  indexed_fault.eaddr_offset = 0;
+  indexed_fault.group_mask = 0x1;
+  RunOptions indexed_fault_options;
+  indexed_fault_options.random_backpressure = true;
+  indexed_fault_options.completion_stall = 2;
+  indexed_fault_options.memory_fault_request = 2;
+  indexed_fault_options.memory_fault_cause = kFaultPermission;
+  indexed_fault_options.model_vrf_rows = true;
+  indexed_fault_options.index_words[0] = pack_bytes({2, 7, 9, 13});
+  indexed_fault_options.data_words[0] =
+      pack_bytes({0x31, 0x32, 0x33, 0x34});
+  result = run_command(dut, indexed_fault, indexed_fault_options, rng);
+  expect_eq("indexed scatter fault status", kStatusMemoryFault,
+            result.status);
+  expect_eq("indexed scatter fault cause", kFaultPermission,
+            result.fault_cause);
+  expect_eq("indexed scatter exact fault byte address", 0xb00a,
+            result.fault_eaddr);
+  expect_eq("indexed scatter fault group", 0x1, result.failed);
+  expect_eq("indexed scatter no complete group", 0, result.completed);
+  expect_eq("indexed scatter committed byte prefix", 2, result.bytes);
+  expect_eq("indexed scatter partial", 1, result.partial);
+  expect_eq("indexed scatter stops after faulting lane", 3,
+            result.memory_requests.size());
+
+  // Base is representable, but adding the first unsigned index byte is not.
+  // The engine may snapshot the index row before discovering this dynamic
+  // address error, but it must issue no memory or destination VRF traffic.
+  Command indexed_overflow = indexed_gather;
+  indexed_overflow.tag = 0x2b;
+  indexed_overflow.base_eaddr = 0xffffffffu;
+  indexed_overflow.eaddr_offset = 0;
+  indexed_overflow.group_mask = 0x1;
+  RunOptions overflow_options;
+  overflow_options.random_backpressure = true;
+  overflow_options.completion_stall = 2;
+  overflow_options.model_vrf_rows = true;
+  overflow_options.index_words[0] = pack_bytes({1, 0, 0, 0});
+  result = run_command(dut, indexed_overflow, overflow_options, rng);
+  expect_eq("indexed overflow status", kStatusBadEaddr, result.status);
+  expect_eq("indexed overflow commits no group", 0, result.completed);
+  expect_eq("indexed overflow commits no bytes", 0, result.bytes);
+  expect_eq("indexed overflow issues no memory request", 0,
+            result.memory_requests.size());
+  expect_eq("indexed overflow writes no destination", 0,
+            result.vrf_writes.size());
+  expect_eq("indexed overflow reads index before address resolution", 1,
+            result.vrf_reads.size());
+
   // Static descriptor/address rejects commit no memory or VRF side effects.
   const std::array<std::pair<Command, unsigned>, 5> rejects{{
       {{false, 0, 0x30, 0x1000, 0, 0x0, 0, 4}, kStatusBadRequest},
       {{false, 0, 0x31, 0x1000, 0, 0x3, 0, 4}, kStatusBadRequest},
       {{false, 0, 0x32, 0x1000, 2, 0x1, 0, 4}, kStatusBadEaddr},
-      {{true, 1, 0x33, 0x4, -8, 0x1, 0, 4}, kStatusBadEaddr},
+      {{true, 0, 0x33, 0x4, -8, 0x1, 0, 4}, kStatusBadEaddr},
       {{false, 0, 0x34, 0x1000, 0, 0x1, 0, 4, 3, 0},
        kStatusBadRequest}}};
   for (const auto& test : rejects) {
@@ -748,7 +1009,7 @@ int main(int argc, char** argv) {
   expect_eq("load VRF failed group", 0x2, result.failed);
   expect_eq("load VRF committed bytes", 4, result.bytes);
 
-  Command failing_store{true, 1, 0x41, 0x5000, 0, 0xe, 5, 12,
+  Command failing_store{true, 0, 0x41, 0x5000, 0, 0xe, 5, 12,
                         kAddrSpaceTranslated, 0x32};
   result = run_command(
       dut, failing_store,
@@ -798,7 +1059,7 @@ int main(int argc, char** argv) {
       kFaultTranslation, kFaultPermission, kFaultAccess, kFaultBus,
       kFaultDataIntegrity}};
   for (unsigned index = 0; index < fault_causes.size(); ++index) {
-    Command faulting{false, index & 1u, 0x48u + index,
+    Command faulting{false, 0, 0x48u + index,
                      0x5800u + index * 0x40u, 0, 0x1, index, 4,
                      kAddrSpaceTranslated, 0x40u + index};
     result = run_command(
@@ -871,7 +1132,7 @@ int main(int argc, char** argv) {
     const unsigned span = min_span +
         (next_random(rng) % (group_count * kRowBytes - min_span + 1));
     Command random_command{
-        bool(next_random(rng) & 1u), next_random(rng) & 1u,
+        bool(next_random(rng) & 1u), 0,
         (0x80u + test) & 0xffu, 0x8000u + test * 0x40u,
         (next_random(rng) & 1u) ? 0 : 4,
         mask, next_random(rng) & 0xfu, span};
@@ -888,7 +1149,7 @@ int main(int argc, char** argv) {
 
   // Reset clears a live transaction and sticky state without a ghost
   // completion, and restores command admission.
-  Command live{false, 1, 0x70, 0x7000, 0, 0xf, 0, 16};
+  Command live{false, 0, 0x70, 0x7000, 0, 0xf, 0, 16};
   drive_command(dut, live);
   tick(dut);
   clear_inputs(dut);
@@ -908,6 +1169,6 @@ int main(int argc, char** argv) {
   std::cout << "PASS: " << checks
             << " vector memory engine checks across address-space metadata, "
                "ordered single-flight access, structured faults, sparse spans, "
-               "backpressure, and reset\n";
+               "indexed gather/scatter, backpressure, and reset\n";
   return 0;
 }

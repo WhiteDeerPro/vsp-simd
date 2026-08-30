@@ -221,28 +221,24 @@ process_center_region:
     # 示例：处理位置(8, 0..15)的一行
     # 需要行7、8、9的数据
 
-    # 加载行7
+    # 加载行7及其左右邻居；VRF12/VRF13 由加载阶段预先准备为
+    # 同一256-byte memory window内的unsigned byte offsets。
     SADDI rd=4 rs1=1 imm=112
     VLOAD space=local addr_context=0 sbase=4 vrf=0 span=16 offset=0
+    VGATHER space=local addr_context=0 sbase=4 vd=3 vi=12 offset=0
+    VGATHER space=local addr_context=0 sbase=4 vd=6 vi=13 offset=0
 
     # 加载行8
     SADDI rd=4 rs1=1 imm=128
     VLOAD space=local addr_context=0 sbase=4 vrf=1 span=16 offset=0
+    VGATHER space=local addr_context=0 sbase=4 vd=4 vi=12 offset=0
+    VGATHER space=local addr_context=0 sbase=4 vd=7 vi=13 offset=0
 
     # 加载行9
     SADDI rd=4 rs1=1 imm=144
     VLOAD space=local addr_context=0 sbase=4 vrf=2 span=16 offset=0
-
-    # VRF12/VRF13 由加载阶段预先准备为左右邻居的索引向量。
-    # route 本身只读取数据行和索引行，不再编码立即数 slide。
-    EXEC_ROUTE vs=0 vi=12 vd=3
-    EXEC_ROUTE vs=1 vi=12 vd=4
-    EXEC_ROUTE vs=2 vi=12 vd=5
-
-    # 创建右移版本
-    EXEC_ROUTE vs=0 vi=13 vd=6
-    EXEC_ROUTE vs=1 vi=13 vd=7
-    EXEC_ROUTE vs=2 vi=13 vd=8
+    VGATHER space=local addr_context=0 sbase=4 vd=5 vi=12 offset=0
+    VGATHER space=local addr_context=0 sbase=4 vd=8 vi=13 offset=0
 
     # 九路加法（行7的三个位置）
     EXEC_ALU_RR op=add mode=byte va=3 vb=0 vd=10

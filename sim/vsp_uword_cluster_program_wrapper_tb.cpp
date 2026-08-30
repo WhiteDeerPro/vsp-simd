@@ -1,6 +1,7 @@
 #include "Vvsp_uword_cluster_program_wrapper.h"
 #include "verilated.h"
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
@@ -37,6 +38,22 @@ void expect_eq(const std::string& what, uint64_t expected,
                uint64_t actual) {
   ++checks;
   if (expected != actual) fail(what, expected, actual);
+}
+
+uint32_t load_word(const std::array<uint8_t, 512>& bytes,
+                   uint32_t address) {
+  uint32_t value = 0;
+  for (unsigned byte = 0; byte < 4; ++byte)
+    value |= uint32_t{bytes.at(address + byte)} << (8 * byte);
+  return value;
+}
+
+void store_word(std::array<uint8_t, 512>& bytes, uint32_t address,
+                uint32_t data, uint8_t strobe) {
+  for (unsigned byte = 0; byte < 4; ++byte) {
+    if ((strobe >> byte) & 1U)
+      bytes.at(address + byte) = uint8_t(data >> (8 * byte));
+  }
 }
 
 void eval_low(Vvsp_uword_cluster_program_wrapper& dut) {
@@ -194,6 +211,7 @@ struct DmemRequest {
 };
 
 struct DmemModel {
+  std::array<uint8_t, 512> bytes{};
   bool response_pending = false;
   int response_delay = 0;
   uint32_t response_data = 0;
@@ -248,10 +266,12 @@ void update_dmem_model(DmemModel& model, bool request_fire,
     model.response_pending = true;
     model.response_delay = 2;
     model.response_fault = 0;
-    model.response_data =
-        (request.op == kLoad && request.eaddr == 0x100)
-            ? 0x04030201U
-            : 0;
+    if (request.op == kLoad) {
+      model.response_data = load_word(model.bytes, request.eaddr);
+    } else {
+      store_word(model.bytes, request.eaddr, request.wdata, request.wstrb);
+      model.response_data = 0;
+    }
   }
 }
 
@@ -381,8 +401,7 @@ int main(int argc, char** argv) {
 
   const std::vector<uint32_t> program = read_hex(argv[1]);
   const std::vector<uint32_t> golden = {
-      0x17822210U, 0x10020430U, 0x00000007U, 0xd08c0040U,
-      0xc0000000U};
+      0x17822210U, 0x10020430U, 0x00000007U, 0xc0000000U};
   if (program != golden) {
     std::cerr << "generated executable example differs from golden\n";
     return 1;
@@ -404,23 +423,21 @@ int main(int argc, char** argv) {
 
   program_store(dut, program);
   launch(dut, kBasePc + static_cast<uint32_t>(4 * program.size()),
-         1, 0x5, 0x40);
+         0, 0x5, 0x40);
   Run normal = run_until_terminal(dut);
   expect_eq("normal completed", 1, normal.done);
   expect_eq("normal did not fail", 0, normal.failed);
   expect_eq("normal has no accumulated error", 0, normal.error);
-  expect_eq("normal completion count", 4, normal.completions.size());
-  for (size_t index = 0; index < 3; ++index) {
-    check_completion(normal.completions[index], kExec, 1,
+  expect_eq("normal completion count", 3, normal.completions.size());
+  for (size_t index = 0; index < 2; ++index) {
+    check_completion(normal.completions[index], kExec, 0,
                      static_cast<uint8_t>(0x40 + index), 0x5,
                      kStatusOk, 0, false,
                      "normal EXEC " + std::to_string(index));
   }
-  check_completion(normal.completions[3], kControl, 1, 0x43, 0,
+  check_completion(normal.completions[2], kControl, 0, 0x42, 0,
                    kStatusOk, 0, true, "normal END");
-  // VROUTE commits vd in the distributed VRF and has no implicit narrow
-  // export. A later explicit operation may export or store that row.
-  expect_eq("normal vector route has no implicit export", 0,
+  expect_eq("normal EXEC stream has no implicit export", 0,
             normal.results.size());
   expect_eq("normal issued no data-memory request", 0,
             normal.dmem_requests);
@@ -448,8 +465,9 @@ int main(int argc, char** argv) {
   program_store(dut, memory_state_program);
   launch(dut,
          kBasePc + static_cast<uint32_t>(4 * memory_state_program.size()),
-         1, 0x1, 0x48);
+         0, 0x1, 0x48);
   DmemModel dmem;
+  store_word(dmem.bytes, 0x100, 0x04030201U, 0xf);
   Run memory_state = run_until_terminal(dut, &dmem);
   expect_eq("MEMORY/state program completed", 1, memory_state.done);
   expect_eq("MEMORY/state program did not fail", 0, memory_state.failed);
@@ -458,18 +476,18 @@ int main(int argc, char** argv) {
   expect_eq("MEMORY/state completion count", 8,
             memory_state.completions.size());
   for (size_t index = 0; index < 4; ++index) {
-    check_completion(memory_state.completions[index], kControl, 1,
+    check_completion(memory_state.completions[index], kControl, 0,
                      static_cast<uint8_t>(0x48 + index), 0,
                      kStatusOk, 0, false,
                      "state CONTROL " + std::to_string(index));
   }
-  check_completion(memory_state.completions[4], kMemory, 1, 0x4c, 0x1,
+  check_completion(memory_state.completions[4], kMemory, 0, 0x4c, 0x1,
                    kStatusOk, 0, false, "semantic VLOAD");
-  check_completion(memory_state.completions[5], kExec, 1, 0x4d, 0x1,
+  check_completion(memory_state.completions[5], kExec, 0, 0x4d, 0x1,
                    kStatusOk, 0, false, "loaded-row EXEC");
-  check_completion(memory_state.completions[6], kMemory, 1, 0x4e, 0x1,
+  check_completion(memory_state.completions[6], kMemory, 0, 0x4e, 0x1,
                    kStatusOk, 0, false, "semantic VSTORE");
-  check_completion(memory_state.completions[7], kControl, 1, 0x4f, 0,
+  check_completion(memory_state.completions[7], kControl, 0, 0x4f, 0,
                    kStatusOk, 0, true, "MEMORY/state END");
   expect_eq("MEMORY/state exports no EXEC result", 0,
             memory_state.results.size());
@@ -481,8 +499,138 @@ int main(int argc, char** argv) {
   check_dmem_request({kStore, 0x104, kLocal, 0x2a,
                       0x05040302U, 0xf},
                      dmem.requests[1], "semantic VSTORE request");
+  expect_eq("semantic VSTORE updates memory model", 0x05040302U,
+            load_word(dmem.bytes, 0x104));
   expect_eq("no response remains after MEMORY/state END", 0,
             dmem.response_pending);
+
+  // Indexed MEMORY records replace the former register-route instruction.
+  // VLOAD seeds row 1 with byte offsets {3,0,7,4}; VGATHER reads those four
+  // bytes into row 2, and VSCATTER writes them to the same offsets in a new
+  // 256-byte address window.
+  const std::vector<uint32_t> indexed_memory_program = {
+      0xc4080000U, 0x00000100U,
+      0xb4150448U, 0x00000020U,
+      0xb4150485U, 0x00000000U,
+      0xb6150485U, 0x00000040U,
+      0xc0000000U};
+  program_store(dut, indexed_memory_program);
+  launch(dut,
+         kBasePc + static_cast<uint32_t>(4 * indexed_memory_program.size()),
+         0, 0x1, 0x50);
+  DmemModel indexed_dmem;
+  store_word(indexed_dmem.bytes, 0x100, 0x44332211U, 0xf);
+  store_word(indexed_dmem.bytes, 0x104, 0x88776655U, 0xf);
+  store_word(indexed_dmem.bytes, 0x120, 0x04070003U, 0xf);
+  Run indexed_memory = run_until_terminal(dut, &indexed_dmem);
+  expect_eq("indexed MEMORY program completed", 1, indexed_memory.done);
+  expect_eq("indexed MEMORY program did not fail", 0,
+            indexed_memory.failed);
+  expect_eq("indexed MEMORY program has no accumulated error", 0,
+            indexed_memory.error);
+  expect_eq("indexed MEMORY completion count", 5,
+            indexed_memory.completions.size());
+  check_completion(indexed_memory.completions[0], kControl, 0, 0x50, 0,
+                   kStatusOk, 0, false, "indexed base SMOVI");
+  check_completion(indexed_memory.completions[1], kMemory, 0, 0x51, 0x1,
+                   kStatusOk, 0, false, "index-row VLOAD");
+  check_completion(indexed_memory.completions[2], kMemory, 0, 0x52, 0x1,
+                   kStatusOk, 0, false, "semantic VGATHER");
+  check_completion(indexed_memory.completions[3], kMemory, 0, 0x53, 0x1,
+                   kStatusOk, 0, false, "semantic VSCATTER");
+  check_completion(indexed_memory.completions[4], kControl, 0, 0x54, 0,
+                   kStatusOk, 0, true, "indexed MEMORY END");
+  expect_eq("indexed MEMORY has no EXEC result", 0,
+            indexed_memory.results.size());
+  expect_eq("indexed MEMORY request count", 9,
+            indexed_memory.dmem_requests);
+  expect_eq("indexed data-memory model captured every request", 9,
+            indexed_dmem.requests.size());
+  check_dmem_request({kLoad, 0x120, kLocal, 0x2a, 0, 0},
+                     indexed_dmem.requests[0], "index-row VLOAD request");
+  check_dmem_request({kLoad, 0x100, kLocal, 0x2a, 0, 0},
+                     indexed_dmem.requests[1], "VGATHER lane 0 request");
+  check_dmem_request({kLoad, 0x100, kLocal, 0x2a, 0, 0},
+                     indexed_dmem.requests[2], "VGATHER lane 1 request");
+  check_dmem_request({kLoad, 0x104, kLocal, 0x2a, 0, 0},
+                     indexed_dmem.requests[3], "VGATHER lane 2 request");
+  check_dmem_request({kLoad, 0x104, kLocal, 0x2a, 0, 0},
+                     indexed_dmem.requests[4], "VGATHER lane 3 request");
+  check_dmem_request({kStore, 0x140, kLocal, 0x2a,
+                      0x44000000U, 0x8},
+                     indexed_dmem.requests[5], "VSCATTER lane 0 request");
+  check_dmem_request({kStore, 0x140, kLocal, 0x2a,
+                      0x00000011U, 0x1},
+                     indexed_dmem.requests[6], "VSCATTER lane 1 request");
+  check_dmem_request({kStore, 0x144, kLocal, 0x2a,
+                      0x88000000U, 0x8},
+                     indexed_dmem.requests[7], "VSCATTER lane 2 request");
+  check_dmem_request({kStore, 0x144, kLocal, 0x2a,
+                      0x00000055U, 0x1},
+                     indexed_dmem.requests[8], "VSCATTER lane 3 request");
+  expect_eq("VSCATTER lower destination word", 0x44000011U,
+            load_word(indexed_dmem.bytes, 0x140));
+  expect_eq("VSCATTER upper destination word", 0x88000055U,
+            load_word(indexed_dmem.bytes, 0x144));
+  expect_eq("no response remains after indexed MEMORY END", 0,
+            indexed_dmem.response_pending);
+
+  // UNIT_STRIDE span code zero expands at the action boundary to four bytes
+  // for every launch-selected group.  A sparse {G2,G0} mask therefore moves
+  // eight compact bytes without encoding the unrepresentable literal 64.
+  const std::vector<uint32_t> full_selected_span_program = {
+      0xc4080000U, 0x00000180U,
+      0xb4000580U, 0x00000000U,
+      0xb6000580U, 0x00000020U,
+      0xc0000000U};
+  program_store(dut, full_selected_span_program);
+  launch(dut,
+         kBasePc +
+             static_cast<uint32_t>(4 * full_selected_span_program.size()),
+         0, 0x5, 0x58);
+  DmemModel full_span_dmem;
+  store_word(full_span_dmem.bytes, 0x180, 0x04030201U, 0xf);
+  store_word(full_span_dmem.bytes, 0x184, 0x08070605U, 0xf);
+  Run full_span = run_until_terminal(dut, &full_span_dmem);
+  expect_eq("full-selected span program completed", 1, full_span.done);
+  expect_eq("full-selected span program did not fail", 0,
+            full_span.failed);
+  expect_eq("full-selected span program has no accumulated error", 0,
+            full_span.error);
+  expect_eq("full-selected span completion count", 4,
+            full_span.completions.size());
+  check_completion(full_span.completions[0], kControl, 0, 0x58, 0,
+                   kStatusOk, 0, false, "full-span SMOVI");
+  check_completion(full_span.completions[1], kMemory, 0, 0x59, 0x5,
+                   kStatusOk, 0, false, "full-span VLOAD");
+  check_completion(full_span.completions[2], kMemory, 0, 0x5a, 0x5,
+                   kStatusOk, 0, false, "full-span VSTORE");
+  check_completion(full_span.completions[3], kControl, 0, 0x5b, 0,
+                   kStatusOk, 0, true, "full-span END");
+  expect_eq("full-selected span request count", 4,
+            full_span.dmem_requests);
+  expect_eq("full-selected span captured every request", 4,
+            full_span_dmem.requests.size());
+  check_dmem_request({kLoad, 0x180, kLocal, 0, 0, 0},
+                     full_span_dmem.requests[0],
+                     "full-span VLOAD group 0 request");
+  check_dmem_request({kLoad, 0x184, kLocal, 0, 0, 0},
+                     full_span_dmem.requests[1],
+                     "full-span VLOAD group 2 request");
+  check_dmem_request({kStore, 0x1a0, kLocal, 0,
+                      0x04030201U, 0xf},
+                     full_span_dmem.requests[2],
+                     "full-span VSTORE group 0 request");
+  check_dmem_request({kStore, 0x1a4, kLocal, 0,
+                      0x08070605U, 0xf},
+                     full_span_dmem.requests[3],
+                     "full-span VSTORE group 2 request");
+  expect_eq("full-selected span lower destination word", 0x04030201U,
+            load_word(full_span_dmem.bytes, 0x1a0));
+  expect_eq("full-selected span upper destination word", 0x08070605U,
+            load_word(full_span_dmem.bytes, 0x1a4));
+  expect_eq("no response remains after full-selected span END", 0,
+            full_span_dmem.response_pending);
 
   // An exact END-looking word in an opaque MEMORY body is data, not a header.
   // The MEMORY parent rejects in order, then the following real END retires.
@@ -507,14 +655,14 @@ int main(int argc, char** argv) {
   const std::vector<uint32_t> other_control = {
       0xc0000001U, 0xc0000000U};
   program_store(dut, other_control);
-  launch(dut, kBasePc + 8, 1, 0x1, 0x70);
+  launch(dut, kBasePc + 8, 0, 0x1, 0x70);
   Run control = run_until_terminal(dut);
   expect_eq("other CONTROL reaches real END", 1, control.done);
   expect_eq("other CONTROL completion count", 2,
             control.completions.size());
-  check_completion(control.completions[0], kControl, 1, 0x70, 0,
+  check_completion(control.completions[0], kControl, 0, 0x70, 0,
                    kStatusDecode, kBadExtension, false, "other CONTROL");
-  check_completion(control.completions[1], kControl, 1, 0x71, 0,
+  check_completion(control.completions[1], kControl, 0, 0x71, 0,
                    kStatusOk, 0, true, "other CONTROL following END");
 
   // A base word whose extension lies beyond end_pc is emitted as a truncated
@@ -533,7 +681,7 @@ int main(int argc, char** argv) {
 
   // A legal empty byte range contains no END and must fail rather than leave
   // the wrapper permanently active.
-  launch(dut, kBasePc, 1, 0x5, 0x90);
+  launch(dut, kBasePc, 0, 0x5, 0x90);
   Run empty = run_until_terminal(dut);
   expect_eq("empty range not done", 0, empty.done);
   expect_eq("empty range fails", 1, empty.failed);
@@ -543,7 +691,7 @@ int main(int argc, char** argv) {
   // END is rejected, younger words are drained without entering EXEC, and the
   // program reports failure.
   const std::vector<uint32_t> early_end = {
-      0xc0000000U, 0xd08c0040U};
+      0xc0000000U, 0x17822210U};
   program_store(dut, early_end);
   launch(dut, kBasePc + 8, 0, 0x5, 0xa0);
   Run early = run_until_terminal(dut);
@@ -552,7 +700,7 @@ int main(int argc, char** argv) {
   expect_eq("early END completion count", 1, early.completions.size());
   check_completion(early.completions[0], kControl, 0, 0xa0, 0,
                    kStatusDecode, kBadSubop, false, "early END");
-  expect_eq("younger route after early END not executed", 0,
+  expect_eq("younger EXEC after early END not executed", 0,
             early.results.size());
 
   // The local store ends at 0x60 in this test configuration.  Three complete
@@ -563,14 +711,14 @@ int main(int argc, char** argv) {
   const std::vector<uint32_t> faulting_tail = {
       0x17822210U, 0x17822210U, 0x17822210U, 0xbc000000U};
   program_store_at(dut, 0x50, faulting_tail);
-  launch_range(dut, 0x50, 0x6c, 1, 0x4, 0xb0);
+  launch_range(dut, 0x50, 0x6c, 0, 0x4, 0xb0);
   Run fetch_fault = run_until_terminal(dut);
   expect_eq("cross-bundle fetch fault not done", 0, fetch_fault.done);
   expect_eq("cross-bundle fetch fault fails", 1, fetch_fault.failed);
   expect_eq("older complete actions survive fetch fault", 3,
             fetch_fault.completions.size());
   for (size_t index = 0; index < 3; ++index) {
-    check_completion(fetch_fault.completions[index], kExec, 1,
+    check_completion(fetch_fault.completions[index], kExec, 0,
                      static_cast<uint8_t>(0xb0 + index), 0x4,
                      kStatusOk, 0, false,
                      "pre-fault EXEC " + std::to_string(index));

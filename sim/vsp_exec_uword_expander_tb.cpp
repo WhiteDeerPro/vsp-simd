@@ -210,14 +210,6 @@ struct Expected {
   bool reduce_enable = false;
   uint32_t reduce_op = 0;
   bool export_narrow = false;
-  bool route_enable = false;
-  uint32_t route_io_mode = 0;
-  uint32_t route_op = 0;
-  uint32_t route_index = 0;
-  uint32_t route_broadcast = 0;
-  uint32_t route_slide = 0;
-  uint32_t route_lower = 0;
-  uint32_t route_upper = 0;
   bool has_count = false;
 };
 
@@ -261,15 +253,6 @@ void expect_zero_canonical(Vvsp_exec_uword_expander& dut,
   expect_eq(name + " zero reduce", 0, dut.reduce_enable_o);
   expect_eq(name + " zero reduce op", 0, dut.reduce_op_o);
   expect_eq(name + " zero export", 0, dut.export_narrow_o);
-  expect_eq(name + " zero route enable", 0, dut.route_enable_o);
-  expect_eq(name + " zero route io mode", 0, dut.route_io_mode_o);
-  expect_eq(name + " zero route op", 0, dut.route_op_o);
-  expect_eq(name + " zero route index", 0, dut.route_index_o);
-  expect_eq(name + " zero route broadcast", 0,
-            dut.route_broadcast_index_o);
-  expect_eq(name + " zero route slide", 0, dut.route_slide_amount_o);
-  expect_eq(name + " zero route lower", 0, dut.route_lower_o);
-  expect_eq(name + " zero route upper", 0, dut.route_upper_o);
   expect_eq(name + " zero result obligation", 0, dut.requires_result_o);
   expect_eq(name + " zero narrow result", 0, dut.result_has_narrow_o);
   expect_eq(name + " zero reduce result", 0, dut.result_has_reduce_o);
@@ -321,21 +304,6 @@ void expect_legal(Vvsp_exec_uword_expander& dut, const std::string& name,
   expect_eq(name + " result count", expected.has_count,
             dut.result_has_count_o);
 
-  expect_eq(name + " route enable", expected.route_enable,
-            dut.route_enable_o);
-  expect_eq(name + " route io mode", expected.route_io_mode,
-            dut.route_io_mode_o);
-  expect_eq(name + " route op", expected.route_op, dut.route_op_o);
-  expect_eq(name + " route index", expected.route_index,
-            dut.route_index_o);
-  expect_eq(name + " route broadcast", expected.route_broadcast,
-            dut.route_broadcast_index_o);
-  expect_eq(name + " route slide", expected.route_slide,
-            dut.route_slide_amount_o);
-  expect_eq(name + " route lower", expected.route_lower,
-            dut.route_lower_o);
-  expect_eq(name + " route upper", expected.route_upper,
-            dut.route_upper_o);
 }
 
 void expect_illegal(Vvsp_exec_uword_expander& dut, const std::string& name,
@@ -508,35 +476,6 @@ void test_golden_formats(Vvsp_exec_uword_expander& dut) {
                enc_mrf(3, 2, 0, 1, 12, true, true, true),
                false, 0, false, expected);
 
-  expected = {};
-  expected.op = kOpPassA;
-  expected.mode = kModeByte;
-  expected.src_a = 1;
-  expected.src_b = 3;
-  expected.dst_vrf = 2;
-  expected.write_vrf = true;
-  expected.route_enable = true;
-  expected.route_io_mode = 0;
-  expected.route_op = 0;
-  expect_legal(dut, "fmtD VRF-indexed ROUTE",
-               enc_route(1, 3, 2),
-               false, 0, false, expected);
-
-  // Bits 27:26 encode a route dependency mode. LOCAL is the special
-  // role-complete, dependency-free value; nonzero values preserve their
-  // IN/OUT roles for admission and execution policy.
-  for (uint32_t io_mode = 0; io_mode < 4; ++io_mode) {
-    const bool local = io_mode == 0;
-    expected.src_a = (local || (io_mode & 2u)) ? 1 : 0;
-    expected.src_b = (local || (io_mode & 1u)) ? 3 : 0;
-    expected.dst_vrf = (local || (io_mode & 1u)) ? 2 : 0;
-    expected.write_vrf = local || (io_mode & 1u);
-    expected.route_io_mode = io_mode;
-    const uint32_t word = (enc_route(1, 3, 2) & ~(uint32_t{3} << 26)) |
-                          (io_mode << 26);
-    expect_legal(dut, "fmtD route IO mode " + std::to_string(io_mode),
-                 word, false, 0, false, expected);
-  }
 }
 
 void test_alu_subop_mapping_and_no_effect(
@@ -640,6 +579,13 @@ void test_illegal_and_priority(Vvsp_exec_uword_expander& dut) {
                  false, true, kErrBadFormat);
   expect_illegal(dut, "bad high format", 0xf0000000, false, 0,
                  false, true, kErrBadFormat);
+  for (uint32_t former_route_mode = 0; former_route_mode < 4;
+       ++former_route_mode) {
+    const uint32_t word = enc_route(1, 3, 2) | (former_route_mode << 26);
+    expect_illegal(dut,
+                   "undefined fmtD " + std::to_string(former_route_mode),
+                   word, false, 0, false, true, kErrBadFormat);
+  }
   expect_illegal(dut, "bad ALU subop",
                  enc_alu(21, kModeByte, 1, 2, 0, 0,
                          false, false, false, 0),
@@ -713,15 +659,6 @@ void test_illegal_and_priority(Vvsp_exec_uword_expander& dut) {
   expect_illegal(dut, "MNOT has second source",
                  enc_mrf(3, 1, 2, 0, 0, false, false, false),
                  false, 0, false, true, kErrUnused);
-  constexpr unsigned kRouteReservedBits[] = {
-      17, 16, 15, 14, 13, 12, 11, 10, 5, 4, 3, 2, 1, 0,
-  };
-  for (unsigned bit : kRouteReservedBits) {
-    expect_illegal(dut, "ROUTE reserved bit " + std::to_string(bit),
-                   enc_route(1, 3, 2, 1u << bit),
-                   false, 0, false, true, kErrReserved);
-  }
-
   // Multi-error cases lock the documented cause priority rather than merely
   // checking that the word is rejected.
   expect_illegal(dut, "priority subop over reserved",

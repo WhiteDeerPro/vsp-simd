@@ -25,16 +25,6 @@ module vsp_uword_predecoder #(
                                                    record_word_count_o,
   output logic [(BUNDLE_WORDS*vsp_uword_pkg::VSP_UWORD_MAX_RECORD_WORDS*
                 vsp_uword_pkg::VSP_UWORD_W)-1:0]  record_words_o,
-  // Scheduling-only route metadata.  This is intentionally much smaller
-  // than full EXEC decode: a nonzero mode is a predecessor barrier, while a
-  // partial IN/OUT role must be intercepted by a future atomic pairer rather
-  // than entering the single-active route engine by itself.
-  output logic [BUNDLE_WORDS-1:0]                 record_route_o,
-  output logic [(BUNDLE_WORDS*
-                vsp_exec_uword_pkg::VSP_EXEC_ROUTE_IO_W)-1:0]
-                                                   record_route_io_mode_o,
-  output logic [BUNDLE_WORDS-1:0]                 record_barrier_before_o,
-  output logic [BUNDLE_WORDS-1:0]                 record_route_pair_required_o,
   output logic [BUNDLE_COUNT_W-1:0]               record_count_o,
   output logic [BUNDLE_COUNT_W-1:0]               consumed_word_count_o,
 
@@ -82,10 +72,6 @@ module vsp_uword_predecoder #(
     record_start_index_o = '0;
     record_word_count_o = '0;
     record_words_o = '0;
-    record_route_o = '0;
-    record_route_io_mode_o = '0;
-    record_barrier_before_o = '0;
-    record_route_pair_required_o = '0;
     record_count_o = '0;
     consumed_word_count_o = '0;
 
@@ -129,23 +115,6 @@ module vsp_uword_predecoder #(
               (record_index*VSP_UWORD_WORD_COUNT_W) +:
               VSP_UWORD_WORD_COUNT_W] =
                   VSP_UWORD_WORD_COUNT_W'(required_count);
-
-          if (vsp_exec_uword_pkg::vsp_exec_uword_is_route(header)) begin
-            logic [vsp_exec_uword_pkg::VSP_EXEC_ROUTE_IO_W-1:0]
-                route_mode;
-            route_mode = header[27:26];
-            record_route_o[record_index] = 1'b1;
-            record_route_io_mode_o[
-                (record_index*
-                 vsp_exec_uword_pkg::VSP_EXEC_ROUTE_IO_W) +:
-                vsp_exec_uword_pkg::VSP_EXEC_ROUTE_IO_W] = route_mode;
-            record_barrier_before_o[record_index] =
-                vsp_exec_uword_pkg::vsp_exec_route_mode_dependent(
-                    route_mode);
-            record_route_pair_required_o[record_index] =
-                vsp_exec_uword_pkg::vsp_exec_route_mode_pair_required(
-                    route_mode);
-          end
 
           for (copy_index = 0;
                copy_index < VSP_UWORD_MAX_RECORD_WORDS;

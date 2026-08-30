@@ -109,6 +109,22 @@ class VSPAsmBuilder:
             f"sbase={base_reg} vrf={vs} span={span_bytes} offset={offset}")
         return self
 
+    def vgather(self, vd: int, vi: int, base_reg: int, offset: int = 0,
+                addr_space: str = "local", addr_context: int = 0):
+        """按VRF索引行中的unsigned byte offset执行memory gather。"""
+        self.lines.append(
+            f"VGATHER space={addr_space} addr_context={addr_context} "
+            f"sbase={base_reg} vd={vd} vi={vi} offset={offset}")
+        return self
+
+    def vscatter(self, vs: int, vi: int, base_reg: int, offset: int = 0,
+                 addr_space: str = "local", addr_context: int = 0):
+        """按VRF索引行中的unsigned byte offset执行有序memory scatter。"""
+        self.lines.append(
+            f"VSCATTER space={addr_space} addr_context={addr_context} "
+            f"sbase={base_reg} vs={vs} vi={vi} offset={offset}")
+        return self
+
     # === EXEC ALU操作 ===
 
     def alu(self, op: str, vd: int, va: int, vb: int,
@@ -150,15 +166,6 @@ class VSPAsmBuilder:
     def max_u(self, vd: int, va: int, vb: int, mode: str = "byte"):
         """无符号最大值"""
         return self.alu("max_u", vd, va, vb, mode)
-
-    # === Vector route操作 ===
-
-    def vroute(self, vd: int, vs: int, vi: int, io_mode: int = 0):
-        """用VRF索引行vi路由vs；io_mode选择LOCAL/DEP_IN/DEP_OUT/DEP_INOUT。"""
-        self.lines.append(
-            f"EXEC_ROUTE vs={vs} vi={vi} vd={vd} io={io_mode}"
-        )
-        return self
 
     # === Reduction操作 ===
 
@@ -246,18 +253,18 @@ class ImageProcessingPatterns:
                                 hist_base_reg: int):
         """直方图原子更新的基本框架
 
-        注意：真正的scatter需要特殊硬件支持或软件模拟
-        这里展示概念性流程
+        VSP已有有序byte scatter，但没有原子read-modify-write。
+        这里展示为什么直方图仍需专用原子或软件合并。
         """
         builder.comment("=== Histogram Update (Conceptual) ===")
-        builder.comment("Scatter操作需要特殊处理：")
+        builder.comment("原子直方图更新需要特殊处理：")
         builder.comment("1. 提取每个lane的像素值作为索引")
         builder.comment("2. 对每个索引，原子地增加计数")
-        builder.comment("3. VSP当前不直接支持scatter写入")
+        builder.comment("3. VSCATTER可写回，但重复地址只是later-lane-wins，不是原子加")
         builder.blank()
 
         builder.comment("建议方案：")
-        builder.comment("A. 使用gather读取 + 增量 + 条件写回")
+        builder.comment("A. 每组使用私有小直方图，最后集中归并")
         builder.comment("B. 软件展开：顺序处理每个lane")
         builder.comment("C. 使用reduction + 外部累加器")
         builder.blank()
@@ -342,7 +349,7 @@ def generate_sliding_window_test():
     """生成滑动窗口测试（用于卷积等）"""
     builder = VSPAsmBuilder()
 
-    builder.comment("Sliding Window Test - group-local 3-tap filter")
+    builder.comment("Sliding Window Test - indexed-memory 3-tap filter")
     builder.comment("Compute wrapped_byte_sum(left, center, right) >> 2")
     builder.comment("This is a quarter-scaled example, not an exact divide-by-3 mean")
     builder.blank()
@@ -364,15 +371,15 @@ def generate_sliding_window_test():
     builder.vload(v_center, base_reg=1, offset=0)
     builder.blank()
 
-    # 通过VRF索引向量创建左右邻居。索引行由调用者/加载阶段准备；
-    # 广播和slide不再占用立即数route编码。
-    builder.comment("VRF5/VRF6 contain the left/right gather indices")
-    builder.comment("Create left neighbor via the VRF5 index vector")
-    builder.vroute(v_left, v_center, v_index_left)
+    # 通过VRF索引向量从同一256-byte memory window提取左右邻居。
+    # 索引行由调用者/加载阶段准备。
+    builder.comment("VRF5/VRF6 contain unsigned memory byte offsets")
+    builder.comment("Gather the left neighbor from the input memory window")
+    builder.vgather(v_left, v_index_left, base_reg=1)
     builder.blank()
 
-    builder.comment("Create right neighbor via the VRF6 index vector")
-    builder.vroute(v_right, v_center, v_index_right)
+    builder.comment("Gather the right neighbor from the input memory window")
+    builder.vgather(v_right, v_index_right, base_reg=1)
     builder.blank()
 
     # 三路加法

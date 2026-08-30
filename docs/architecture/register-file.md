@@ -99,32 +99,30 @@ SIMD 执行子单元 / 协处理器：
   需要自己的小型 SRF、标量 ALU、地址生成和控制流。
 ```
 
-跨组 gather 若采用动态索引，VRF 中的索引向量是候选来源：一个 byte lane 足以保存
-当前规模的 lane index，因此无需在 SRF 中塞入超宽逐 lane 控制字。index 必须以完整
-byte 做范围检查，不能只截低位。4-group iterative gather 候选会在 admission 时同时
-读取并快照 source row 与 index row，再在 engine 内收集 128-bit result，避免分拍写回
-污染重叠源。word-first phase 与 four-pass snapshot engine 已有 standalone RTL；跨组
-并行 capture/commit 和资源预留尚未实现。当前 16×16 full crossbar 与四次迭代结构均
-未接入寄存器数据通路，仍需综合 A/B。
+当前动态索引不在 VRF-to-VRF 路径中实现。`INDEX_U8` MEMORY action 从分布式 index
+VRF row 读取每 lane 的 unsigned byte offset，并对
+`base_eaddr + signed_offset + index[lane]` 发出 gather/scatter 请求。当前 4-group 实例
+一次选择 16 byte，16-group profile bound 一次选择 64 byte，二者都在 256-byte 地址
+window 内工作。旧 word-first/four-pass snapshot、16×16 crossbar 与 register-route engine
+仅是 standalone experimental RTL，没有连接当前 PC、action adapter 或产品 wrapper。
 
 ## 局部路由网络的位置
 
-当前已经选择在 VRF source A 后放置一份共享的直接 crossbar，并以旁路 mux 控制
-是否使用。它支持重复源索引，因此能统一表达 SIMD group 内的 permutation、
+当前每个 SIMD4 已经选择在 VRF source A 后放置一份 group-local 4×4 直接 crossbar，
+并以旁路 mux 控制是否使用。它支持重复源索引，因此能统一表达 SIMD group 内的 permutation、
 gather 和 lane broadcast；slide 读取抽象 boundary ports，cluster 首版由 staging
 提供。source B 不复制第二份网络。
 
-Bênes 网络继续保留为较大端口数的一一置换研究模块，不接入当前数据通路。当前
-baseline 避免把它无条件串在每条普通 ALU 路径上；最终是否需要更紧耦合的网络，
-由时序、面积和路由 trace 比较。
+Bênes 网络继续保留为较大端口数的一一置换研究模块，不接入当前产品数据通路。当前
+baseline 避免把它无条件串在每条普通 ALU 路径上；若未来 workload 重新证明寄存器
+全域交换有价值，应按新的单 PC 资源合同评估，而不是恢复旧 route-wave 调度。
 
 对于 `N=2^k、N>=2` 个端口，二进制 Bênes 网络包含 `2*log2(N)-1` 级，每级 `N/2`
 个 2×2 switch。它能实现任意排列，但有两个性质使它不适合承载动态 gather：控制字
 不是"每个输出选择哪个输入"，需要由目标排列反求合法路由；普通交换单元也不提供
-复制语义。Omega/Bênes 仍只是拓扑研究对象；当前没有选择 Omega 作为跨组实现。
-跨组接入已延期。临时功能基线是能直接实现 `dst[i]=src[index[i]]` 的 16×16 full
-crossbar；4-group word/local 层次和 time-muxed byte selector 是新的多拍候选，理由和
-非声明范围见[路由](routing.md)。
+复制语义。Omega/Bênes 仍只是拓扑研究对象；当前没有选择 Omega 作为跨组实现，也没有
+产品 `dst[i]=src[index[i]]` register instruction。跨 group 的数据相关选择由上述
+indexed-memory gather/scatter 表达；边界和 trade-off 见[路由](routing.md)。
 
 ## 尚未决定
 

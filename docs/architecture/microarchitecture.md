@@ -18,8 +18,9 @@ dispatcher。`simd_cluster_exec` 又在其外加入 per-group ingress、四个 w
 tracker、reject buffer 和 result collector，形成 full-decoded EXEC 参考闭环。
 profile-v0 canonical expander 与 strict class router 已在更外层的 controller wrapper
 接入；byte-PC source、control-store model、multi-record framer、slot-0 action adapter
-与 strict EXEC/END program wrapper 也已接通。三 record admission legality/resource
-metadata、ordered action window/class-engine binding 和 queue-head late-decode 集成仍未接通。
+与 strict EXEC/MEMORY/CONTROL program wrapper 也已接通。当前产品路径是单 PC、单
+issue slot、global single-active；多 record 并发 admission、ordered action window 和
+queue-head late-decode 集成仍是吞吐实验，不属于当前执行 profile。
 已经实现的 `simd_group_wrapper` 也位于本叶数据
 通路图外，负责 decoded EXEC、state-write 与 VRF state-read ready/valid、状态访问
 仲裁和独立返回缓存，见
@@ -29,9 +30,10 @@ metadata、ordered action window/class-engine binding 和 queue-head late-decode
 前者聚合 EXEC group completion 并保留 expected-result 生命期，后者捕获
 per-group result 并产生 retire pulse，二者已接入 cluster execution integration。
 `vsp_vector_memory_engine` 同样位于图外；它是 VRF-only blocking engine，
-每次处理一个 command 和一个 outstanding memory beat。LOAD 经 VRF state-write
-subrequest 提交，STORE 收齐 VRF read subrequest 的 completion 与 data response 后再写
-memory。`vsp_cluster_vrf_arbiter` 已把这些 subrequest 接到 cluster wrapper；
+每次处理一个 command 和一个 outstanding memory beat。它同时支持 unit-stride 和
+`INDEX_U8`：LOAD/gather 经 VRF state-write subrequest 提交，STORE/scatter 收齐 VRF
+read subrequest 的 completion 与 data response 后再写 memory。
+`vsp_cluster_vrf_arbiter` 已把这些 subrequest 接到 cluster wrapper；
 `vsp_cluster_memory_wrapper` 再把 vector memory engine 与 full-decoded EXEC integration 组合成
 decoded reference integration。`vsp_cluster_controller_wrapper` 在其外增加一个统一
 action 入口、profile-v0 EXEC 展开、strict program ordering、统一 completion 和
@@ -152,11 +154,10 @@ RF read -> optional route / operand mux -> lane execute -> optional reduce
 
 尚未实现的主要结构包括：
 
-- admission legality/cached resource metadata、queue-head canonical expansion，以及把
-  strict slot-0 已接通的 CONTROL-state/MEMORY resolved-base 语义迁移到 action window；
-  per-context 32-bit state RF、`SMOVI/SADD/SADDI` 和 encoded `VLOAD/VSTORE` 已在
-  global-single-active program closure 中闭环，独立并发 frontend 的 slot 仍是 opaque
-  shadow；
+- 若测量后需要并发 admission：cached resource/dependency metadata、queue-head canonical
+  expansion，以及把 strict slot-0 的 CONTROL-state/MEMORY resolved-base 语义迁移到
+  action window；当前 32-bit state RF、`SMOVI/SADD/SADDI` 和 encoded
+  `VLOAD/VSTORE/VGATHER/VSCATTER` 已在 global-single-active program closure 中闭环；
 - per-context/concurrent class scheduling、长期资源预留、动态 owner table、一般化
   barrier/admin 与 host completion；当前 strict controller 已提供单 active action 的
   class routing、ordered error/completion 汇聚和 `END`；

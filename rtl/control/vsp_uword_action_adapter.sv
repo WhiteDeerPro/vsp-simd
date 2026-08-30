@@ -87,6 +87,8 @@ module vsp_uword_action_adapter #(
   input  logic [MEM_EADDR_W-1:0]                    memory_base_read_data_i,
   input  logic                                      memory_base_read_legal_i,
   output logic [vsp_pkg::VSP_MEM_OP_W-1:0]         action_memory_op_o,
+  output logic [vsp_pkg::VSP_MEM_ADDR_MODE_W-1:0]
+                                                     action_memory_addr_mode_o,
   output logic [vsp_pkg::VSP_MEM_ADDR_SPACE_W-1:0]
                                                      action_memory_addr_space_o,
   output logic [vsp_uword_pkg::VSP_MEMORY_UWORD_ADDR_CONTEXT_W-1:0]
@@ -96,6 +98,8 @@ module vsp_uword_action_adapter #(
                                                      action_memory_eaddr_offset_o,
   output logic [vsp_uword_pkg::VSP_MEMORY_UWORD_VRF_ROW_W-1:0]
                                                      action_memory_vrf_row_o,
+  output logic [vsp_uword_pkg::VSP_MEMORY_UWORD_VRF_ROW_W-1:0]
+                                                     action_memory_index_vrf_row_o,
   output logic [vsp_uword_pkg::VSP_MEMORY_UWORD_SPAN_BYTES_W-1:0]
                                                      action_memory_span_bytes_o,
 
@@ -106,6 +110,7 @@ module vsp_uword_action_adapter #(
 );
   import vsp_action_pkg::*;
   import vsp_exec_uword_pkg::*;
+  import vsp_pkg::*;
   import vsp_uword_pkg::*;
 
   logic [CONTEXT_W-1:0] context_q;
@@ -134,12 +139,30 @@ module vsp_uword_action_adapter #(
   logic memory_legal;
   logic [VSP_EXEC_UWORD_ERROR_W-1:0] memory_error;
   logic [vsp_pkg::VSP_MEM_OP_W-1:0] memory_op;
+  logic [vsp_pkg::VSP_MEM_ADDR_MODE_W-1:0] memory_addr_mode;
   logic [vsp_pkg::VSP_MEM_ADDR_SPACE_W-1:0] memory_addr_space;
   logic [VSP_MEMORY_UWORD_ADDR_CONTEXT_W-1:0] memory_addr_context;
   logic [MEM_EADDR_W-1:0] memory_base_eaddr;
   logic signed [VSP_MEMORY_UWORD_OFFSET_W-1:0] memory_eaddr_offset;
   logic [VSP_MEMORY_UWORD_VRF_ROW_W-1:0] memory_vrf_row;
+  logic [VSP_MEMORY_UWORD_VRF_ROW_W-1:0] memory_index_vrf_row;
   logic [VSP_MEMORY_UWORD_SPAN_BYTES_W-1:0] memory_span_bytes;
+  logic [VSP_MEMORY_UWORD_SPAN_BYTES_W-1:0]
+      full_selected_span_bytes;
+
+  // UNIT_STRIDE code zero is the only MEMORY field whose meaning depends on
+  // the launch envelope.  Resolve it here, after group_mask_q has captured
+  // that envelope, so every downstream command carries an ordinary byte
+  // count.  INDEX_U8 also decodes span zero but must keep it unchanged.
+  always_comb begin : resolve_full_selected_span
+    int unsigned selected_groups;
+    selected_groups = 0;
+    for (int group = 0; group < GROUP_COUNT; group++) begin
+      if (group_mask_q[group]) selected_groups++;
+    end
+    full_selected_span_bytes = VSP_MEMORY_UWORD_SPAN_BYTES_W'(
+        selected_groups * VSP_MEMORY_UWORD_GROUP_BYTES);
+  end
 
   assign header = record_words_i[0 +: VSP_UWORD_W];
   assign expected_exec_extension =
@@ -192,11 +215,13 @@ module vsp_uword_action_adapter #(
     .legal_o(memory_legal),
     .error_cause_o(memory_error),
     .op_o(memory_op),
+    .addr_mode_o(memory_addr_mode),
     .addr_space_o(memory_addr_space),
     .addr_context_o(memory_addr_context),
     .base_eaddr_o(memory_base_eaddr),
     .eaddr_offset_o(memory_eaddr_offset),
     .vrf_row_o(memory_vrf_row),
+    .index_vrf_row_o(memory_index_vrf_row),
     .span_bytes_o(memory_span_bytes)
   );
 
@@ -221,11 +246,13 @@ module vsp_uword_action_adapter #(
     action_state_rs2_o = '0;
     action_state_imm_o = '0;
     action_memory_op_o = '0;
+    action_memory_addr_mode_o = VSP_MEM_ADDR_MODE_UNIT_STRIDE;
     action_memory_addr_space_o = '0;
     action_memory_addr_context_o = '0;
     action_memory_base_eaddr_o = '0;
     action_memory_eaddr_offset_o = '0;
     action_memory_vrf_row_o = '0;
+    action_memory_index_vrf_row_o = '0;
     action_memory_span_bytes_o = '0;
     action_start_pc_o = record_start_pc_i;
     action_is_control_end_o = control_is_end;
@@ -257,12 +284,19 @@ module vsp_uword_action_adapter #(
           action_legal_o = memory_legal;
           action_decode_error_o = DECODE_ERROR_W'(memory_error);
           action_memory_op_o = memory_op;
+          action_memory_addr_mode_o = memory_addr_mode;
           action_memory_addr_space_o = memory_addr_space;
           action_memory_addr_context_o = memory_addr_context;
           action_memory_base_eaddr_o = memory_base_eaddr;
           action_memory_eaddr_offset_o = memory_eaddr_offset;
           action_memory_vrf_row_o = memory_vrf_row;
-          action_memory_span_bytes_o = memory_span_bytes;
+          action_memory_index_vrf_row_o = memory_index_vrf_row;
+          if ((memory_addr_mode == VSP_MEM_ADDR_MODE_UNIT_STRIDE) &&
+              (memory_span_bytes == '0)) begin
+            action_memory_span_bytes_o = full_selected_span_bytes;
+          end else begin
+            action_memory_span_bytes_o = memory_span_bytes;
+          end
         end
 
         VSP_ACTION_CLASS_CONTROL: begin
@@ -330,7 +364,7 @@ module vsp_uword_action_adapter #(
       $error("VREGS must fit the current four-bit profile");
     if (MAX_SPAN_BYTES < 1 ||
         MAX_SPAN_BYTES > VSP_MEMORY_UWORD_MAX_SPAN_BYTES)
-      $error("MAX_SPAN_BYTES must fit the current five-bit profile");
+      $error("MAX_SPAN_BYTES must fit the resolved 1..64-byte profile");
     if (DECODE_ERROR_W != VSP_EXEC_UWORD_ERROR_W)
       $error("adapter diagnostics require EXEC-uword error width");
   end

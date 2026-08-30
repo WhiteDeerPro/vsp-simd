@@ -152,5 +152,5 @@ NCLIP_S(-180, 0) = -128
 - 是否增加 ties-to-even、向零、向负无穷和 round-to-odd；
 - 未来编码中如何分配立即数字段，以及是否再加入标量寄存器源；
 - 最终 compact uword 如何编码立即数和 shared align；
-- narrow 是否与跨组 gather/pack 融合；
+- narrow 是否与 MEMORY-side indexed gather/scatter 或 memory pack 融合；
 - `SELECT` 使用三源读，还是由 masked move 合成。

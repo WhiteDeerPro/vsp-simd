@@ -22,6 +22,8 @@ constexpr uint8_t kStatusExec = 3;
 constexpr uint8_t kStatusMemory = 4;
 constexpr uint8_t kMemLoad = 0;
 constexpr uint8_t kMemStore = 1;
+constexpr uint8_t kMemUnitStride = 0;
+constexpr uint8_t kMemIndexU8 = 1;
 constexpr uint8_t kAddrLocal = 0;
 constexpr uint8_t kFaultNone = 0;
 constexpr uint8_t kFaultTranslation = 1;
@@ -72,9 +74,11 @@ struct Action {
   bool exec_extension_valid = false;
   uint32_t exec_extension = 0;
   uint8_t memory_op = kMemLoad;
+  uint8_t memory_addr_mode = kMemUnitStride;
   uint32_t memory_base = 0;
   int16_t memory_offset = 0;
   uint8_t memory_row = 0;
+  uint8_t memory_index_row = 0;
   uint8_t memory_span = 0;
 };
 
@@ -118,6 +122,15 @@ Action make_memory(uint8_t op, uint8_t context, uint8_t tag,
   return action;
 }
 
+Action make_indexed_memory(uint8_t op, uint8_t context, uint8_t tag,
+                           uint32_t base, uint8_t mask, uint8_t row,
+                           uint8_t index_row) {
+  Action action = make_memory(op, context, tag, base, mask, row, 0);
+  action.memory_addr_mode = kMemIndexU8;
+  action.memory_index_row = index_row;
+  return action;
+}
+
 Action make_add_immediate(uint8_t tag, uint8_t src, uint8_t dst,
                           uint8_t immediate,
                           bool export_narrow = false) {
@@ -138,14 +151,14 @@ Action make_add_immediate(uint8_t tag, uint8_t src, uint8_t dst,
   return action;
 }
 
-Action make_route_gather(uint8_t tag, uint8_t source, uint8_t index,
-                         uint8_t destination) {
+Action make_former_route_format(uint8_t tag, uint8_t source, uint8_t index,
+                                uint8_t destination, uint8_t mask) {
   Action action;
   action.action_class = kClassExec;
   action.tag = tag;
-  action.group_mask = 0xf;
-  // EXEC vector-route format D: source and index are distributed VRF rows;
-  // destination is written after the complete 16-byte source/index snapshot.
+  action.group_mask = mask;
+  // Format D used to name a register-route operation. It is deliberately
+  // undefined in the canonical EXEC profile and must now reject in order.
   action.exec_base = (uint32_t{0xd} << 28) |
                      (uint32_t(source & 0xfU) << 22) |
                      (uint32_t(destination & 0xfU) << 18) |
@@ -238,11 +251,13 @@ void clear_action_inputs(Vvsp_cluster_controller_wrapper& dut) {
   dut.action_exec_extension_valid_i = 0;
   dut.action_exec_extension_word_i = 0;
   dut.action_memory_op_i = kMemLoad;
+  dut.action_memory_addr_mode_i = kMemUnitStride;
   dut.action_memory_addr_space_i = kAddrLocal;
   dut.action_memory_addr_context_i = 0x5a;
   dut.action_memory_base_eaddr_i = 0;
   dut.action_memory_eaddr_offset_i = 0;
   dut.action_memory_vrf_row_i = 0;
+  dut.action_memory_index_vrf_row_i = 0;
   dut.action_memory_span_bytes_i = 0;
 }
 
@@ -261,11 +276,13 @@ void drive_action(Vvsp_cluster_controller_wrapper& dut,
   dut.action_exec_extension_valid_i = action.exec_extension_valid;
   dut.action_exec_extension_word_i = action.exec_extension;
   dut.action_memory_op_i = action.memory_op;
+  dut.action_memory_addr_mode_i = action.memory_addr_mode;
   dut.action_memory_addr_space_i = kAddrLocal;
   dut.action_memory_addr_context_i = 0x5a;
   dut.action_memory_base_eaddr_i = action.memory_base;
   dut.action_memory_eaddr_offset_i = uint16_t(action.memory_offset);
   dut.action_memory_vrf_row_i = action.memory_row;
+  dut.action_memory_index_vrf_row_i = action.memory_index_row;
   dut.action_memory_span_bytes_i = action.memory_span;
 }
 
@@ -537,32 +554,33 @@ int main(int argc, char** argv) {
   constexpr uint32_t kStoreBase = 0x80;
   const std::array<uint32_t, 4> source_words = {
       0x04030201U, 0x281e140aU, 0xfdfcfbfaU, 0xff800700U};
-  const std::array<uint32_t, 4> expected_words = {
-      0x04050607U, 0x0d17212bU, 0xfdfeff00U, 0x030a8302U};
-  const std::array<uint32_t, 4> route_index_words = {
-      0x00010203U, 0x04050607U, 0x08090a0bU, 0x0c0d0e0fU};
+  // Little-endian index bytes are {15, 9, 5, 0}. The indexed load gathers
+  // those source bytes, ADDI transforms them, and indexed store scatters the
+  // result back to the same byte offsets in a different address window.
+  constexpr uint32_t kIndexWord = 0x0005090fU;
   for (unsigned group = 0; group < source_words.size(); ++group)
     store_word(memory.bytes, kLoadBase + 4 * group, source_words[group], 0xf);
-  for (unsigned group = 0; group < route_index_words.size(); ++group)
-    store_word(memory.bytes, kIndexBase + 4 * group,
-               route_index_words[group], 0xf);
+  store_word(memory.bytes, kIndexBase, kIndexWord, 0xf);
+
+  Action gathered_add = make_add_immediate(0x42, 2, 3, 3);
+  gathered_add.group_mask = 0x1;
 
   const std::vector<Action> success_actions = {
-      make_memory(kMemLoad, 0, 0x31, kLoadBase, 0xf, 2, 16),
-      make_memory(kMemLoad, 0, 0x38, kIndexBase, 0xf, 5, 16),
-      make_add_immediate(0x42, 2, 3, 3),
-      make_route_gather(0x4a, 3, 5, 4),
-      make_memory(kMemStore, 0, 0x53, kStoreBase, 0xf, 4, 16),
+      make_memory(kMemLoad, 0, 0x31, kIndexBase, 0x1, 5, 4),
+      make_former_route_format(0x38, 3, 5, 4, 0x1),
+      make_indexed_memory(kMemLoad, 0, 0x3a, kLoadBase, 0x1, 2, 5),
+      gathered_add,
+      make_indexed_memory(kMemStore, 0, 0x53, kStoreBase, 0x1, 3, 5),
       make_end(0, 0x64)};
   const std::vector<ExpectedCompletion> success_expected = {
       {kClassMemory, 0, 0x31, kStatusOk, 0, false, 0, false,
-       kMemLoad, kMemCplOk, kFaultNone, 0, 0xf, 0xf, 0, 16, false},
-      {kClassMemory, 0, 0x38, kStatusOk, 0, false, 0, false,
-       kMemLoad, kMemCplOk, kFaultNone, 0, 0xf, 0xf, 0, 16, false},
-      {kClassExec, 0, 0x42, kStatusOk, 0, false, 0xf, false},
-      {kClassExec, 0, 0x4a, kStatusOk, 0, false, 0xf, false},
+       kMemLoad, kMemCplOk, kFaultNone, 0, 0x1, 0x1, 0, 4, false},
+      {kClassExec, 0, 0x38, kStatusDecode, kUwordBadFormat, false},
+      {kClassMemory, 0, 0x3a, kStatusOk, 0, false, 0, false,
+       kMemLoad, kMemCplOk, kFaultNone, 0, 0x1, 0x1, 0, 4, false},
+      {kClassExec, 0, 0x42, kStatusOk, 0, false, 0x1, false},
       {kClassMemory, 0, 0x53, kStatusOk, 0, false, 0, false,
-       kMemStore, kMemCplOk, kFaultNone, 0, 0xf, 0xf, 0, 16, false},
+       kMemStore, kMemCplOk, kFaultNone, 0, 0x1, 0x1, 0, 4, false},
       {kClassControl, 0, 0x64, kStatusOk, 0, true}};
   const StreamResult success =
       run_stream(dut, memory, success_actions, success_expected, global_cycle);
@@ -575,15 +593,20 @@ int main(int argc, char** argv) {
                   success.completion_cycles[index - 1]);
   }
   expect_eq("one successful program-done pulse", 1, success.done_pulses);
-  expect_eq("LOAD request count", 8, memory.loads);
+  expect_eq("LOAD request count", 5, memory.loads);
   expect_eq("STORE request count", 4, memory.stores);
   expect_eq("memory request backpressure occurred", 1,
             memory.request_stalls != 0);
-  for (unsigned group = 0; group < expected_words.size(); ++group) {
-    expect_eq("stored transformed group " + std::to_string(group),
-              expected_words[group],
-              load_word(memory.bytes, kStoreBase + 4 * group));
-  }
+  expect_eq("scatter result at index 15", 0x02,
+            memory.bytes[kStoreBase + 15]);
+  expect_eq("scatter result at index 9", 0xfe,
+            memory.bytes[kStoreBase + 9]);
+  expect_eq("scatter result at index 5", 0x17,
+            memory.bytes[kStoreBase + 5]);
+  expect_eq("scatter result at index 0", 0x04,
+            memory.bytes[kStoreBase]);
+  expect_eq("scatter leaves an unselected byte unchanged", 0,
+            memory.bytes[kStoreBase + 1]);
 
   // An illegal encoded EXEC becomes one ordered local completion and has no
   // execution or memory side effect.  fmt=0 is reserved in profile v0.
@@ -606,13 +629,15 @@ int main(int argc, char** argv) {
 
   // MEMORY ownership is rejected before the memory engine sees a command.
   const uint64_t requests_before_owner = memory.requests;
+  dut.group_owner_valid_i = 0xe;
   const std::vector<Action> owner_actions = {
-      make_memory(kMemLoad, 1, 0x72, 0xc0, 0x1, 4, 4),
+      make_memory(kMemLoad, 0, 0x72, 0xc0, 0x1, 4, 4),
       make_end(0, 0x73)};
   const std::vector<ExpectedCompletion> owner_expected = {
-      {kClassMemory, 1, 0x72, kStatusOwner},
+      {kClassMemory, 0, 0x72, kStatusOwner},
       {kClassControl, 0, 0x73, kStatusOk, 0, true}};
   run_stream(dut, memory, owner_actions, owner_expected, global_cycle);
+  dut.group_owner_valid_i = 0xf;
   expect_eq("owner reject has no dmem side effect", requests_before_owner,
             memory.requests);
 
@@ -650,7 +675,7 @@ int main(int argc, char** argv) {
   const StreamResult fault_result =
       run_stream(dut, memory, fault_actions, fault_expected, global_cycle);
   expect_eq("fault stream terminates once", 1, fault_result.done_pulses);
-  expect_eq("faulting LOAD issued two beats", 10, memory.loads);
+  expect_eq("faulting LOAD issued two beats", 7, memory.loads);
   memory.fault_address = std::numeric_limits<uint32_t>::max();
   memory.fault_cause = kFaultNone;
 
@@ -770,8 +795,8 @@ int main(int argc, char** argv) {
 
   dut.final();
   std::cout << "PASS: VSP cluster controller " << checks
-            << " checks across decoded LOAD -> encoded ADDI/vector ROUTE "
-               "-> decoded STORE -> END, "
+            << " checks across indexed gather/scatter, encoded ADDI, "
+               "former Format-D rejection, END, "
                "ordering, backpressure, owner/decode errors and memory "
                "faults\n";
   return 0;

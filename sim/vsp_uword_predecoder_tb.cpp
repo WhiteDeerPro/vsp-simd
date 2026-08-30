@@ -26,10 +26,6 @@ struct Record {
   bool major_defined = false;
   uint8_t dispatch_class = kUndefined;
   int start = 0;
-  bool route = false;
-  uint8_t route_mode = 0;
-  bool barrier_before = false;
-  bool route_pair_required = false;
   std::vector<uint32_t> words;
 };
 
@@ -52,7 +48,7 @@ void expect(bool condition, const std::string& message) {
 }
 
 bool exec_major(uint8_t major) {
-  return (major >= 0x1 && major <= 0xa) || major == 0xd;
+  return major >= 0x1 && major <= 0xa;
 }
 
 bool major_defined(uint32_t word) {
@@ -116,11 +112,6 @@ ModelResult model(const std::array<uint32_t, kBundleWords>& words,
     record.major_defined = major_defined(header);
     record.dispatch_class = dispatch_class(header);
     record.start = cursor;
-    record.route = (header >> 28) == 0xd;
-    record.route_mode = record.route ? ((header >> 26) & 0x3U) : 0;
-    record.barrier_before = record.route && record.route_mode != 0;
-    record.route_pair_required =
-        record.route && (record.route_mode == 1 || record.route_mode == 2);
     for (int i = 0; i < required; ++i)
       record.words.push_back(words[cursor + i]);
     result.records.push_back(record);
@@ -167,14 +158,6 @@ void check(const Vvsp_uword_predecoder& dut, const ModelResult& expected,
         static_cast<int>((dut.record_word_count_o >> (record * 3)) & 0x7U);
     const bool actual_defined =
         ((dut.record_major_defined_o >> record) & 1U) != 0;
-    const bool actual_route = ((dut.record_route_o >> record) & 1U) != 0;
-    const uint8_t actual_route_mode = static_cast<uint8_t>(
-        (dut.record_route_io_mode_o >> (record * 2)) & 0x3U);
-    const bool actual_barrier =
-        ((dut.record_barrier_before_o >> record) & 1U) != 0;
-    const bool actual_pair_required =
-        ((dut.record_route_pair_required_o >> record) & 1U) != 0;
-
     if (expect_valid) {
       const Record& item = expected.records[record];
       expect(actual_class == item.dispatch_class,
@@ -185,14 +168,6 @@ void check(const Vvsp_uword_predecoder& dut, const ModelResult& expected,
              prefix.str() + "record length mismatch");
       expect(actual_defined == item.major_defined,
              prefix.str() + "header-defined mismatch");
-      expect(actual_route == item.route,
-             prefix.str() + "route predecode mismatch");
-      expect(actual_route_mode == item.route_mode,
-             prefix.str() + "route mode mismatch");
-      expect(actual_barrier == item.barrier_before,
-             prefix.str() + "route barrier mismatch");
-      expect(actual_pair_required == item.route_pair_required,
-             prefix.str() + "route pair-required mismatch");
       for (int word = 0; word < kMaxRecordWords; ++word) {
         const uint32_t expected_word =
             word < static_cast<int>(item.words.size()) ? item.words[word] : 0;
@@ -201,8 +176,7 @@ void check(const Vvsp_uword_predecoder& dut, const ModelResult& expected,
       }
     } else {
       expect(actual_class == 0 && actual_start == 0 && actual_count == 0 &&
-                 !actual_defined && !actual_route && actual_route_mode == 0 &&
-                 !actual_barrier && !actual_pair_required,
+                 !actual_defined,
              prefix.str() + "unused record metadata is not zero");
       for (int word = 0; word < kMaxRecordWords; ++word)
         expect(output_record_word(dut, record, word) == 0,
@@ -274,19 +248,14 @@ void test_directed(Vvsp_uword_predecoder& dut) {
            3, "complete three-word CONTROL record");
   run_case(dut, {0, 0, 0, 0}, 0, "empty bundle");
 
-  // Format-D mode is scheduling metadata available before full EXEC decode.
-  // LOCAL is ordinary; every DEP mode is a predecessor barrier, and only
-  // the two half roles require a rendezvous pair.
+  // Former Format-D values remain one-word records for ordered error
+  // retirement, but carry no EXEC class or route scheduling interpretation.
   run_case(dut, {0xd0000000U, 0xd4000000U, 0xd8000000U, 0xdc000000U},
-           4, "four route dependency modes");
-  expect(dut.record_route_o == 0xfU,
-         "route mode table did not identify all routes");
-  expect(dut.record_route_io_mode_o == 0xe4U,
-         "route mode table packing mismatch");
-  expect(dut.record_barrier_before_o == 0xeU,
-         "nonzero route modes must be predecessor barriers");
-  expect(dut.record_route_pair_required_o == 0x6U,
-         "only DEP_IN and DEP_OUT require pairing");
+           4, "four undefined format-D records");
+  expect(dut.record_major_defined_o == 0,
+         "format D must not be reported as defined");
+  expect(dut.record_class_o == 0xffU,
+         "format D must dispatch as undefined");
 }
 
 void test_structural_table(Vvsp_uword_predecoder& dut) {
@@ -311,7 +280,7 @@ void test_structural_table(Vvsp_uword_predecoder& dut) {
       {0x80000000U, 1, "WADD_WSUB"},
       {0x90000000U, 1, "COMPACT"},
       {0xa0000000U, 1, "MRF_LOGIC"},
-      {0xd0000000U, 1, "ROUTE"},
+      {0xd0000000U, 1, "undefined major D"},
       {0xf0000000U, 1, "undefined major"},
   }};
 
@@ -345,7 +314,7 @@ void test_structural_table(Vvsp_uword_predecoder& dut) {
     }
   }
 
-  for (uint32_t major : {0U, 0xeU, 0xfU}) {
+  for (uint32_t major : {0U, 0xdU, 0xeU, 0xfU}) {
     run_case(dut, {(major << 28) | 0x0fffffffU, 0x80000000U, 0, 0},
              2, "undefined major forward progress " + std::to_string(major));
   }

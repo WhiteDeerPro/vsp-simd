@@ -23,9 +23,10 @@ collector 组成可运行的 full-decoded 参考闭环。`simd_issue_decode_stag
 每 issue slot 一项、可背压的 late-decode holding 边界，但其 decode hook 仍由参考
 driver 提供；profile-v0 compact EXEC parser/expander 与 standalone uword bundle
 framing/class predecoder 已实现；独立 program frontend 又提供 control-store 行为模型、
-线性 byte PC 和跨 bundle assembler。另一路 strict program wrapper 已接入 multi-record
-framer、launch envelope、slot-0 action adapter 与 EXEC/END controller；三 record admission
-legality/cached metadata、ordered window/class-engine binding 与 queue-head 接入尚未实现，见
+线性 byte PC 和跨 bundle assembler。strict program wrapper 已接入 multi-record
+framer、launch envelope、slot-0 action adapter 与 EXEC/MEMORY/CONTROL controller；当前
+只消费最老 record，并保持 global single-active。多 record 并发 admission、dependency
+window 与 queue-head 接入尚未实现，见
 [指令交付](../design/instruction-delivery.md)。
 `vsp_cluster_memory_wrapper` 已把 VRF-only blocking `vsp_vector_memory_engine` 经共享
 VRF arbiter 接到 wrapper/cluster state-read/write endpoint，形成 decoded
@@ -118,14 +119,16 @@ canonical bundle 见[数据通路](datapath.md)与
 
 以下问题需要由代表性算法和测量结果驱动，不能从“VSP 应该是什么”倒推：
 
-- SIMD4 group 数、跨组 gather 网络规模和上层向量长度；
+- 从当前 4-group/16-byte 实例扩展并验证到 16-group/64-byte profile bound 后的 PPA 与带宽；
 - 是否值得为当前 byte-only 的饱和、平均、绝对差、绝对值、乘法和宽 ARF
   操作另行增加宽元素变体；当前控制契约不把它们解释为 HALF/WORD；
 - 寄存器文件端口、流水级数、发射宽度和旁路；
 - 当前 strict single-active common class ordering 之上的 per-context concurrency、
   resource-aware scheduling、多 outstanding、二维地址、物理局部 SRAM、DMA、
   地址空间/翻译 adapter 与系统集成；
-- 跨 SIMD group 的任意 shuffle、gather/scatter，以及跨组压缩流拼接；
+- indexed-memory gather/scatter 的 coalescing、outstanding 深度与 cache/local-memory 组织；
+- 若未来重新提出跨 SIMD group 的 register shuffle，必须作为新的、具有明确单 PC
+  资源合同的 feature 评估；当前产品路径不提供它；
 - 稀疏 mask 的存储方式及其调度成本；
 - 是否增加其他定点舍入模式、异常和统计状态；
 - 完整 ISA 编码与软件工具链。
@@ -151,13 +154,14 @@ action controller 及 standalone uword bundle predecoder 已完成参考实现�
 `dmem_*` 外用 local-memory model 验证 encoded `SMOVI/SADD/SADDI` → `VLOAD` →
 profile-v0 encoded EXEC → `VSTORE` → `CONTROL.END`，包括
 完成背压、owner/decode error、EXEC child reject、result staging 和 memory fault；
-这不表示 local SRAM RTL、最终 MEMORY ISA 或完整 sequencer 已完成。当前工作
-计划继续实现三 record admission metadata/queue-head integration、把 strict path 的
-resolved address/state dependency 迁入 action window、动态 owner/resource 状态和
-loop/redirect；
+这不表示 local SRAM RTL、最终 MEMORY ISA 或完整 sequencer 已完成。当前工作先保持
+单 PC、单 issue slot、global single-active 基线，补齐 4-group/16-byte 和
+16-group/64-byte indexed-memory 程序，并实现 loop/redirect 的明确 flush 语义；只有
+trace 表明 action admission 是瓶颈时，才研究 dependency window、动态
+owner/resource 状态和计算/搬运重叠；
 control-store/byte-PC/multi-framer/slot-0 action adapter 已有 strict reference closure。
 独立 I-side/D-side protocol model 及其预期 cache 边界见
-[内存模型边界](memory-hierarchy.md)。随后再根据结果决定物理 memory hierarchy、DMA、跨组交换与
+[内存模型边界](memory-hierarchy.md)。随后再根据结果决定物理 memory hierarchy、DMA 与
 进一步 lane feature 的顺序。见
 [实验路线](../design/development-roadmap.md)。
 

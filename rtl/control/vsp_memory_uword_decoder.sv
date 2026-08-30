@@ -33,6 +33,7 @@ module vsp_memory_uword_decoder #(
   output logic [vsp_exec_uword_pkg::VSP_EXEC_UWORD_ERROR_W-1:0]
                                                      error_cause_o,
   output logic [vsp_pkg::VSP_MEM_OP_W-1:0]         op_o,
+  output logic [vsp_pkg::VSP_MEM_ADDR_MODE_W-1:0]  addr_mode_o,
   output logic [vsp_pkg::VSP_MEM_ADDR_SPACE_W-1:0] addr_space_o,
   output logic [vsp_uword_pkg::VSP_MEMORY_UWORD_ADDR_CONTEXT_W-1:0]
                                                      addr_context_o,
@@ -41,6 +42,8 @@ module vsp_memory_uword_decoder #(
                                                      eaddr_offset_o,
   output logic [vsp_uword_pkg::VSP_MEMORY_UWORD_VRF_ROW_W-1:0]
                                                      vrf_row_o,
+  output logic [vsp_uword_pkg::VSP_MEMORY_UWORD_VRF_ROW_W-1:0]
+                                                     index_vrf_row_o,
   output logic [vsp_uword_pkg::VSP_MEMORY_UWORD_SPAN_BYTES_W-1:0]
                                                      span_bytes_o
 );
@@ -52,13 +55,16 @@ module vsp_memory_uword_decoder #(
   logic [VSP_UWORD_W-1:0] offset_word;
   logic [VSP_UWORD_MAJOR_W-1:0] raw_major;
   logic [VSP_MEM_OP_W-1:0] raw_op;
+  logic [VSP_MEM_ADDR_MODE_W-1:0] raw_addr_mode;
   logic [VSP_MEM_ADDR_SPACE_W-1:0] raw_addr_space;
   logic [VSP_MEMORY_UWORD_ADDR_CONTEXT_W-1:0] raw_addr_context;
   logic [VSP_MEMORY_UWORD_STATE_REG_W-1:0] raw_state_reg;
   logic [VSP_MEMORY_UWORD_VRF_ROW_W-1:0] raw_vrf_row;
-  logic [VSP_MEMORY_UWORD_SPAN_BYTES_W-1:0] raw_span_bytes;
+  logic [VSP_MEMORY_UWORD_VRF_ROW_W-1:0] raw_index_vrf_row;
+  logic [VSP_MEMORY_UWORD_SPAN_CODE_W-1:0] raw_span_code;
   logic signed [VSP_MEMORY_UWORD_OFFSET_W-1:0] raw_offset;
 
+  logic indexed_mode;
   logic format_ok;
   logic shape_ok;
   logic reserved_ok;
@@ -66,7 +72,9 @@ module vsp_memory_uword_decoder #(
   logic addr_space_ok;
   logic state_reg_ok;
   logic vrf_row_ok;
+  logic index_vrf_row_ok;
   logic span_ok;
+  logic memory_fields_ok;
   logic address_ok;
   logic [VSP_EXEC_UWORD_ERROR_W-1:0] selected_error;
 
@@ -74,6 +82,7 @@ module vsp_memory_uword_decoder #(
   assign offset_word = record_words_i[VSP_UWORD_W +: VSP_UWORD_W];
   assign raw_major = header[VSP_UWORD_W-1 -: VSP_UWORD_MAJOR_W];
   assign raw_op = header[VSP_MEMORY_UWORD_OP_BIT];
+  assign raw_addr_mode = header[VSP_MEMORY_UWORD_ADDR_MODE_BIT];
   assign raw_addr_space =
       header[VSP_MEMORY_UWORD_ADDR_SPACE_MSB:
              VSP_MEMORY_UWORD_ADDR_SPACE_LSB];
@@ -86,10 +95,14 @@ module vsp_memory_uword_decoder #(
   assign raw_vrf_row =
       header[VSP_MEMORY_UWORD_VRF_ROW_MSB:
              VSP_MEMORY_UWORD_VRF_ROW_LSB];
-  assign raw_span_bytes =
+  assign raw_index_vrf_row =
+      header[VSP_MEMORY_UWORD_INDEX_VRF_ROW_MSB:
+             VSP_MEMORY_UWORD_INDEX_VRF_ROW_LSB];
+  assign raw_span_code =
       header[VSP_MEMORY_UWORD_SPAN_BYTES_MSB:
              VSP_MEMORY_UWORD_SPAN_BYTES_LSB];
   assign raw_offset = offset_word[VSP_MEMORY_UWORD_OFFSET_W-1:0];
+  assign indexed_mode = raw_addr_mode == VSP_MEM_ADDR_MODE_INDEX_U8;
 
   assign format_ok =
       (raw_major == VSP_UWORD_MAJOR_MEMORY) &&
@@ -99,7 +112,8 @@ module vsp_memory_uword_decoder #(
           VSP_UWORD_WORD_COUNT_W'(VSP_MEMORY_UWORD_RECORD_WORDS)) &&
       (record_present_word_count_i ==
           VSP_UWORD_WORD_COUNT_W'(VSP_MEMORY_UWORD_RECORD_WORDS));
-  assign reserved_ok = !header[VSP_MEMORY_UWORD_RESERVED_BIT];
+  assign reserved_ok = !indexed_mode ||
+                       !header[VSP_MEMORY_UWORD_INDEX_RESERVED_BIT];
   assign offset_ok =
       offset_word[VSP_UWORD_W-1:VSP_MEMORY_UWORD_OFFSET_W] ==
           {(VSP_UWORD_W-VSP_MEMORY_UWORD_OFFSET_W){
@@ -107,17 +121,22 @@ module vsp_memory_uword_decoder #(
   assign addr_space_ok = vsp_mem_addr_space_defined(raw_addr_space);
   assign state_reg_ok = int'(raw_state_reg) < STATE_REGS;
   assign vrf_row_ok = int'(raw_vrf_row) < VREGS;
-  assign span_ok = (int'(raw_span_bytes) > 0) &&
-                   (int'(raw_span_bytes) <= MAX_SPAN_BYTES);
+  assign index_vrf_row_ok = int'(raw_index_vrf_row) < VREGS;
+  // Code zero is resolved later, where the captured launch group mask is
+  // available.  Explicit codes remain bounded by the physical profile.
+  assign span_ok = (raw_span_code == '0) ||
+                   (int'(raw_span_code) <= MAX_SPAN_BYTES);
+  assign memory_fields_ok = vrf_row_ok &&
+                            (indexed_mode ? index_vrf_row_ok : span_ok);
   assign address_ok = state_reg_ok && base_read_legal_i &&
-                      vrf_row_ok && span_ok;
+                      memory_fields_ok;
 
   // Query only after the complete two-word MEMORY shape is visible.  A bad
   // register index is rejected locally rather than being truncated into a
   // different sequencer-state address.
   assign base_read_valid_o = record_valid_i && format_ok && shape_ok &&
                              reserved_ok && offset_ok && addr_space_ok &&
-                             state_reg_ok && vrf_row_ok && span_ok;
+                             state_reg_ok && memory_fields_ok;
   assign base_read_reg_o = raw_state_reg;
 
   // Use the established four-bit ordered-decode diagnostic lane.  MEMORY
@@ -146,20 +165,26 @@ module vsp_memory_uword_decoder #(
 
     // Illegal records cannot leak a partially decoded memory side effect.
     op_o = VSP_MEM_OP_LOAD;
+    addr_mode_o = VSP_MEM_ADDR_MODE_UNIT_STRIDE;
     addr_space_o = VSP_MEM_ADDR_SPACE_LOCAL;
     addr_context_o = '0;
     base_eaddr_o = '0;
     eaddr_offset_o = '0;
     vrf_row_o = '0;
+    index_vrf_row_o = '0;
     span_bytes_o = '0;
     if (legal_o) begin
       op_o = raw_op;
+      addr_mode_o = raw_addr_mode;
       addr_space_o = raw_addr_space;
       addr_context_o = raw_addr_context;
       base_eaddr_o = base_read_data_i;
       eaddr_offset_o = raw_offset;
       vrf_row_o = raw_vrf_row;
-      span_bytes_o = raw_span_bytes;
+      if (indexed_mode)
+        index_vrf_row_o = raw_index_vrf_row;
+      else
+        span_bytes_o = VSP_MEMORY_UWORD_SPAN_BYTES_W'(raw_span_code);
     end
   end
 
@@ -175,7 +200,7 @@ module vsp_memory_uword_decoder #(
     end
     if ((MAX_SPAN_BYTES < 1) ||
         (MAX_SPAN_BYTES > VSP_MEMORY_UWORD_MAX_SPAN_BYTES)) begin
-      $error("MEMORY profile span capacity is 1..16 bytes");
+      $error("MEMORY profile resolved span capacity is 1..64 bytes");
     end
   end
 endmodule

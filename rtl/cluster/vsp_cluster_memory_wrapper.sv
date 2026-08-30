@@ -1,11 +1,10 @@
 module vsp_cluster_memory_wrapper #(
-  // This is a deliberately small integration profile: decoded EXEC traffic,
-  // one blocking vector memory engine, and one blocking register-route engine
-  // share the group VRF boundary.
+  // This is a deliberately small integration profile: decoded EXEC traffic
+  // and one blocking vector memory engine share the group VRF boundary.
   // Instruction decode, program ordering, ownership changes, translation and
   // a physical memory implementation remain outside this wrapper.
   parameter int GROUP_COUNT       = 4,
-  parameter int ISSUE_SLOTS       = 2,
+  parameter int ISSUE_SLOTS       = 1,
   parameter int QUEUE_DEPTH       = 4,
   parameter int TRACKER_ENTRIES   = 4,
   parameter int LANES             = 4,
@@ -14,7 +13,7 @@ module vsp_cluster_memory_wrapper #(
   parameter int VREGS             = 16,
   parameter int AREGS             = 8,
   parameter int MREGS             = 4,
-  parameter int CONTEXT_COUNT     = 2,
+  parameter int CONTEXT_COUNT     = 1,
   parameter int TAG_W             = 8,
   parameter int RESOURCE_W        = 8,
   parameter int SIMD4_ID_W        = 8,
@@ -67,14 +66,6 @@ module vsp_cluster_memory_wrapper #(
   input  logic                              exec_cmd_write_mrf_i,
   input  logic                              exec_cmd_reduce_enable_i,
   input  logic [simd_pkg::REDUCE_OP_W-1:0] exec_cmd_reduce_op_i,
-  input  logic                              exec_cmd_route_enable_i,
-  input  logic [1:0]                        exec_cmd_route_io_mode_i,
-  input  logic [simd_pkg::ROUTE_OP_W-1:0]  exec_cmd_route_op_i,
-  input  logic [(LANES*INDEX_W)-1:0]        exec_cmd_route_index_i,
-  input  logic [INDEX_W-1:0]                exec_cmd_route_broadcast_index_i,
-  input  logic [OFFSET_W-1:0]               exec_cmd_route_slide_amount_i,
-  input  logic [(LANES*ELEM_W)-1:0]         exec_cmd_route_lower_i,
-  input  logic [(LANES*ELEM_W)-1:0]         exec_cmd_route_upper_i,
   output logic                              exec_cmd_context_error_o,
 
   // Ownership is supplied as a stable snapshot. This wrapper does not assign
@@ -114,6 +105,8 @@ module vsp_cluster_memory_wrapper #(
   input  logic                              mem_cmd_valid_i,
   output logic                              mem_cmd_ready_o,
   input  logic [vsp_pkg::VSP_MEM_OP_W-1:0] mem_cmd_op_i,
+  input  logic [vsp_pkg::VSP_MEM_ADDR_MODE_W-1:0]
+                                               mem_cmd_addr_mode_i,
   input  logic [CONTEXT_W-1:0]              mem_cmd_exec_context_i,
   input  logic [TAG_W-1:0]                  mem_cmd_tag_i,
   input  logic [vsp_pkg::VSP_MEM_ADDR_SPACE_W-1:0]
@@ -123,6 +116,7 @@ module vsp_cluster_memory_wrapper #(
   input  logic signed [MEM_OFFSET_W-1:0]    mem_cmd_eaddr_offset_i,
   input  logic [GROUP_COUNT-1:0]            mem_cmd_group_mask_i,
   input  logic [VRF_ADDR_W-1:0]             mem_cmd_vrf_row_i,
+  input  logic [VRF_ADDR_W-1:0]             mem_cmd_index_vrf_row_i,
   input  logic [SPAN_BYTES_W-1:0]           mem_cmd_span_bytes_i,
 
   output logic                              mem_cpl_valid_o,
@@ -179,9 +173,8 @@ module vsp_cluster_memory_wrapper #(
   import simd_pkg::*;
 
   localparam int VRF_ROW_W = LANES * ELEM_W;
-  localparam int VRF_CLIENT_COUNT = 2;
+  localparam int VRF_CLIENT_COUNT = 1;
   localparam int MEMORY_VRF_CLIENT = 0;
-  localparam int ROUTE_VRF_CLIENT = 1;
 
   logic [ISSUE_SLOTS-1:0] issue_slot_grant;
 
@@ -230,9 +223,8 @@ module vsp_cluster_memory_wrapper #(
   logic [VRF_ROW_W-1:0] state_read_rsp_data;
   logic [LANES-1:0] state_read_rsp_mask;
 
-  // MEMORY and register-route are independent clients of the same blocking
-  // VRF transaction boundary.  Client 1 may later be replaced by a parallel
-  // capture/commit port without changing vector-route semantics.
+  // Indexed and unit-stride memory operations share this one blocking VRF
+  // client. Register-to-register routing is not part of the product wrapper.
   logic [VRF_CLIENT_COUNT-1:0] vrf_client_read_valid;
   logic [VRF_CLIENT_COUNT-1:0] vrf_client_read_ready;
   logic [(VRF_CLIENT_COUNT*CONTEXT_W)-1:0] vrf_client_read_context;
@@ -285,30 +277,6 @@ module vsp_cluster_memory_wrapper #(
   logic cluster_exec_cpl_owner_mismatch;
   logic cluster_exec_protocol_error;
 
-  logic route_cmd_legal;
-  logic route_owner_match;
-  logic route_owner_mismatch_q;
-  logic route_cmd_ready;
-  logic route_request;
-  logic route_launch_valid;
-  logic route_launch_fire;
-  logic route_admission_quiescent;
-  logic route_cpl_valid;
-  logic route_cpl_ready;
-  logic [CONTEXT_W-1:0] route_cpl_context;
-  logic [TAG_W-1:0] route_cpl_tag;
-  logic [GROUP_COUNT-1:0] route_cpl_group_mask;
-  logic route_cpl_illegal;
-  logic [GROUP_COUNT-1:0] route_cpl_illegal_group_mask;
-  logic route_cpl_rejected;
-  logic route_cpl_empty_mask;
-  /* verilator lint_off UNUSED */
-  // Kept at the engine boundary for diagnostics; the current EXEC completion
-  // envelope has no per-element status field.
-  logic [(GROUP_COUNT*LANES)-1:0] route_cpl_invalid_element_mask;
-  /* verilator lint_on UNUSED */
-  logic route_busy;
-  logic route_protocol_error;
   logic cluster_exec_quiescent;
   logic mem_engine_cmd_valid;
   logic mem_engine_cmd_ready;
@@ -334,101 +302,31 @@ module vsp_cluster_memory_wrapper #(
   logic [((TRACKER_ENTRIES <= 1) ? 1 :
           $clog2(TRACKER_ENTRIES + 1))-1:0] exec_tracker_occupancy;
 
-  assign exec_queue_empty_o = !(|exec_queue_occupancy) && !route_busy;
-  assign exec_tracker_empty_o = !(|exec_tracker_occupancy) && !route_busy;
-  assign exec_quiescent_o = cluster_exec_quiescent && !route_busy;
+  assign exec_queue_empty_o = !(|exec_queue_occupancy);
+  assign exec_tracker_empty_o = !(|exec_tracker_occupancy);
+  assign exec_quiescent_o = cluster_exec_quiescent;
 
   assign issue_slot_grant = {ISSUE_SLOTS{1'b1}};
-  assign exec_protocol_error_o = cluster_exec_protocol_error ||
-                                 route_protocol_error;
+  assign exec_protocol_error_o = cluster_exec_protocol_error;
   assign protocol_error_o = exec_protocol_error_o || mem_protocol_error_o;
 
-  // Register route takes a multi-transaction snapshot of distributed VRF
-  // state.  Keep it mutually exclusive with ordinary EXEC and MEMORY work so
-  // neither source/index capture nor destination commit can interleave with a
-  // same-row update.  A pending route has deterministic priority over a new
-  // MEMORY command; an already-active MEMORY/EXEC command drains first.
-  assign route_request = exec_cmd_valid_i && exec_cmd_route_enable_i;
-  assign route_admission_quiescent = cluster_exec_quiescent &&
-      !mem_busy_o && !mem_cpl_valid_o && !vrf_arbiter_busy_o;
-  assign route_launch_valid = route_request && route_admission_quiescent;
-  assign route_launch_fire = route_launch_valid && route_cmd_ready;
-  assign mem_engine_cmd_valid = mem_cmd_valid_i && !route_busy &&
-                                !route_request;
-  assign mem_cmd_ready_o = mem_engine_cmd_ready && !route_busy &&
-                           !route_request;
+  assign mem_engine_cmd_valid = mem_cmd_valid_i;
+  assign mem_cmd_ready_o = mem_engine_cmd_ready;
 
-  // A vector route is a distinct cluster engine operation.  Legacy local
-  // route controls must be canonical zero; broadcast and slide are expressed
-  // by values in the index VRF row instead of instruction bits.
-  assign route_cmd_legal =
-      exec_cmd_op_i == SIMD_OP_PASS_A &&
-      exec_cmd_elem_mode_i == ELEM_MODE_BYTE &&
-      exec_cmd_write_vrf_i && !exec_cmd_write_arf_i &&
-      !exec_cmd_write_mrf_i && !exec_cmd_export_narrow_i &&
-      !exec_cmd_use_imm_i && !exec_cmd_mask_enable_i &&
-      !exec_cmd_reduce_enable_i &&
-      (exec_cmd_route_io_mode_i == 2'b00 ||
-       exec_cmd_route_io_mode_i == 2'b11) &&
-      exec_cmd_route_op_i == ROUTE_OP_GATHER &&
-      !(|exec_cmd_route_index_i) &&
-      !(|exec_cmd_route_broadcast_index_i) &&
-      !(|exec_cmd_route_slide_amount_i) &&
-      !(|exec_cmd_route_lower_i) && !(|exec_cmd_route_upper_i);
-
-  always_comb begin
-    route_owner_match = int'(exec_cmd_context_i) < CONTEXT_COUNT;
-    for (int group = 0; group < GROUP_COUNT; group++) begin
-      if (exec_cmd_group_mask_i[group] &&
-          (!group_owner_valid_i[group] ||
-           group_owner_i[(group*CONTEXT_W) +: CONTEXT_W] !=
-               exec_cmd_context_i)) begin
-        route_owner_match = 1'b0;
-      end
-    end
-  end
-
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      route_owner_mismatch_q <= 1'b0;
-    end else begin
-      if (route_cpl_valid && route_cpl_ready)
-        route_owner_mismatch_q <= 1'b0;
-      if (route_launch_fire)
-        route_owner_mismatch_q <=
-            (|exec_cmd_group_mask_i) && !route_owner_match;
-    end
-  end
-
-  assign exec_cmd_ready_o = exec_cmd_route_enable_i ?
-      (route_admission_quiescent && route_cmd_ready) :
-      (!route_busy && cluster_exec_cmd_ready);
-  assign exec_cmd_context_error_o = exec_cmd_route_enable_i ?
-      (int'(exec_cmd_context_i) >= CONTEXT_COUNT) :
-      cluster_exec_cmd_context_error;
-
-  assign cluster_exec_cpl_ready = exec_cpl_ready_i && !route_cpl_valid;
-  assign route_cpl_ready = exec_cpl_ready_i;
-  assign exec_cpl_valid_o = route_cpl_valid || cluster_exec_cpl_valid;
-  assign exec_cpl_context_o = route_cpl_valid ? route_cpl_context :
-                                                 cluster_exec_cpl_context;
-  assign exec_cpl_tag_o = route_cpl_valid ? route_cpl_tag :
-                                             cluster_exec_cpl_tag;
-  assign exec_cpl_group_mask_o = route_cpl_valid ? route_cpl_group_mask :
-                                                    cluster_exec_cpl_group_mask;
-  assign exec_cpl_result_mask_o = route_cpl_valid ? '0 :
-                                                     cluster_exec_cpl_result_mask;
-  assign exec_cpl_illegal_o = route_cpl_valid ? route_cpl_illegal :
-                                                cluster_exec_cpl_illegal;
-  assign exec_cpl_illegal_group_mask_o = route_cpl_valid ?
-      route_cpl_illegal_group_mask : cluster_exec_cpl_illegal_group_mask;
-  assign exec_cpl_rejected_o = route_cpl_valid ? route_cpl_rejected :
-                                                 cluster_exec_cpl_rejected;
-  assign exec_cpl_empty_mask_o = route_cpl_valid ? route_cpl_empty_mask :
-                                                   cluster_exec_cpl_empty_mask;
-  assign exec_cpl_owner_mismatch_o = route_cpl_valid ?
-      route_owner_mismatch_q :
-      cluster_exec_cpl_owner_mismatch;
+  assign exec_cmd_ready_o = cluster_exec_cmd_ready;
+  assign exec_cmd_context_error_o = cluster_exec_cmd_context_error;
+  assign cluster_exec_cpl_ready = exec_cpl_ready_i;
+  assign exec_cpl_valid_o = cluster_exec_cpl_valid;
+  assign exec_cpl_context_o = cluster_exec_cpl_context;
+  assign exec_cpl_tag_o = cluster_exec_cpl_tag;
+  assign exec_cpl_group_mask_o = cluster_exec_cpl_group_mask;
+  assign exec_cpl_result_mask_o = cluster_exec_cpl_result_mask;
+  assign exec_cpl_illegal_o = cluster_exec_cpl_illegal;
+  assign exec_cpl_illegal_group_mask_o =
+      cluster_exec_cpl_illegal_group_mask;
+  assign exec_cpl_rejected_o = cluster_exec_cpl_rejected;
+  assign exec_cpl_empty_mask_o = cluster_exec_cpl_empty_mask;
+  assign exec_cpl_owner_mismatch_o = cluster_exec_cpl_owner_mismatch;
 
   always_comb begin
     state_write_data_wide = '0;
@@ -462,7 +360,7 @@ module vsp_cluster_memory_wrapper #(
   ) u_cluster_exec (
     .clk_i(clk_i),
     .rst_ni(rst_ni),
-    .cmd_valid_i(exec_cmd_valid_i && !exec_cmd_route_enable_i && !route_busy),
+    .cmd_valid_i(exec_cmd_valid_i),
     .cmd_ready_o(cluster_exec_cmd_ready),
     .cmd_context_i(exec_cmd_context_i),
     .cmd_tag_i(exec_cmd_tag_i),
@@ -487,13 +385,13 @@ module vsp_cluster_memory_wrapper #(
     .cmd_write_mrf_i(exec_cmd_write_mrf_i),
     .cmd_reduce_enable_i(exec_cmd_reduce_enable_i),
     .cmd_reduce_op_i(exec_cmd_reduce_op_i),
-    .cmd_route_enable_i(exec_cmd_route_enable_i),
-    .cmd_route_op_i(exec_cmd_route_op_i),
-    .cmd_route_index_i(exec_cmd_route_index_i),
-    .cmd_route_broadcast_index_i(exec_cmd_route_broadcast_index_i),
-    .cmd_route_slide_amount_i(exec_cmd_route_slide_amount_i),
-    .cmd_route_lower_i(exec_cmd_route_lower_i),
-    .cmd_route_upper_i(exec_cmd_route_upper_i),
+    .cmd_route_enable_i(1'b0),
+    .cmd_route_op_i('0),
+    .cmd_route_index_i('0),
+    .cmd_route_broadcast_index_i('0),
+    .cmd_route_slide_amount_i('0),
+    .cmd_route_lower_i('0),
+    .cmd_route_upper_i('0),
     .cmd_context_error_o(cluster_exec_cmd_context_error),
     .group_owner_valid_i(group_owner_valid_i),
     .group_owner_i(group_owner_i),
@@ -577,103 +475,6 @@ module vsp_cluster_memory_wrapper #(
     .protocol_error_o(cluster_exec_protocol_error)
   );
 
-  vsp_cluster_register_route_engine #(
-    .GROUP_COUNT(GROUP_COUNT),
-    .LANES_PER_GROUP(LANES),
-    .ELEM_W(ELEM_W),
-    .INDEX_ELEM_W(8),
-    .VRF_ROWS(VREGS),
-    .CONTEXT_COUNT(CONTEXT_COUNT),
-    .TAG_W(TAG_W),
-    .GROUP_ID_W(GROUP_ID_W),
-    .VRF_ADDR_W(VRF_ADDR_W),
-    .CONTEXT_W(CONTEXT_W)
-  ) u_register_route_engine (
-    .clk_i(clk_i),
-    .rst_ni(rst_ni),
-    .cmd_valid_i(route_launch_valid),
-    .cmd_ready_o(route_cmd_ready),
-    .cmd_legal_i(route_cmd_legal && route_owner_match),
-    .cmd_context_i(exec_cmd_context_i),
-    .cmd_tag_i(exec_cmd_tag_i),
-    .cmd_source_group_mask_i(exec_cmd_group_mask_i),
-    .cmd_destination_group_mask_i(exec_cmd_group_mask_i),
-    .cmd_source_row_i(exec_cmd_src_a_addr_i),
-    .cmd_index_row_i(exec_cmd_src_b_addr_i),
-    .cmd_destination_row_i(exec_cmd_dst_vrf_addr_i),
-    .cmd_io_mode_i(exec_cmd_route_io_mode_i),
-    .cpl_valid_o(route_cpl_valid),
-    .cpl_ready_i(route_cpl_ready),
-    .cpl_context_o(route_cpl_context),
-    .cpl_tag_o(route_cpl_tag),
-    .cpl_group_mask_o(route_cpl_group_mask),
-    .cpl_illegal_o(route_cpl_illegal),
-    .cpl_illegal_group_mask_o(route_cpl_illegal_group_mask),
-    .cpl_rejected_o(route_cpl_rejected),
-    .cpl_empty_mask_o(route_cpl_empty_mask),
-    .cpl_invalid_element_mask_o(route_cpl_invalid_element_mask),
-    .vrf_read_valid_o(vrf_client_read_valid[ROUTE_VRF_CLIENT]),
-    .vrf_read_ready_i(vrf_client_read_ready[ROUTE_VRF_CLIENT]),
-    .vrf_read_context_o(vrf_client_read_context[
-        (ROUTE_VRF_CLIENT*CONTEXT_W) +: CONTEXT_W]),
-    .vrf_read_tag_o(vrf_client_read_tag[
-        (ROUTE_VRF_CLIENT*TAG_W) +: TAG_W]),
-    .vrf_read_group_o(vrf_client_read_group[
-        (ROUTE_VRF_CLIENT*GROUP_ID_W) +: GROUP_ID_W]),
-    .vrf_read_row_o(vrf_client_read_row[
-        (ROUTE_VRF_CLIENT*VRF_ADDR_W) +: VRF_ADDR_W]),
-    .vrf_read_mask_o(vrf_client_read_mask[
-        (ROUTE_VRF_CLIENT*LANES) +: LANES]),
-    .vrf_read_cpl_valid_i(vrf_client_read_cpl_valid[ROUTE_VRF_CLIENT]),
-    .vrf_read_cpl_ready_o(vrf_client_read_cpl_ready[ROUTE_VRF_CLIENT]),
-    .vrf_read_cpl_context_i(vrf_client_read_cpl_context[
-        (ROUTE_VRF_CLIENT*CONTEXT_W) +: CONTEXT_W]),
-    .vrf_read_cpl_tag_i(vrf_client_read_cpl_tag[
-        (ROUTE_VRF_CLIENT*TAG_W) +: TAG_W]),
-    .vrf_read_cpl_group_i(vrf_client_read_cpl_group[
-        (ROUTE_VRF_CLIENT*GROUP_ID_W) +: GROUP_ID_W]),
-    .vrf_read_cpl_error_i(vrf_client_read_cpl_error[ROUTE_VRF_CLIENT]),
-    .vrf_read_rsp_valid_i(vrf_client_read_rsp_valid[ROUTE_VRF_CLIENT]),
-    .vrf_read_rsp_ready_o(vrf_client_read_rsp_ready[ROUTE_VRF_CLIENT]),
-    .vrf_read_rsp_context_i(vrf_client_read_rsp_context[
-        (ROUTE_VRF_CLIENT*CONTEXT_W) +: CONTEXT_W]),
-    .vrf_read_rsp_tag_i(vrf_client_read_rsp_tag[
-        (ROUTE_VRF_CLIENT*TAG_W) +: TAG_W]),
-    .vrf_read_rsp_group_i(vrf_client_read_rsp_group[
-        (ROUTE_VRF_CLIENT*GROUP_ID_W) +: GROUP_ID_W]),
-    .vrf_read_rsp_data_i(vrf_client_read_rsp_data[
-        (ROUTE_VRF_CLIENT*VRF_ROW_W) +: VRF_ROW_W]),
-    .vrf_read_rsp_mask_i(vrf_client_read_rsp_mask[
-        (ROUTE_VRF_CLIENT*LANES) +: LANES]),
-    .vrf_read_rsp_error_i(vrf_client_read_rsp_error[ROUTE_VRF_CLIENT]),
-    .vrf_write_valid_o(vrf_client_write_valid[ROUTE_VRF_CLIENT]),
-    .vrf_write_ready_i(vrf_client_write_ready[ROUTE_VRF_CLIENT]),
-    .vrf_write_context_o(vrf_client_write_context[
-        (ROUTE_VRF_CLIENT*CONTEXT_W) +: CONTEXT_W]),
-    .vrf_write_tag_o(vrf_client_write_tag[
-        (ROUTE_VRF_CLIENT*TAG_W) +: TAG_W]),
-    .vrf_write_group_o(vrf_client_write_group[
-        (ROUTE_VRF_CLIENT*GROUP_ID_W) +: GROUP_ID_W]),
-    .vrf_write_row_o(vrf_client_write_row[
-        (ROUTE_VRF_CLIENT*VRF_ADDR_W) +: VRF_ADDR_W]),
-    .vrf_write_mask_o(vrf_client_write_mask[
-        (ROUTE_VRF_CLIENT*LANES) +: LANES]),
-    .vrf_write_data_o(vrf_client_write_data[
-        (ROUTE_VRF_CLIENT*VRF_ROW_W) +: VRF_ROW_W]),
-    .vrf_write_cpl_valid_i(vrf_client_write_cpl_valid[ROUTE_VRF_CLIENT]),
-    .vrf_write_cpl_ready_o(vrf_client_write_cpl_ready[ROUTE_VRF_CLIENT]),
-    .vrf_write_cpl_context_i(vrf_client_write_cpl_context[
-        (ROUTE_VRF_CLIENT*CONTEXT_W) +: CONTEXT_W]),
-    .vrf_write_cpl_tag_i(vrf_client_write_cpl_tag[
-        (ROUTE_VRF_CLIENT*TAG_W) +: TAG_W]),
-    .vrf_write_cpl_group_i(vrf_client_write_cpl_group[
-        (ROUTE_VRF_CLIENT*GROUP_ID_W) +: GROUP_ID_W]),
-    .vrf_write_cpl_error_i(vrf_client_write_cpl_error[ROUTE_VRF_CLIENT]),
-    .busy_o(route_busy),
-    .protocol_error_clear_i(protocol_error_clear_i),
-    .protocol_error_o(route_protocol_error)
-  );
-
   vsp_vector_memory_engine #(
     .GROUP_COUNT(GROUP_COUNT),
     .VRF_ROW_BYTES(LANES),
@@ -693,6 +494,7 @@ module vsp_cluster_memory_wrapper #(
     .cmd_valid_i(mem_engine_cmd_valid),
     .cmd_ready_o(mem_engine_cmd_ready),
     .cmd_op_i(mem_cmd_op_i),
+    .cmd_addr_mode_i(mem_cmd_addr_mode_i),
     .cmd_exec_context_i(mem_cmd_exec_context_i),
     .cmd_tag_i(mem_cmd_tag_i),
     .cmd_addr_space_i(mem_cmd_addr_space_i),
@@ -701,6 +503,7 @@ module vsp_cluster_memory_wrapper #(
     .cmd_eaddr_offset_i(mem_cmd_eaddr_offset_i),
     .cmd_group_mask_i(mem_cmd_group_mask_i),
     .cmd_vrf_row_i(mem_cmd_vrf_row_i),
+    .cmd_index_vrf_row_i(mem_cmd_index_vrf_row_i),
     .cmd_span_bytes_i(mem_cmd_span_bytes_i),
     .dmem_req_valid_o(dmem_req_valid_o),
     .dmem_req_ready_i(dmem_req_ready_i),
@@ -881,8 +684,12 @@ module vsp_cluster_memory_wrapper #(
   initial begin
     if (ELEM_W != 8)
       $error("memory-wrapper VRF row transport requires 8-bit base lanes");
-    if (LANES < 1 || GROUP_COUNT < 1 || ISSUE_SLOTS < 1)
-      $error("memory-wrapper capacities must be positive");
+    if (LANES != 4)
+      $error("the product memory wrapper requires one four-lane SIMD4 group");
+    if (GROUP_COUNT < 1 || GROUP_COUNT > 16 || ISSUE_SLOTS < 1)
+      $error("memory-wrapper group/slot capacities are out of range");
+    if ((GROUP_COUNT * LANES) > 64)
+      $error("memory-wrapper vector domain must not exceed 64 bytes");
     if (ACC_W < ELEM_W)
       $error("ACC_W must be at least ELEM_W");
   end

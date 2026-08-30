@@ -1,20 +1,18 @@
 # VSP 术语表
 
-> 本页是项目术语的统一入口。它区分编程语义、微架构、控制协议和 RTL 命名；
-> 这些名称描述当前设计，不冻结最终 ISA、模块层级或物理实现。
+> 本页是项目术语的统一入口。它区分编程语义、当前集成、事务协议和独立实验；
+> 这些名称不冻结最终 ISA、模块层级或物理实现。
 
 ## 1. 使用原则
 
 - 在语义确实相同的地方采用 RISC-V Vector Extension（RVV）的通用词汇，例如
   vector operation、vector register、element、element width、mask 和 load/store。
-  gather、slide、reduction、compress 等当前按 byte lane 工作的原语必须带粒度限定。
 - `SIMD group`、`execution cluster` 和 physical lane 描述 VSP 的物理组织；它们不是
-  RVV ISA 状态，也不应为了形式相似而改称 Vector Unit。
-- 网络拓扑只出现在实现层。编程语义写 gather、slide、broadcast 或 permutation，
-  不把 crossbar、Omega 或 Bênes 写成操作语义。
-- 尚未实现的 RVV 状态或能力不借用其名称。目前没有 RVV-compatible `vl`/`vtype`/
-  `LMUL` programming model，也没有对 RVV implementation-defined `VLEN` 的架构暴露；
-  VSP 的 RF 宽度仍只是实现参数。
+  RVV ISA 状态，也不应机械替换成含义更宽泛的 Vector Unit。
+- 网络拓扑只出现在实现或实验层。编程语义描述数据关系，不把 crossbar、Omega 或
+  Bênes 写成操作语义。
+- “参数可配置”不等于“当前已经部署”。必须分别写出当前实例和参数合法上限。
+- 独立 RTL 能通过测试不等于它已经进入程序路径；实验模块必须明确标记 experimental。
 
 ## 2. 架构与编程语义
 
@@ -25,114 +23,104 @@
 | vector operand / result | 操作读入或产生的逻辑向量值 |
 | vector register file (`VRF`) | 保存窄向量状态的寄存器文件 |
 | element | 一项逻辑数据；当前由 1、2 或 4 个相邻 8-bit physical lane 组成 |
-| element width | 每项操作选择的 BYTE/HALF/WORD 宽度。它与 RVV 的 SEW 概念相近，但随 VSP action 直接携带，不是 `vtype` CSR 状态 |
-| mask / predicate | 决定哪些数据位置参与操作的条件。当前 MRF 按 physical byte lane 保存一位，不等同于 RVV 每 logical element 一位的 v0 mask |
-| vector load / store | 在 memory boundary 与 VRF 之间传输向量数据。当前实现是 blocking、顺序 beat，不表示已支持 RVV constant-stride 或 indexed memory operation |
-| lane gather | `DR[i] = SR[IR[i]]`；当前 `i` 是 route-domain-relative physical byte lane，重复索引表达 broadcast/multicast，不是 memory gather |
-| lane slide | 按相邻 physical byte lane 移动数据，并从边界输入或零补入 |
+| element width | 每项 EXEC action 选择的 BYTE/HALF/WORD 宽度；不是 `vtype` CSR 状态 |
+| mask / predicate | 决定哪些数据位置参与操作的条件；当前 MRF 按 physical byte lane 保存一位 |
+| vector load / store | 在 dmem boundary 与分布式 VRF row 之间传输数据的 MEMORY action |
+| `UNIT_STRIDE` | 线性地址模式；从 `base_eaddr + signed offset` 开始，按被选 group 的编号顺序搬运；uword span code `0` 表示填满全部被选 group，`1..31` 表示显式 byte span |
+| `INDEX_U8` | 索引地址模式；每个被选 physical byte lane 从 `vi` VRF row 读取一个 unsigned 8-bit offset，并访问 `base_eaddr + signed offset + vi[lane]` |
+| `VGATHER` | assembler 对 `LOAD + INDEX_U8` MEMORY record 的拼写；`vd` 是目标 VRF row，`vi` 是索引 VRF row |
+| `VSCATTER` | assembler 对 `STORE + INDEX_U8` MEMORY record 的拼写；`vs` 是源 VRF row，`vi` 是索引 VRF row |
 | lane reduction | 将多个活动 physical byte lane 合成为 32-bit scalar result |
 | lane compress | 按 MRF 的 base-lane mask 稳定收集 physical byte lane |
 
+`UNIT_STRIDE` 的 code `0` 在 action admission 后解析为
+`4 * popcount(group_mask)` byte，因此同一编码可覆盖当前 4-group/16-byte 实例和
+16-group/64-byte profile bound。code `1..31` 用于显式 span；大于 31 byte 且带 partial
+tail 的传输需要拆分，不能把 code `0` 解释成零长度。
+
+`VGATHER`/`VSCATTER` 仍属于 `MEMORY` dispatch class，不是新的执行 class。它们把
+索引访存降为普通、对齐的 dmem LOAD/STORE beat：gather 从响应 beat 选择一个 byte，
+scatter 只打开目标 byte strobe。`INDEX_U8` 不携带 `span_bytes`；每个被选 group 的四个
+byte lane 都参与。重复 scatter offset 按 group、lane 的升序执行，较晚 lane 的写入最后
+可见。
+
 RVV 中的 `vector register group` 是由 LMUL/EMUL 组合的一组架构寄存器。它与本项目的
-physical `SIMD group` 没有对应关系；文档不得把两者简称为同一个“group”。RVV 的
-indexed load/store 也不能用“连续 LOAD 后再做 register gather”一般性替代。
-RVV 的 `vrgather`、`vslide`、reduction 和 `vcompress` 按当前 SEW 的 logical element
-工作；VSP 当前这些 route/compact/reduction 原语按 8-bit physical lane 工作。
-HALF/WORD 的 element-level 语义需要由微码组合或后续 action 定义，不能仅靠同名
-宣称兼容。
+physical `SIMD group` 没有对应关系，文档不得把二者简称为同一个 “group”。
 
 ## 3. 微架构
 
 | 首选名称 | 当前含义 |
 |---|---|
-| physical lane | 最小 8-bit 数据通路 slice。HALF/WORD 是多个 slice 组成的 element，不是新增 lane |
-| SIMD group | 默认由 4 个 physical lane、group-local RF state 和执行路径组成的调度颗粒 |
-| group-local slot | 一个 integration wrapper 内用于选择 SIMD group endpoint 的紧凑序号，范围是 `0..GROUP_COUNT-1`，典型宽度为 `$clog2(GROUP_COUNT)`；它是 mux、arbiter 和 RF subrequest 的局部实现坐标，不是稳定的 group 身份，也不是 VROUTE 索引 |
-| SIMD4 static ID | 每个 SIMD4 group 的不可变 8-bit 拓扑身份，当前由 `SIMD4_BASE_ID + group-local slot` 形成，可覆盖 0..255；它用于集成、可观测性和后续拓扑元数据，不是 PC、context、`group_mask` bit position 或 VROUTE byte index |
-| execution cluster | 多个 SIMD group 的发射、所有权、共享资源和完成集成域；当前参考 profile 是四组，不是固定架构上限 |
-| route domain | 一次 register gather 共享同一 byte-index 坐标空间的一组 SIMD group；当前已接入 profile 以一个四组 cluster 作为一个 domain，共 16 个 byte slot |
-| route-domain-relative byte index | `vi` VRF row 中的 8-bit 元素；它选择当前 route domain 内的源 byte，默认映射为 `4 * group-local slot + lane offset`。当前四组 domain 的合法值为 0..15；16..255 不截断、不回绕，而按 invalid index 关闭对应 byte write 并保留 `vd` |
-| Vector ALU / execution path | 执行逐元素算术、逻辑、局部 route 和 lane reduction 的路径 |
-| VRF row | 一个 SIMD group 内的 4×8-bit 物理寄存器片段，不等同于一个完整 RVV vector register |
+| physical lane | 最小 8-bit 数据通路 slice；HALF/WORD 是多个 slice 组成的 element，不是新增 lane |
+| SIMD group | 4 个 physical lane、group-local RF state 和执行路径组成的调度颗粒；一个 VRF row fragment 为 4 byte |
+| group-local slot | 当前 wrapper 内选择 SIMD group endpoint 的局部序号 `0..GROUP_COUNT-1`；不是 PC、thread、context 或 issue slot |
+| SIMD4 static ID | `SIMD4_BASE_ID + group-local slot` 形成的不可变 8-bit 拓扑身份；用于集成和观测，不是调度状态 |
+| execution cluster | 多个 SIMD group 的发射、所有权、共享资源与完成集成域；当前产品参考实例为 4 group，即每个分布式 VRF row 共 16 byte |
+| 16-group profile bound | 当前 memory engine/wrapper 接受的参数上限为 16 group，即每个分布式 VRF row 64 byte；这是当前 profile 上限，不表示已经部署 16-group 实例 |
+| issue slot | 同一拍把一项已选 command 送入执行前端的瞬时发射口；当前产品 wrapper 为 1 个。它不保存 PC，不拥有程序，不是 hardware thread，也不是长期 context |
+| execution context | 所有权、队列和完成回送身份；当前集成只有一个 context，并且 context 没有独立 PC |
+| Vector ALU / execution path | 执行逐元素算术、逻辑与 lane reduction 的路径 |
+| VRF row | 一个 SIMD group 内的 4×8-bit 物理寄存器片段；跨 group 的同一 row 编号构成当前 MEMORY action 的分布式向量 |
 | accumulator register file (`ARF`) | VSP 特有的宽累加状态；当前每个 physical lane 保存一个 32-bit accumulator |
 | mask register file (`MRF`) | VSP 特有的 base-lane-granular predicate state；不是 RVV 的独立 mask register file |
-| vector memory engine | 把一项 vector load/store command 分解成 memory beat 与 group-local VRF subrequest |
-| VRF arbiter | 在多个 client 和 cluster VRF endpoint 之间选择 request 并保持返回归属 |
-| sequencer | 提供 action、循环状态和标量参数的上级控制单元；SIMD group 不自行取指 |
-| sequencer state engine | 保存 per-context 地址、stride 和 count 等 32-bit 状态并执行简单加法；不持有 PC、不发 memory request，也不是独立 scalar CPU |
-| I-cache role / D-cache role | 独立服务 program-fetch 与 data-memory 逻辑端口的候选缓存职责；当前只有协议模型，尚无 cache RTL、容量或行宽决定 |
+| vector memory engine | 把一项 `UNIT_STRIDE` 或 `INDEX_U8` parent command 分解成 VRF child transaction 与 dmem beat |
+| VRF arbiter | 在 memory client 和 cluster VRF endpoint 之间选择 request，并把 completion/response 返回原 client |
+| sequencer | 提供 action、地址状态和顺序控制的上级单元；SIMD group 不自行取指 |
+| sequencer state engine | 保存地址等 32-bit state 并执行 `SMOVI/SADD/SADDI`；不持有 PC、不发 dmem request，也不是独立 scalar CPU |
 
-`Group` 和 `Cluster` 只在已经给出上述限定的局部上下文中简写。面向软件的描述优先谈
-vector operation、element 和 register，不暴露不必要的物理分组。
-
-这三个编号不能混用：group-local slot 选择当前 wrapper 内的 endpoint，SIMD4 static ID
-标识物理 group，route-domain-relative byte index 选择一次 VROUTE 可见的源 byte。例如
-当前四组 domain 中，byte index 6 表示 local slot 1 的 lane offset 2；它不表示 static
-ID 6。即使以后一个 route domain 由 static ID 不连续的 group 组成，VROUTE 索引仍按该
-domain 的局部 byte 排列解释。
+必须区分三种常见的 “slot”：framer record slot 是同一 bundle 中的结构位置，issue slot
+是瞬时发射口，group-local slot 是 endpoint 编号。三者都不是线程或独立 PC。
 
 ## 4. 控制与事务协议
 
 | 首选名称 | 当前含义 |
 |---|---|
-| action | sequencer 交付的一项工作；当前 reference controller 对一个输入流执行严格的跨 dispatch class 接受与退休顺序 |
-| dispatch class | **internal action dispatch category**；只决定 action 进入哪个执行路径，不属于编程模型 |
-| `EXEC` | 进入 SIMD group execution path 的 dispatch class，可包含 ALU、route、reduction 等操作 |
-| `MEMORY` | 进入 vector memory engine 的 dispatch class |
-| `CONTROL` | 进入 controller-local path 的 dispatch class；当前 reference RTL 只实现等待内部强静止条件后完成的 `END` |
-| `END` | ordered action stream 的结束动作；等待当前 integration 的 EXEC queue/ingress/tracker/reject/completion、memory 与 VRF arbiter 静止，不清 RF、不转移 owner，也不直接检查已经被 collector 保存的外部 result record 是否被消费；有限 staging 满时，外部背压仍可间接延迟结束 |
-| action completion | action 的统一有序退休记录；`valid` 时保留原 class/context/tag/requested-group-mask 与 status，原 envelope 非法时 class/context 也保留该非法值供相关和诊断；class-specific engine detail 在 controller-local error 时为零 |
-| `program_done` | 成功 `END` completion 被接收时的单拍脉冲；表示结束记录退休，不自动证明此前每个 action 成功，也不等同于 host interrupt |
-| sequencer/control word (`uword`) | 候选的紧凑内部控制存储格式；不是已定义的 16/32-bit ISA instruction |
-| control store | 保存内部 uword stream 的逻辑存储；当前 RTL 是可编程行为模型，不表示 I-cache、物理 SRAM 或软件可见 instruction memory |
-| program source | 按 byte PC 从 control store 顺序请求 uword bundle 的控制模块；当前只支持一个半开区间，不含 branch、loop 或异常重启 |
-| ordered I-side fetch model | read-only uword bundle 的 simulation-only endpoint；带 byte PC、address metadata、fault 和 FIFO ordered response，不表示 I-cache 已实现 |
-| uword bundle | 同拍交给内部组合扫描逻辑的一组连续 32-bit uword stream word；不是 cache line、IFetch response 或软件 instruction bundle |
-| uword record | stream 中由一个 header 和零至多个 opaque body word 组成的结构记录；当前 EXEC record 也称 EXEC packet |
-| bundle predecoder | 判定 uword record 边界、major/class，并提前派生 ROUTE 的 mode、barrier-before 与 pair-required；不做完整 admission legality、通用资源派生或 class-specific operand decode |
-| bundle assembler | 保存 bundle 边界上的未完成 record，并依序输出完整或 EOF 截断 record 的有状态 framing 模块 |
-| multi-record framer | 跨 bundle 保存 tail，并以 packed-prefix 同时暴露若干完整 record 的 framing 模块；当前 strict wrapper 只消费其 slot 0 |
-| ordered action window | 保存已解析 action、按 group/shared dependency 选择候选并按序退休的浅窗口；它是顺序依赖表和候选选择 reference，不是 scalar issue engine，也尚未接入 concurrent wrapper |
-| barrier-before | 一条 action 在发射前等待指定 ordered scope 的更老 action 真实退休；当前浅窗口的 scope 是全局 sequence，future route token 才可缩小到 participant flow |
-| serializing action | 比 barrier-before 更强的顺序类别；它还阻止更年轻 action issue，至于 admission 是否停止由前端终止/流控策略决定。当前 `END` 同时触发全局 serializing 与 fetch cutoff，route dependency 目标只需要 barrier-before |
-| retirement frontier | 每槽已经按序退休的最大 sequence，或等价的 pre-barrier pending 计数；queue/slot empty 不能替代它，因为 ingress、reject、completion 与 engine transaction 仍可能未退休 |
-| barrier token | 绑定 slot、context/epoch、route ID 与 fence sequence 的顺序标记；到达 token 表示该槽不再让 younger action 越过，但 token 自身尚不是 accepted route outstanding |
-| action adapter | 把 uword record 与 launch envelope/context/tag 结合为 canonical action 的边界；结构 class 已识别不表示 class-specific semantic decode 已完成 |
-| uword byte PC | controller 内部 uword stream 的 byte address；当前每个 32-bit stream word（包括 extension/body）使地址增加 4，不等同于 SIMD4 的 architectural PC |
-| EXEC uword profile v0 | 当前用于实验的 `32-bit base + optional immediate extension` 内部 EXEC 表示；不包含 action envelope、MEMORY/CONTROL 或外部 ISA 承诺 |
-| micro-op (`uop`) | 已译码或部分译码、可供调度和执行消费的内部操作 |
-| function ID | canonical EXEC bundle 中的 `simd_op_e`；不是完整 opcode |
-| execution context | 顺序、所有权、调度和完成回送身份；当前不是 hardware thread，也没有独立 architectural PC |
-| address context | 交给未来 translation/protection adapter 的 opaque domain handle |
-| AGU | address-generation unit；把已解析 base/offset/beat index 变为 effective address，不负责 outstanding response correlation 或 retirement |
-| outstanding transaction | request 已被 endpoint 接受、对应 response 尚未完成的事务；当前 vector memory engine 限制为一个 dmem beat |
-| route dependency mode | `fmt=0xd` 的 2-bit immediate：`00=LOCAL`、`01=DEP_IN`、`10=DEP_OUT`、`11=DEP_INOUT`，并定义 `dependency=|mode`；LOCAL 是无隐式跨槽 barrier 的自包含 route，DEP 模式声明跨槽 dependency role，不是 ready/valid 握手信号 |
-| route wave | 同一 execution context 内已经配齐 source/destination roles、完成 participant 旧操作 drain、并以 union group mask 原子接受的跨 mask execution parent；participant tag 可不同并在共同执行后分别完成；独立 route-wave pipeline 已闭合该 parent 与 fan-out，strict program path 尚未接入，`LOCAL` 不属于 dependency wave |
-| rendezvous fragment | `DEP_IN`/`DEP_OUT` route descriptor；可由有限 pre-admission table 捕获，也可停在 queue head 等待同时可见的 peer，但在 `wave_accept` 前不得占有 execution tracker、group 或 route-engine outstanding 资源；当前 fragment 入口是独立 RTL 接口，尚未绑定多 queue 前端 |
-| fragment capture / wave accept | 前者只把 descriptor 收入有限 rendezvous staging；后者在 participant 配齐后原子预留 union resources 与全部 completion capacity，并真正建立 route outstanding；当前独立 pipeline 以 `resource_valid/ready` 表示后者，实际 `parent_fire` 是不可回退点，RUN 不因后续 flush 回滚 |
-| rendezvous entry | pre-admission 状态项，保存匹配键、participant/role、各槽 fence、opaque payload 与 cancel 状态；table 另按 context 持久保存 current epoch fence，使已 advance context 的晚到旧 epoch fragment 只能 CANCEL；`vsp_route_rendezvous_table` 已验证两 role 收集、frontier 门槛和 REJECT/CANCEL，并由 route-wave controller 使用；它本身仍不是 execution tracker，RR terminal 选择也不提供 program age order |
-| route result stage | source/index snapshot 完成后、首个 destination write 之前的寄存边界；当前保存完整 gather data 与 byte-write mask，用于切断宽组合 gather 到 VRF request 的路径，不表示已有第二个 outstanding slot 或 `II=1` |
-| ordered dmem model | `dmem_req/rsp` 的 simulation-only byte-array endpoint；可接受多个无 ID request，但只按 request 顺序返回，不表示物理 SRAM/cache 已实现 |
+| action | sequencer 交付的一项工作；当前集成对一个输入流严格按序接受和退休 |
+| dispatch class | **internal action dispatch category**；决定 action 进入 `EXEC`、`MEMORY` 或 `CONTROL` 路径，不属于编程模型 |
+| `EXEC` | 进入 SIMD group execution path 的 dispatch class；当前产品入口承载算术、逻辑、窄化与 reduction，不承载寄存器全域 VROUTE |
+| `MEMORY` | 进入 vector memory engine 的 dispatch class；同时承载 `UNIT_STRIDE` 与 `INDEX_U8` |
+| `CONTROL` | 进入 controller-local/state path 的 dispatch class；当前包含 state action 和最终 `END` |
+| `END` | 等待 EXEC、MEMORY、VRF arbiter 和完成路径强静止后退休的流结束动作；不清 RF、不转移 owner |
+| action completion | action 的统一有序退休记录；保留 class/context/tag/requested-group-mask 与 status |
+| `program_done` | 成功 `END` completion 被接收时的单拍脉冲；不等同于 host interrupt |
+| sequencer/control word (`uword`) | 候选紧凑内部控制存储格式；不是已冻结的 16/32-bit 外部 ISA instruction |
+| control store | 保存内部 uword stream 的逻辑存储；当前 RTL 是 behavioral reference，不表示 I-cache 或物理 SRAM 已实现 |
+| program source | 按 byte address 顺序请求 uword bundle 的模块；当前只有一个 `pc_q`、一个 launch range 和一个 fetch outstanding |
+| uword byte PC | 当前唯一 control-word stream 的 byte cursor；每个 base/body/extension word 都使 record 地址增加 4 |
+| uword bundle | 一次 fetch 返回的至多四个连续 32-bit stream word；不是四条可独立执行的线程指令 |
+| uword record | 一个 header 加零至多个 body word 的结构记录 |
+| multi-record framer | 跨 bundle 保存 tail，并可同时暴露若干完整 record；当前产品 wrapper 只将 record slot 0 放入 single-action holding |
+| action adapter | 将 record 与 launch envelope/context/tag 组合并执行 class semantic decode |
+| strict controller | 当前一次只拥有一个 active action 的 `EXEC/MEMORY/CONTROL` controller；保证跨 class 顺序 |
 | request / response / completion | decoupled 协议中的请求、带数据返回和事务完成通知 |
-| subrequest / beat | 一个 command 向 group endpoint 或 memory endpoint 拆出的原子传输 |
+| parent command | 一项 MEMORY action 在 vector memory engine 内保存的完整描述符 |
+| child transaction / beat | parent 对一个 VRF group endpoint 或 dmem endpoint 发出的原子传输 |
+| outstanding transaction | request 已被 endpoint 接受而相应 response 尚未完成的事务 |
+| single-outstanding MEMORY | 当前为 `1 active parent + 1 dmem beat outstanding`；dmem 无 transaction ID，下一 beat 必须等待当前 response |
+| address context | 交给未来 translation/protection adapter 的 opaque domain handle |
+| AGU | 把 base、signed offset、group/lane 和 index byte 变为 effective address；不负责 response correlation 或 retirement |
 
-当前 `EXEC` VROUTE 的 `group_mask` 是 action envelope 中已经解析的 group mask，不来自
-`fmt=0xd` 的指令字段，也不引用 MRF。首版把每个选中 bit 展开为该 SIMD4 group 的四个
-destination byte，并只捕获这些 group 的 `vs`/`vi` VRF row。未选中的目的 group 不写回
-并保留原 `vd`，其源 byte 也不进入本次 route domain 的有效源集合。选中的目的 byte 若
-索引为 16..255，或指向未选中的源 byte，则不产生该 byte write、保留原 `vd`，并在
-route engine 内形成 invalid-element 诊断。该诊断不把 action 标成 illegal、rejected 或
-protocol error；统一 EXEC completion 目前也尚未暴露它。当前 group endpoint 回显全一
-read request mask，VRF 不保存 byte validity，因此指令仍没有独立的 lane-active
-predicate；但程序可以用 OOB index 得到 tail-undisturbed。zero-fill 需要先清零 `vd` 或
-选择显式有效零源。这个 whole-group profile 是现有集成合同，不排除后续 action
-metadata/MRF path 增加独立 lane-active mask。
+当前只有一个程序 PC。fetch 一次可带四个 word、framer 可看见多个 record、执行前端可以
+参数化多个 issue slot，这些事实都不会自动产生第二个 PC 或第二条线程。当前产品 wrapper
+实际使用一个 issue slot，并由 strict controller 保持 global single-active。
 
-协议细节中可以在首次定义后使用 parent command / child request 来说明层级，但概览和
-编程语义优先使用 command、subrequest、beat、client 和 endpoint，避免把实现树当成
-架构对象。
+## 5. 独立实验模块
 
-## 5. RTL 命名
+下列 RTL/测试保留为 **experimental**，不属于当前 uword 产品路径：
+
+- `vsp_ordered_action_window`：多 entry、多个 candidate view 的依赖/退休实验；view 不是
+  issue slot，也不是 PC。
+- `vsp_cluster_register_route_engine`、`vsp_route_rendezvous_table`、
+  `vsp_route_wave_controller` 与 `vsp_cluster_route_wave_pipeline`：寄存器重排、participant
+  配对和 wave fan-out 实验。它们没有连接当前 PC、framer、action adapter 或产品
+  execution wrapper；当前 assembler 也不提供 `EXEC_ROUTE`/`VROUTE` 拼写。
+- `vsp_ordered_ifetch_model` 与 `vsp_ordered_dmem_model`：可执行协议模型，不是 I-cache、
+  D-cache、MMU、SRAM 或 DMA。
+
+实验模块中的 route domain、participant、rendezvous entry、frontier 和 route wave 只在
+相应 RTL/测试上下文内使用，不应据此宣称当前程序支持跨 PC 协作或全域寄存器路由。
+
+## 6. RTL 命名
 
 | 名称 | 用法 |
 |---|---|
@@ -143,28 +131,19 @@ metadata/MRF path 增加独立 lane-active mask。
 | `*_stage` | 流水或 elastic holding stage |
 | `*_wrapper` | 组合既有模块并暴露参考集成边界；不表示完整 VSP |
 
-`strict ordered action controller` 指当前一次只保留一个 active action 的参考实现。
-这是行为基线，不等同于最终 sequencer、每 context PC/loop 状态或并发吞吐规格。
-`vsp_action_pkg` 中的 class/status 数值只是内部控制语义，不是 instruction、trap 或
-host ABI 编码。
+新名称不使用 `Actor`、`Service` 或 `Shell`：硬件功能体写 engine/unit，接口使用方写
+client，选择逻辑写 arbiter，集成边界写 wrapper，保存级写 stage。
 
-新名称不再使用 `Actor`、`Service` 或 `Shell`：硬件功能体写 engine/unit，接口使用方写
-client，选择逻辑写 arbiter，集成边界写 wrapper，保存级写 stage。历史提交中的旧名称
-只是设计演进记录。
-
-## 6. RVV 对齐边界
+## 7. RVV 对齐边界
 
 对照采用 RISC-V International 的
-[Vector Extension 规范](https://docs.riscv.org/reference/isa/v20260120/unpriv/v-st-ext.html)
-和[官方规范源文件](https://github.com/riscv/riscv-isa-manual/blob/main/src/unpriv/vector-common.adoc)。
-对齐发生在 element、register、mask、load/store 和 permutation 等语义层，不声明
+[Vector Extension 规范](https://docs.riscv.org/reference/isa/v20260120/unpriv/v-st-ext.html)。
+对齐发生在 element、register、mask、load/store 和 indexed addressing 等语义层，不声明
 binary compatibility：
 
-- RVV 的 VLEN 是 implementation-defined 常量，运行时活动长度是 `vl`；VSP 当前没有
-  与之兼容的 programming model，但已有自身的参数化物理 RF 宽度；
+- VSP 当前没有 RVV-compatible `vl`、`vtype`、`LMUL` programming model；
 - RVV mask bit 对应 logical element，VSP MRF 当前对应 physical byte lane；
-- RVV mask 位于普通 vector register（通常由 v0 提供），VSP 具有独立 MRF；
-- RVV 的 widening/narrowing 通过 EEW/EMUL 约束 vector register operands，VSP 具有
-  独立 ARF 与显式 wide/narrow 数据通路；
-- RVV unit-stride、constant-stride 和 indexed memory operation 是架构访存语义；
-  当前 vector memory engine 只实现顺序、blocking 的 VRF transfer profile。
+- RVV widening/narrowing 的 EEW/EMUL 约束与 VSP 的独立 ARF/显式宽窄通路不同；
+- VSP 已实现 `UNIT_STRIDE` 和 unsigned-byte `INDEX_U8`，但尚未覆盖 RVV constant-stride、
+  ordered/unordered indexed 变体、完整 EEW/EMUL、mask/tail/fault-only-first 等合同；
+- `VGATHER`/`VSCATTER` 是当前内部 assembler 拼写，不是 RVV 指令编码兼容声明。
