@@ -186,7 +186,7 @@ uint32_t enc_mrf(unsigned mask_op, unsigned ma, unsigned mb, unsigned md,
 
 uint32_t enc_route(unsigned vs, unsigned vi, unsigned vd,
                    uint32_t reserved = 0) {
-  return (kFmtRoute << 28) | (3u << 26) | (vs << 22) | (vd << 18) | (vi << 6) |
+  return (kFmtRoute << 28) | (vs << 22) | (vd << 18) | (vi << 6) |
          reserved;
 }
 
@@ -516,20 +516,21 @@ void test_golden_formats(Vvsp_exec_uword_expander& dut) {
   expected.dst_vrf = 2;
   expected.write_vrf = true;
   expected.route_enable = true;
-  expected.route_io_mode = 3;
+  expected.route_io_mode = 0;
   expected.route_op = 0;
   expect_legal(dut, "fmtD VRF-indexed ROUTE",
                enc_route(1, 3, 2),
                false, 0, false, expected);
 
-  // Bits 27:26 are an orthogonal route IO immediate.  Decode preserves all
-  // four values; the current single-active route engine decides which modes
-  // it can execute.
+  // Bits 27:26 encode a route dependency mode. LOCAL is the special
+  // role-complete, dependency-free value; nonzero values preserve their
+  // IN/OUT roles for admission and execution policy.
   for (uint32_t io_mode = 0; io_mode < 4; ++io_mode) {
-    expected.src_a = (io_mode & 2u) ? 1 : 0;
-    expected.src_b = (io_mode & 1u) ? 3 : 0;
-    expected.dst_vrf = (io_mode & 1u) ? 2 : 0;
-    expected.write_vrf = io_mode & 1u;
+    const bool local = io_mode == 0;
+    expected.src_a = (local || (io_mode & 2u)) ? 1 : 0;
+    expected.src_b = (local || (io_mode & 1u)) ? 3 : 0;
+    expected.dst_vrf = (local || (io_mode & 1u)) ? 2 : 0;
+    expected.write_vrf = local || (io_mode & 1u);
     expected.route_io_mode = io_mode;
     const uint32_t word = (enc_route(1, 3, 2) & ~(uint32_t{3} << 26)) |
                           (io_mode << 26);

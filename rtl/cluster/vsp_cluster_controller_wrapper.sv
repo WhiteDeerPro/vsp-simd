@@ -151,6 +151,7 @@ module vsp_cluster_controller_wrapper #(
   output logic                                      vrf_arbiter_busy_o,
   output logic                                      exec_queue_empty_o,
   output logic                                      exec_tracker_empty_o,
+  output logic                                      exec_quiescent_o,
   output logic [CONTEXT_COUNT-1:0]
                                                      exec_context_children_quiescent_o,
   input  logic                                      protocol_error_clear_i,
@@ -427,8 +428,8 @@ module vsp_cluster_controller_wrapper #(
           action_cpl_memory_bytes_committed_o,
           action_cpl_memory_partial_o} = action_cpl_memory_payload;
 
-  assign end_quiescent = exec_queue_empty_o && exec_tracker_empty_o &&
-                         !mem_busy_o && !vrf_arbiter_busy_o;
+  assign end_quiescent = exec_quiescent_o && !mem_busy_o &&
+                         !vrf_arbiter_busy_o;
   assign protocol_error_o = controller_protocol_error_o ||
                             exec_protocol_error_o || mem_protocol_error_o;
 
@@ -634,6 +635,7 @@ module vsp_cluster_controller_wrapper #(
         exec_context_children_quiescent_o),
     .exec_queue_empty_o(exec_queue_empty_o),
     .exec_tracker_empty_o(exec_tracker_empty_o),
+    .exec_quiescent_o(exec_quiescent_o),
     .protocol_error_clear_i(protocol_error_clear_i),
     .exec_protocol_error_o(exec_protocol_error_o),
     .mem_protocol_error_o(mem_protocol_error_o),

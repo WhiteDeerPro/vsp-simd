@@ -61,7 +61,10 @@ VSP / SoC 子系统（未来）
   以 blocking engine 经共享 VRF arbiter 串行捕获 source/index、完成 16-byte gather，再
   逐组 masked commit；OOB 或 invalid source 关闭对应 byte write 并保留 `vd`，invalid
   mask 只诊断、不使 action 异常；
-  `io[1:0]={OUT,IN}` 已贯穿编码和 canonical payload，当前 engine 只执行完整 `INOUT`；
+  `io[1:0]` 已贯穿编码和 canonical payload：`00=LOCAL`、`01=DEP_IN`、
+  `10=DEP_OUT`、`11=DEP_INOUT`，其中 `dependency=|io`；当前 engine 可执行 `LOCAL`
+  以及 role-complete 的 `DEP_INOUT`。后者仍要求上游满足 dependency barrier，但当前
+  single-active 路径尚无双槽证明；`DEP_IN/DEP_OUT` 当前有序拒绝且不访问 VRF；
 - 可接相邻 SIMD group 边界的双向 slide，用于组成更宽的逻辑执行组；
 - mask-aware 的组合 reduction tree，可求和、最小值、最大值和获胜 lane；
 - 由 `ABSDIFF_U + REDUCE_SUM_U` 组合出的 SAD 验证内核；
@@ -147,7 +150,10 @@ arbiter 串行捕获选中 group 的 source/index row，使用 `vsp_vrf_gather` 
 ordinary EXEC/MEMORY/VRF transaction；pending route 阻止新 MEMORY，route busy 阻止
 新 ordinary EXEC/MEMORY，因而安全性不只依赖外层 strict controller。当前仍是
 single-active blocking 实现；并行 capture/commit、独立 source/destination mask、
-细粒度 predicate 和并发 resource-aware scheduling 尚未完善。`vsp_lane_gather` 与
+细粒度 predicate、双槽 dependency rendezvous 和并发 resource-aware scheduling 尚未完善。
+非零 dependency route 后续只能在两槽旧操作真实退休、ingress/tracker/reject/completion、
+MEMORY 与 VRF arbiter 都排空后接受；slot/queue 暂时为空本身不足以构成这个条件。
+`vsp_lane_gather` 与
 word-first four-pass engine 只保留为未接入的物理实现比较。
 
 `vsp_vector_memory_engine` 已接入 reference class router，但尚未接入 local SRAM 或

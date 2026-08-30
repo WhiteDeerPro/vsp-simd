@@ -146,7 +146,7 @@ Action make_route_gather(uint8_t tag, uint8_t source, uint8_t index,
   action.group_mask = 0xf;
   // EXEC vector-route format D: source and index are distributed VRF rows;
   // destination is written after the complete 16-byte source/index snapshot.
-  action.exec_base = (uint32_t{0xd} << 28) | (uint32_t{3} << 26) |
+  action.exec_base = (uint32_t{0xd} << 28) |
                      (uint32_t(source & 0xfU) << 22) |
                      (uint32_t(destination & 0xfU) << 18) |
                      (uint32_t(index & 0xfU) << 6);

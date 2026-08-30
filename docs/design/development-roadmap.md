@@ -78,7 +78,7 @@
   与 VROUTE 回归已通过；
 - `vsp_decoded_action_controller` 与 `vsp_cluster_controller_wrapper`：统一
   `EXEC/MEMORY/CONTROL` 分派、owner/context 检查、严格跨 class 顺序、统一
-  completion，以及等待 queue/tracker/memory/arbiter 强静止的 `END`；decoded LOAD →
+  completion，以及等待完整 EXEC/MEMORY/VRF-arbiter 静止的 `END`；decoded LOAD →
   profile-v0 encoded EXEC → decoded STORE → CONTROL.END 回归已通过；
 - `vsp_uword_action_adapter` 与 `vsp_uword_cluster_program_wrapper`：从 behavioral
   control store 的 byte PC 经 4-word multi-record framing 接到 CONTROL state engine 和
@@ -269,9 +269,11 @@ responder 上检查 address/context、load/store data、write strobe、request b
 ## M5：跨组 route `[blocking 执行闭环已实现；吞吐与调度待完善]`
 
 单字 `fmt=0xd` 已重定义成 `EXEC_ROUTE vs/vi/vd/io`：数据与逐 byte 8-bit index 都来自
-VRF，canonical expansion 固定为 byte GATHER；`io[1:0]={OUT,IN}` 控制 operand/write
-角色，不再编码组内 broadcast/slide/immediate index。assembler 与 expander 回归覆盖
-四种编码；当前 single-active engine 只执行 `INOUT`，其余 mode 有序拒绝且不访问 VRF。
+VRF，canonical expansion 固定为 byte GATHER；`io[1:0]` 编码
+`00=LOCAL/01=DEP_IN/10=DEP_OUT/11=DEP_INOUT`，且 `dependency=|mode`，不再编码组内
+broadcast/slide/immediate index。`LOCAL` 不隐含跨槽 barrier；当前 engine 接受 `LOCAL`
+和 role-complete 的 `DEP_INOUT`，但尚无双槽 drain 证明。`DEP_IN/DEP_OUT` 当前有序拒绝；
+未来 pair 前端只能在配对与 drain 完成后形成 accepted outstanding。
 `vsp_cluster_register_route_engine` 已通过 shared VRF arbiter 串行捕获选中 group 的
 source/index row，调用 `vsp_vrf_gather` 形成默认 16-byte 结果，再逐组 masked commit；
 completion 已接回 EXEC 路径。wrapper 还会让 pending route 等待既有 EXEC/MEMORY/VRF
@@ -302,6 +304,11 @@ valid-hit-only write mask、OOB 诊断和 valid/ready 背压，但尚未连接 g
 byte 展开。后续完善项是并行 capture/commit、独立 source/destination mask、细粒度
 predicate、精确 resource metadata、多 action scheduling，以及根据综合结果替换 gather
 datapath。它们不改变 EXEC/MEMORY/CONTROL 的顺序与完成合同。
+
+双槽 dependency route 的 admission 还需以真实退休为界：两槽旧操作的 ingress/holding、
+tracker、ordered reject/completion、MEMORY outstanding 和 shared VRF arbiter 都已排空；
+slot/queue empty 只是局部观测，不足以单独释放 rendezvous。当前外层 single-active
+controller 尚未接入这项 pair/drain 控制。
 
 `benes_network` 和既有多级网络文档保留为探索材料，不接入当前数据通路，也不作为
 decoder/class-router 的前置条件。

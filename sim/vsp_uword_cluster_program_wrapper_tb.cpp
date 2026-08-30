@@ -381,7 +381,7 @@ int main(int argc, char** argv) {
 
   const std::vector<uint32_t> program = read_hex(argv[1]);
   const std::vector<uint32_t> golden = {
-      0x17822210U, 0x10020430U, 0x00000007U, 0xdc8c0040U,
+      0x17822210U, 0x10020430U, 0x00000007U, 0xd08c0040U,
       0xc0000000U};
   if (program != golden) {
     std::cerr << "generated executable example differs from golden\n";
@@ -543,7 +543,7 @@ int main(int argc, char** argv) {
   // END is rejected, younger words are drained without entering EXEC, and the
   // program reports failure.
   const std::vector<uint32_t> early_end = {
-      0xc0000000U, 0xdc8c0040U};
+      0xc0000000U, 0xd08c0040U};
   program_store(dut, early_end);
   launch(dut, kBasePc + 8, 0, 0x5, 0xa0);
   Run early = run_until_terminal(dut);

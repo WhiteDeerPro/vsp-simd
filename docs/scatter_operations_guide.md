@@ -12,7 +12,10 @@
    Each destination byte reads its source index from another VRF row;
    duplicate source indices are legal and mean multicast. It does not form
    memory addresses. Its blocking cluster capture/commit path is connected;
-   the current engine executes only complete `INOUT` route mode.
+   `00=LOCAL` is self-contained and has no implicit cross-slot barrier.
+   The engine also accepts role-complete `DEP_INOUT`, but the current upstream
+   path does not prove its cross-slot drain precondition. `DEP_IN/DEP_OUT` are
+   currently ordered rejects with no VRF traffic.
 2. The current vector memory path moves a contiguous span from
    `sbase + offset`. It does not consume a vector of addresses.
 3. Scatter writes `value[i]` to an address selected by `index[i]`. Equal
@@ -91,7 +94,8 @@ the register-route engine.
 
 ## What is intentionally not claimed
 
-- cooperative OUT-only/IN-only route-wave rendezvous is not connected;
+- cooperative `DEP_OUT`/`DEP_IN` route-wave rendezvous and its full retirement
+  drain are not connected; slot/queue empty alone is not a sufficient drain;
 - no current indexed load/store command;
 - no current atomic histogram update;
 - no current automatic 16-lane count collection;

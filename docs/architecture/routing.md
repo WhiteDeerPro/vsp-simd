@@ -60,12 +60,12 @@ Bênes 内容保留为实现比较和扩展研究，不是当前 VROUTE 的连�
 profile v0 的单字 `fmt=0xd` 已重定义为纯向量 gather：
 
 ```text
-EXEC_ROUTE vs=1 vi=3 vd=2 io=3
+EXEC_ROUTE vs=1 vi=3 vd=2
 ```
 
 `vs` 是数据 VRF row，`vi` 是保存逐 byte 8-bit index 的 VRF row，`vd` 是目的
-VRF row。展开结果固定为 `PASS_A/BYTE/GATHER`，`write_vrf=IN`；除新的 OUT/IN role
-immediate 外，旧的 index/broadcast/slide control 均为零。重复索引自然表达广播；
+VRF row。省略 `io` 表示 `LOCAL`，展开结果固定为 `PASS_A/BYTE/GATHER` 并写 `vd`；
+除新的 dependency mode 外，旧的 index/broadcast/slide control 均为零。重复索引自然表达广播；
 偏移索引表达 domain 内 slide mapping。越界或
 inactive source 会关闭对应目的 byte 的写使能并保留旧 `vd`；需要 zero-fill slide 时，
 程序必须先清零目的值或显式选择一个有效零源。现有
@@ -101,9 +101,12 @@ domain_byte = 4 * group_local_slot + lane_offset
 身份没有编码进 `vi`，也不参与上述 byte index 计算。
 
 VROUTE v0 的 `group_mask` 来自 canonical action envelope，不来自 `fmt=0xd` 或 MRF。
-`fmt=0xd` 的 `[27:26]` 是 `OUT/IN` role immediate；当前可执行的 blocking action 必须
-为 `INOUT`，因此仍由同一 mask 同时选择 source 与 destination。其他三种 mode 已编码并
-贯穿 canonical payload，但当前 engine 会在任何 VRF 访问前有序拒绝。
+`fmt=0xd` 的 `[27:26]` 是 route dependency mode：`00=LOCAL`、`01=DEP_IN`、
+`10=DEP_OUT`、`11=DEP_INOUT`，并定义 `dependency=|mode`。`LOCAL` 是自包含操作，
+不隐含跨槽 barrier；`DEP_INOUT` 只是 role-complete，无需另一条 half descriptor，仍
+带有跨槽 drain 要求。当前 engine 接受 `LOCAL/DEP_INOUT`，并由同一 mask 同时选择
+source 与 destination；当前上游没有双槽 barrier 证明，所以执行 `DEP_INOUT` 只保留为
+reference compatibility。`DEP_IN/DEP_OUT` 当前有序拒绝且不产生 VRF transaction。
 一个选中 bit 把该 group 的四个 destination byte 全部置为 active，并令 engine 捕获
 该 group 的 source/index row。route engine 的通用边界会遵守 VRF read response mask，
 但当前 group endpoint 只回显 engine 发出的全一 request mask，VRF 也没有持久 validity；
@@ -501,7 +504,7 @@ byte write、保留原 `vd` 并设置 invalid 诊断；inactive destination 同�
 但不设置这项诊断。两种情况都不会使 action illegal。该逐 byte 语义由
 `vsp_vrf_gather` 实现，不沿用 local `simd_crossbar` 的整操作 `illegal_o` 行为。
 
-首版可执行的 `INOUT group_mask` 按 group-local slot 编号，并对选中 group 的四个 byte
+当前可执行的单 descriptor `LOCAL/DEP_INOUT group_mask` 按 group-local slot 编号，并对选中 group 的四个 byte
 整组启用；它同时限定 source/index capture 与 destination commit。因而 index 指向未选中 group 的
 byte 时，等同于指向 inactive source 并禁止该目的 byte 写回。engine 接口保留
 response-mask 合并逻辑，
@@ -522,12 +525,13 @@ many-to-one 的写冲突只可能跨操作发生（后一条 gather 覆盖前一
 串行化重排缓冲。当前不支持 scatter；以后可以比较 sequencer 分解的顺序 STORE，
 或独立 indexed-memory unit，但这两条 fallback 目前都没有 RTL。
 
-### 两个 mask 协作与 outstanding 边界
+### 双槽 dependency 协作与 outstanding 边界
 
-OUT/IN 两位只声明一个 mask 在 route wave 中的角色，不负责把两个独立 action 配成一
-对。首个 cooperative profile 应只允许同一 execution context 内的 streams 协作，并以
+非零 mode 声明 route dependency；`DEP_IN/DEP_OUT` 只声明一个 mask 在 route wave 中的
+角色，不负责把两个独立 action 配成一对。`LOCAL` 则是自包含 gather，不产生隐式跨槽
+barrier。首个 cooperative profile 应只允许同一 execution context 内的 streams 协作，并以
 显式的 `{context, epoch, route_id}`（或同一条已定义的 bundle 身份）匹配；participant
-tag 可以不同。OUT/IN 本身不授权跨 context 读取 VRF；若以后需要跨 context 交换，必须
+tag 可以不同。dependency role 本身不授权跨 context 读取 VRF；若以后需要跨 context 交换，必须
 另行定义 sharing/permission 和双边 retirement 语义。匹配后形成一个内部 parent：
 
 ```text
@@ -548,8 +552,14 @@ resource_group_mask  src_group_mask | dst_group_mask
 原子 `wave_accept`；代价是更强的 head-of-line/program scheduling 约束。一个 execution
 parent 不等于一个 architectural completion：接受时为每个 participant 预留 completion，
 共同执行结束后按原 context/tag fan-out；共同 transport fault 广播给各 participant，
-逐 byte invalid 只归属有 IN role 的 participant。当前单条 `INOUT` 是一 parent/一
-completion 的特例。
+逐 byte invalid 只归属有 destination role 的 participant。当前 `LOCAL` 是普通单 action；
+当前 `DEP_INOUT` 也是单 descriptor/单 completion 的 role-complete 形状，但尚未构成带
+双槽 retirement 证明的 cooperative parent。
+
+对 dependency wave，participant 配齐仍只是必要条件。`wave_accept` 前还必须确认两槽
+在会合点之前的操作已经真实退休：不能只观察 slot/queue empty，还要覆盖 ingress/holding、
+tracker、ordered reject/completion、MEMORY outstanding 与 shared VRF arbiter 中的请求和
+响应。当前外层仍是 single-active，因此尚未接入这套双槽 drain/pair admission。
 
 parent 一旦接受，只能等待已经发出的有限 VRF response、固定 route/commit 阶段及已
 预留 completion buffer 的背压；不能再等待另一个 slot、未来指令或运行中扩大的 mask。
@@ -560,7 +570,9 @@ parent 一旦接受，只能等待已经发出的有限 VRF response、固定 ro
 out-of-band flush/epoch teardown 或 table 可直接观察到的 stream-end 才能可靠取消并报告
 孤立 fragment；位于同一阻塞队头之后的普通 END/barrier 不能反过来解锁它。无 table
 方案则由编译器/程序保证各 fragment 同时可见，系统级 abort/watchdog 负责错误恢复。
-当前 RTL 没有 rendezvous table，因此只执行单 action 的 `INOUT`。
+当前 RTL 没有 rendezvous table：`DEP_IN/DEP_OUT` 有序拒绝，不会成为等待 peer 的
+accepted outstanding；`DEP_INOUT` 虽可进入 engine，调用方目前也没有双槽 barrier
+证明，因此不能把这条兼容路径视为 cooperative closure。
 
 ### 当前为什么不选择 Bênes
 
@@ -602,8 +614,9 @@ FFT/小波是这里的主要负载依据：它们的 butterfly 在 stride 跨过
 路由替换这些往返，降低内存压力。
 
 当前 RTL 状态：组内 4×4 crossbar（`simd_crossbar`/`simd_route`）已实现并验证；
-`fmt=0xd` 已产生 `vs/vi/vd` 和 OUT/IN canonical operands；当前 engine 在任何 VRF
-事务前有序拒绝非 `INOUT` mode。`vsp_cluster_register_route_engine`
+`fmt=0xd` 已产生 `vs/vi/vd` 和 dependency canonical operands；当前 engine 直接处理
+`LOCAL` 和 role-complete 的 `DEP_INOUT`，但后者的双槽 dependency precondition 尚未由
+当前上游证明；`DEP_IN/DEP_OUT` 当前有序拒绝且不访问 VRF。`vsp_cluster_register_route_engine`
 经 cluster VRF arbiter 捕获 operands，调用 `vsp_vrf_gather` 并写回，已接入 controller/
 cluster completion 路径。`vsp_lane_gather`、`vsp_four_pass_gather_engine`、参数化
 `benes_network` 与 Omega 方案只作为实现研究材料保留，不接入正式 VROUTE 路径。

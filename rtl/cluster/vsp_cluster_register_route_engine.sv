@@ -312,12 +312,13 @@ module vsp_cluster_register_route_engine #(
               end
             end
 
-            // A partial OUT/IN descriptor is useful only after a peer-aware
-            // pre-admission rendezvous has formed one complete route wave.
-            // Never let this single-active engine accept half a wave and
-            // become outstanding while waiting for a future command.
+            // LOCAL is a complete route with no implicit peer. DEP_INOUT is
+            // role-complete after the upstream cross-slot barrier has drained
+            // older work. Partial DEP_OUT/DEP_IN descriptors are
+            // useful only after a peer-aware admission stage has merged them;
+            // never accept half a wave and wait for a future command here.
             if (!cmd_legal_i ||
-                cmd_io_mode_i != 2'b11 ||
+                (cmd_io_mode_i != 2'b00 && cmd_io_mode_i != 2'b11) ||
                 int'(cmd_context_i) >= CONTEXT_COUNT ||
                 int'(cmd_source_row_i) >= VRF_ROWS ||
                 int'(cmd_index_row_i) >= VRF_ROWS ||

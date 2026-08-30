@@ -336,6 +336,7 @@ int main(int argc, char** argv) {
   eval_low(dut);
   expect_eq("empty tracker after reset", 0, dut.tracker_occupancy_o);
   expect_eq("empty ingress after reset", 0, dut.group_ingress_valid_o);
+  expect_eq("cluster quiescent after reset", 1, dut.quiescent_o);
   expect_eq("no protocol error after reset", 0, dut.protocol_error_o);
   expect_eq("SIMD4 group0 static ID", 0, dut.simd4_id_o & 0xffu);
   expect_eq("SIMD4 group1 static ID", 1,
@@ -364,6 +365,8 @@ int main(int argc, char** argv) {
   issue_vrf_write(dut, 2, 6, 0x22222222u, 0xa2);
   eval_low(dut);
   expect_eq("blocked state completion visible", 1, dut.state_cpl_valid_o);
+  expect_eq("held state-write completion keeps nonquiescent", 0,
+            dut.quiescent_o);
   expect_eq("blocked state completion starts at group2", 2,
             dut.state_cpl_group_o);
   issue_vrf_write(dut, 1, 6, 0x11111111u, 0xa1);
@@ -379,12 +382,17 @@ int main(int argc, char** argv) {
   tick(dut);
   dut.state_cpl_ready_i = 0;
   eval_low(dut);
+  expect_eq("remaining state-write completion keeps nonquiescent", 0,
+            dut.quiescent_o);
   expect_eq("second state completion follows", 1, dut.state_cpl_valid_o);
   expect_eq("second state completion group", 1, dut.state_cpl_group_o);
   expect_eq("second state completion tag", 0xa1, dut.state_cpl_tag_o);
   dut.state_cpl_ready_i = 1;
   tick(dut);
   dut.state_cpl_ready_i = 0;
+  eval_low(dut);
+  expect_eq("state-write completions restore quiescent", 1,
+            dut.quiescent_o);
 
   // Two groups may have independent state-read returns pending. The shared
   // completion and response selectors must each hold group2 while blocked,
@@ -399,6 +407,8 @@ int main(int argc, char** argv) {
             dut.state_read_cpl_valid_o);
   expect_eq("state-read response visible", 1,
             dut.state_read_rsp_valid_o);
+  expect_eq("held state-read returns keep nonquiescent", 0,
+            dut.quiescent_o);
   expect_eq("first state-read cpl group", 2,
             dut.state_read_cpl_group_o);
   expect_eq("first state-read rsp group", 2,
@@ -472,9 +482,22 @@ int main(int argc, char** argv) {
   expect_eq("state reads bypass tracker", 0, dut.tracker_occupancy_o);
   expect_eq("state reads bypass result collector", 0,
             dut.result_valid_o);
+  expect_eq("state-read returns restore quiescent", 1,
+            dut.quiescent_o);
 
   enqueue(dut, 0, 1, 0xf, kOpAdd, 0, 1, 2, true);
+  eval_low(dut);
+  expect_eq("accepted EXEC makes cluster nonquiescent", 0,
+            dut.quiescent_o);
+  for (int timeout = 0; timeout < 100 && !dut.cpl_valid_o; ++timeout)
+    tick(dut);
+  eval_low(dut);
+  expect_eq("held command completion keeps cluster nonquiescent", 0,
+            dut.quiescent_o);
   expect_normal_completion(consume_completion(dut), 0, 1, 0xf);
+  eval_low(dut);
+  expect_eq("completion retirement restores quiescent", 1,
+            dut.quiescent_o);
 
   // Export verifies that the multicast command reached all four independent
   // register files and that the result collector preserves physical group ID.

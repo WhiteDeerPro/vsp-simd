@@ -75,6 +75,12 @@ MEMORY_ADDR_SPACES = {
     "physical": 1,
     "translated": 2,
 }
+ROUTE_IO_MODES = {
+    "local": 0,
+    "in": 1,
+    "out": 2,
+    "inout": 3,
+}
 
 # Profile-v0 semantic records use the current default widths of the state and
 # memory engines. Opaque MEMORY/CONTROL remain available below for framing
@@ -130,6 +136,15 @@ def parse_boolean(text: str, name: str, line_number: int) -> int:
     if lowered in {"0", "false", "no", "off"}:
         return 0
     raise AssemblyError(f"line {line_number}: {name} expects a boolean")
+
+
+def parse_route_io_mode(text: str, line_number: int) -> int:
+    """Parse a Format-D route role by symbolic name or numeric encoding."""
+    lowered = text.lower()
+    if lowered in ROUTE_IO_MODES:
+        return ROUTE_IO_MODES[lowered]
+    return require_range("io", parse_integer(text, line_number), 0, 3,
+                         line_number)
 
 
 def split_arguments(tokens: list[str], line_number: int) -> tuple[dict[str, str], list[str]]:
@@ -466,10 +481,8 @@ def encode_route(tokens: list[str], line_number: int) -> list[int]:
                             line_number),
         0, 15, line_number,
     )
-    route_io = require_range(
-        "io", parse_integer(take_named(named, "io", "3", line_number),
-                            line_number),
-        0, 3, line_number,
+    route_io = parse_route_io_mode(
+        take_named(named, "io", "local", line_number), line_number
     )
 
     if named:

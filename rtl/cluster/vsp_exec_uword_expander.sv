@@ -44,7 +44,9 @@ module vsp_exec_uword_expander #(
   // addresses use the ordinary A/B fields.  These legacy local-route control
   // outputs remain in the canonical bundle for interface compatibility, but
   // a legal Format-D word always drives GATHER. Bits 27:26 preserve the
-  // OUT/IN route-wave directions; other immediate controls remain zero.
+  // route-wave mode.  LOCAL (00) is self-contained; dependent modes retain
+  // their OUT/IN roles for a future peer-aware admission stage.  Other
+  // immediate controls remain zero.
   output logic                                      route_enable_o,
   output logic [vsp_exec_uword_pkg::VSP_EXEC_ROUTE_IO_W-1:0]
                                                      route_io_mode_o,
@@ -168,7 +170,7 @@ module vsp_exec_uword_expander #(
     raw_reduce_op = REDUCE_OP_SUM_U;
     raw_export_narrow = 1'b0;
     raw_route_enable = 1'b0;
-    raw_route_io_mode = VSP_EXEC_ROUTE_IO_NONE;
+    raw_route_io_mode = VSP_EXEC_ROUTE_IO_LOCAL;
     raw_route_op = ROUTE_OP_GATHER;
     raw_route_index = '0;
     raw_route_broadcast_index = '0;
@@ -512,12 +514,17 @@ module vsp_exec_uword_expander #(
         // slide are expressed by constructing the corresponding index row.
         raw_op = SIMD_OP_PASS_A;
         raw_elem_mode = ELEM_MODE_BYTE;
-        raw_reads_vrf_a = base_word_i[27];
-        raw_reads_vrf_b = base_word_i[26];
-        raw_src_a_addr = base_word_i[27] ? base_word_i[25:22] : 4'h0;
-        raw_src_b_addr = base_word_i[26] ? base_word_i[9:6] : 4'h0;
-        raw_dst_vrf_addr = base_word_i[26] ? base_word_i[21:18] : 4'h0;
-        raw_write_vrf = base_word_i[26];
+        // LOCAL consumes both operands and writes vd.  For a dependent
+        // fragment bit 1 publishes the source and bit 0 consumes the index
+        // and destination.  Partial fragments never execute separately.
+        raw_reads_vrf_a = (base_word_i[27:26] == 2'b00) ||
+                          base_word_i[27];
+        raw_reads_vrf_b = (base_word_i[27:26] == 2'b00) ||
+                          base_word_i[26];
+        raw_src_a_addr = raw_reads_vrf_a ? base_word_i[25:22] : 4'h0;
+        raw_src_b_addr = raw_reads_vrf_b ? base_word_i[9:6] : 4'h0;
+        raw_dst_vrf_addr = raw_reads_vrf_b ? base_word_i[21:18] : 4'h0;
+        raw_write_vrf = raw_reads_vrf_b;
         raw_route_enable = 1'b1;
         raw_route_io_mode = base_word_i[27:26];
         raw_route_op = ROUTE_OP_GATHER;
@@ -670,7 +677,7 @@ module vsp_exec_uword_expander #(
     export_narrow_o = 1'b0;
 
     route_enable_o = 1'b0;
-    route_io_mode_o = VSP_EXEC_ROUTE_IO_NONE;
+    route_io_mode_o = VSP_EXEC_ROUTE_IO_LOCAL;
     route_op_o = '0;
     route_index_o = '0;
     route_broadcast_index_o = '0;
@@ -706,7 +713,7 @@ module vsp_exec_uword_expander #(
 
       route_enable_o = raw_route_enable;
       route_io_mode_o = raw_route_enable ? raw_route_io_mode :
-                                            VSP_EXEC_ROUTE_IO_NONE;
+                                            VSP_EXEC_ROUTE_IO_LOCAL;
       route_op_o = raw_route_enable ? raw_route_op : ROUTE_OP_GATHER;
       route_index_o = raw_route_enable ? raw_route_index : 8'h0;
       route_broadcast_index_o = raw_route_enable ?

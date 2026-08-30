@@ -195,7 +195,7 @@ void reset(Vvsp_cluster_register_route_engine& dut, VrfModel& vrf) {
 
 void launch(Vvsp_cluster_register_route_engine& dut, VrfModel& vrf,
             uint8_t mask, uint8_t source, uint8_t index, uint8_t destination,
-            uint8_t tag, bool legal = true, uint8_t io_mode = 3) {
+            uint8_t tag, bool legal = true, uint8_t io_mode = 0) {
   dut.cmd_context_i = 0;
   dut.cmd_tag_i = tag;
   dut.cmd_group_mask_i = mask;
@@ -234,11 +234,8 @@ int main(int argc, char** argv) {
   VrfModel vrf;
   reset(dut, vrf);
 
-  // The current single-active engine can execute only a complete route wave:
-  // OUT publishes the source snapshot and IN consumes the routed destination.
-  // Half waves and a command with neither direction remain encoded, but are
-  // ordered rejects until a cooperative peer transport exists.
-  for (uint8_t io_mode : {uint8_t{0}, uint8_t{1}, uint8_t{2}}) {
+  // Partial dependent waves remain encoded but cannot execute without a peer.
+  for (uint8_t io_mode : {uint8_t{1}, uint8_t{2}}) {
     const uint64_t reads_before_io_reject = vrf.reads;
     const uint64_t writes_before_io_reject = vrf.writes;
     launch(dut, vrf, 0xf, 1, 2, 3,
@@ -264,7 +261,9 @@ int main(int argc, char** argv) {
     vrf.rows[group][3] = 0xeeeeeeeeu;
   }
 
-  launch(dut, vrf, 0xf, 1, 2, 3, 0x41);
+  // DEP_INOUT is role-complete, but still carries a dependency barrier at
+  // the upstream admission boundary.
+  launch(dut, vrf, 0xf, 1, 2, 3, 0x41, true, 3);
   run_to_completion(dut, vrf);
   expect(!dut.cpl_illegal_o && !dut.cpl_rejected_o,
          "reverse", "completion status");
@@ -285,6 +284,18 @@ int main(int argc, char** argv) {
                dut.cpl_invalid_element_mask_o == held_invalid,
            "completion stall", "stable");
   }
+  consume(dut, vrf);
+
+  // LOCAL (00) is the same complete, self-contained gather without a
+  // cross-slot dependency marker.
+  for (unsigned group = 0; group < kGroups; ++group)
+    vrf.rows[group][14] = 0xccccccccu;
+  launch(dut, vrf, 0xf, 1, 2, 14, 0x45);
+  run_to_completion(dut, vrf);
+  expect(!dut.cpl_illegal_o && !dut.cpl_rejected_o,
+         "local route", "completion status");
+  expect(unpack_rows(vrf.rows, 14) == expected_reverse,
+         "local route", "data");
   consume(dut, vrf);
 
   // Only groups 0 and 2 exist in this route domain.  Inactive destinations

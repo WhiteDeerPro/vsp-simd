@@ -56,25 +56,38 @@ def main() -> int:
     route_and_reduce = asm.assemble_text(
         """
         EXEC_ROUTE vs=1 vi=3 vd=2
-        EXEC_ROUTE vs=3 vi=4 vd=5 io=3
-        EXEC_ROUTE va=4 vi=6 vd=7 io=3
-        EXEC_ROUTE vs=1 vi=3 vd=2 io=0
-        EXEC_ROUTE vs=1 vi=3 vd=2 io=1
-        EXEC_ROUTE vs=1 vi=3 vd=2 io=2
+        EXEC_ROUTE vs=3 vi=4 vd=5 io=local
+        EXEC_ROUTE va=4 vi=6 vd=7 io=in
+        EXEC_ROUTE vs=1 vi=3 vd=2 io=out
+        EXEC_ROUTE vs=1 vi=3 vd=2 io=inout
+        EXEC_ROUTE vs=1 vi=3 vd=2 io=3
         EXEC_REDUCE op=min_u va=1
         EXEC_REDUCE op=max_u va=1
         """,
         0,
     )
     assert [word.value for word in route_and_reduce.words] == [
+        0xD04800C0,
+        0xD0D40100,
+        0xD51C0180,
+        0xD84800C0,
         0xDC4800C0,
-        0xDCD40100,
-        0xDD1C0180,
+        0xDC4800C0,
+        0x1A020003,
+        0x1A020005,
+    ]
+    numeric_route_io = asm.assemble_text(
+        "\n".join(
+            f"EXEC_ROUTE vs=1 vi=3 vd=2 io={mode}"
+            for mode in range(4)
+        ),
+        0,
+    )
+    assert [word.value for word in numeric_route_io.words] == [
         0xD04800C0,
         0xD44800C0,
         0xD84800C0,
-        0x1A020003,
-        0x1A020005,
+        0xDC4800C0,
     ]
     route_pc = asm.assemble_text(
         "route: EXEC_ROUTE vs=1 vi=0 vd=2\n"
@@ -157,6 +170,7 @@ def main() -> int:
     expect_error("EXEC_ROUTE vs=1 vi=2 vd=16")
     expect_error("EXEC_ROUTE vs=1 vi=2 vd=3 io=-1")
     expect_error("EXEC_ROUTE vs=1 vi=2 vd=3 io=4")
+    expect_error("EXEC_ROUTE vs=1 vi=2 vd=3 io=dependent")
     expect_error("EXEC_ROUTE vs=1 va=1 vi=2 vd=3")
     expect_error("EXEC_ROUTE op=gather vs=1 vi=2 vd=3")
     expect_error("EXEC_ROUTE op=broadcast va=1 vd=2 lane=0")

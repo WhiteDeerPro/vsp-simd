@@ -185,6 +185,10 @@ module simd_cluster_exec #(
                                                 queue_occupancy_o,
   output logic [TRACKER_COUNT_W-1:0]        tracker_occupancy_o,
   output logic [CONTEXT_COUNT-1:0]          context_exec_quiescent_o,
+  // No queued, dispatched, executing, rejected, or command-completion work
+  // remains.  Result records already captured by the independent result sink
+  // do not hold execution-side state and therefore do not make this false.
+  output logic                              quiescent_o,
   input  logic                              protocol_error_clear_i,
   output logic                              protocol_error_o
 );
@@ -1161,6 +1165,13 @@ module simd_cluster_exec #(
   assign cpl_rejected_o = completion_rejected_q;
   assign cpl_empty_mask_o = completion_empty_mask_q;
   assign cpl_owner_mismatch_o = completion_owner_mismatch_q;
+
+  assign quiescent_o = !(|queue_occupancy_o) && !(|ingress_valid_q) &&
+                       !(|tracker_occupancy_o) && !reject_valid_q &&
+                       !completion_valid_q && !(|wrapper_cpl_valid) &&
+                       !(|wrapper_rsp_valid) &&
+                       !(|wrapper_state_read_cpl_valid) &&
+                       !(|wrapper_state_read_rsp_valid);
 
   initial begin
     if (SIMD4_ID_W != 8) $error("SIMD4 identity is defined as 8 bits");

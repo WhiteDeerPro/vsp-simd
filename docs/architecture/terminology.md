@@ -80,7 +80,7 @@ domain 的局部 byte 排列解释。
 | `EXEC` | 进入 SIMD group execution path 的 dispatch class，可包含 ALU、route、reduction 等操作 |
 | `MEMORY` | 进入 vector memory engine 的 dispatch class |
 | `CONTROL` | 进入 controller-local path 的 dispatch class；当前 reference RTL 只实现等待内部强静止条件后完成的 `END` |
-| `END` | ordered action stream 的结束动作；等待当前 integration 的内部 queue/tracker/memory/arbiter 静止，不清 RF、不转移 owner，也不直接检查外部 result 口是否为空；有限 staging 满时，外部背压仍可间接延迟结束 |
+| `END` | ordered action stream 的结束动作；等待当前 integration 的 EXEC queue/ingress/tracker/reject/completion、memory 与 VRF arbiter 静止，不清 RF、不转移 owner，也不直接检查已经被 collector 保存的外部 result record 是否被消费；有限 staging 满时，外部背压仍可间接延迟结束 |
 | action completion | action 的统一有序退休记录；`valid` 时保留原 class/context/tag/requested-group-mask 与 status，原 envelope 非法时 class/context 也保留该非法值供相关和诊断；class-specific engine detail 在 controller-local error 时为零 |
 | `program_done` | 成功 `END` completion 被接收时的单拍脉冲；表示结束记录退休，不自动证明此前每个 action 成功，也不等同于 host interrupt |
 | sequencer/control word (`uword`) | 候选的紧凑内部控制存储格式；不是已定义的 16/32-bit ISA instruction |
@@ -102,9 +102,9 @@ domain 的局部 byte 排列解释。
 | address context | 交给未来 translation/protection adapter 的 opaque domain handle |
 | AGU | address-generation unit；把已解析 base/offset/beat index 变为 effective address，不负责 outstanding response correlation 或 retirement |
 | outstanding transaction | request 已被 endpoint 接受、对应 response 尚未完成的事务；当前 vector memory engine 限制为一个 dmem beat |
-| route IO mode | `fmt=0xd` 的 2-bit `{OUT,IN}` immediate；OUT 声明 mask 发布 source row，IN 声明 mask 消费 index 并提交 destination；它不是 ready/valid 握手信号 |
-| route wave | 同一 execution context 内已经配齐 source/destination roles、以 union group mask 原子接受的跨 mask execution parent；participant tag 可不同并在共同执行后分别完成，当前 RTL 只实现单 action/单 completion 的 `INOUT` 特例 |
-| rendezvous fragment | OUT/IN route descriptor；可由有限 pre-admission table 捕获，也可停在 queue head 等待同时可见的 peer，但在 `wave_accept` 前不得占有 execution tracker、group 或 route-engine outstanding 资源 |
+| route dependency mode | `fmt=0xd` 的 2-bit immediate：`00=LOCAL`、`01=DEP_IN`、`10=DEP_OUT`、`11=DEP_INOUT`，并定义 `dependency=|mode`；LOCAL 是无隐式跨槽 barrier 的自包含 route，DEP 模式声明跨槽 dependency role，不是 ready/valid 握手信号 |
+| route wave | 同一 execution context 内已经配齐 source/destination roles、完成 participant 旧操作 drain、并以 union group mask 原子接受的跨 mask execution parent；participant tag 可不同并在共同执行后分别完成；当前 `DEP_INOUT` 只是 role-complete 单 descriptor，尚无双槽 drain/parent/fan-out closure，`LOCAL` 不属于 dependency wave |
+| rendezvous fragment | `DEP_IN`/`DEP_OUT` route descriptor；可由有限 pre-admission table 捕获，也可停在 queue head 等待同时可见的 peer，但在 `wave_accept` 前不得占有 execution tracker、group 或 route-engine outstanding 资源；当前双槽配对前端尚未接入 |
 | fragment capture / wave accept | 前者只把 descriptor 收入有限 rendezvous staging；后者在 participant 配齐后原子预留 union resources 与全部 completion credit，并真正建立 route outstanding |
 | ordered dmem model | `dmem_req/rsp` 的 simulation-only byte-array endpoint；可接受多个无 ID request，但只按 request 顺序返回，不表示物理 SRAM/cache 已实现 |
 | request / response / completion | decoupled 协议中的请求、带数据返回和事务完成通知 |

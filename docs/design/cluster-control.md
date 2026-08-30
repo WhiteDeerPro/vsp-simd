@@ -162,7 +162,10 @@ arbiter 串行捕获选中 group 的 source row，再捕获 index row；完整 s
 16-byte `vsp_vrf_gather`，结果随后逐组 masked commit。所有读取先于第一次写回，
 所以 `vd==vs` 或 `vd==vi` 安全；completion 在最后一项选中 group write 完成后产生。
 
-`fmt=0xd` 已增加 `route_io_mode[1:0]={OUT,IN}`。当前 engine 只执行 `INOUT`，并只使用
+`fmt=0xd` 已增加 2-bit route dependency mode：`00=LOCAL`、`01=DEP_IN`、
+`10=DEP_OUT`、`11=DEP_INOUT`，且 `dependency=|mode`。`LOCAL` 是无隐式跨槽 barrier 的
+自包含 route；`DEP_INOUT` 是无需 half-descriptor peer 的 role-complete 形状，但仍带
+dependency barrier。当前 engine 接受 `LOCAL/DEP_INOUT`，并只使用
 一份 resolved `action_group_mask`：每个 bit 同时决定该 group 的 source/index capture
 和 destination commit，并整组展开成四个 destination byte。未选中的目的保持
 旧值；active destination 的 index 越界或指向未选中/无效 source 时，也关闭对应 byte
@@ -188,7 +191,7 @@ capture 前不能推导真实 source 集合时，也可以显式提供 source ma
 route domain。并行 VRF capture/commit、独立 source/destination mask、细粒度 predicate
 和 resource-aware multi-action scheduling 都是当前 blocking closure 之后的增强。
 
-OUT-only 与 IN-only 不能分别成为两个已接受的 outstanding 再互相等待。那会产生典型
+`DEP_OUT` 与 `DEP_IN` 不能分别成为两个已接受的 outstanding 再互相等待。那会产生典型
 hold-and-wait：A 已占 source group 等 B，B 又因 A 占用的 group、route engine、队头或
 最后一个 completion credit 无法发射。正确同步点在 admission 之前：两个带显式
 `{context,epoch,route_id}` 的 descriptor 先配成一个 route-wave parent；首个 profile
@@ -198,10 +201,17 @@ hold-and-wait：A 已占 source group 等 B，B 又因 A 占用的 group、route
 `src_group_mask | dst_group_mask` 和每个 participant 的 completion credit。parent 一旦
 进入执行，不再等待未来 action；完成后向各原 tag fan-out completion。
 
+在 dependency wave 接受前，两槽在会合点之前的操作还必须真实退休。只看到另一槽或
+queue 为空并不充分；drain 需要同时覆盖 ingress/holding、tracker、ordered reject 与
+completion、MEMORY outstanding，以及 shared VRF arbiter 中尚未完成的请求/响应。
+等待中的 fragment 不得设置全局 route busy 或阻塞另一槽推进其旧操作。当前外层仍为
+single-active，双槽 pair/drain admission 尚未接入。
+
 孤立 descriptor 只能由 out-of-band flush/epoch teardown、table 可观察的 stream-end 或
 系统 abort 取消；不能指望堵在它后面的普通 END/barrier 破局。当前 RTL 尚无这个配对
-入口，所以
-`NONE/IN/OUT` mode 有序拒绝且不访问 VRF，只有 `INOUT` 进入 blocking engine。
+入口。当前 RTL 对 `DEP_IN/DEP_OUT` 产生有序 reject 且不访问 VRF；`DEP_INOUT` 可进入
+engine，但上游尚未证明另一槽已 drain，因此只是 reference compatibility，不是双槽
+cooperative closure。
 `vsp_lane_gather` 与固定四次 group-word/local-route 继续作为综合 A/B reference；拓扑
 探索记录在[路由](../architecture/routing.md)，本页不重复。
 
@@ -380,8 +390,10 @@ per-group 1-entry EXEC ingress
   encoded instruction format；
 - `context_exec_quiescent` 只表示 tracker 中的 EXEC child 已清空，不包含仍在 queue
   中的命令、尚未被 collector 接管的 result obligation 或 MEMORY inflight；controller
-  的当前全局 `END` 改用 `queue_empty && tracker_empty && !mem_busy && !arbiter_busy`
-  作为更强的静止条件。
+  的当前全局 `END` 改用 `exec_quiescent && !mem_busy && !arbiter_busy`。其中
+  `exec_quiescent` 还覆盖 queue、group ingress、tracker、reject、ordered command
+  completion 以及尚未被 collector 接管的 wrapper response；已经被 result collector
+  保存的独立 data record 不再占执行侧状态。
 
 `simd_cluster_exec` 本体还没有 class router、动态 owner table、barrier、MEMORY parent、
 跨 group boundary staging 或 host/OS completion。因此此模块只称 cluster execution

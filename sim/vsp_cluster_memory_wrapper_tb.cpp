@@ -257,7 +257,7 @@ void issue_add_immediate(Vvsp_cluster_memory_wrapper& dut,
 
 void configure_route(Vvsp_cluster_memory_wrapper& dut, uint8_t tag,
                      uint8_t source_row, uint8_t index_row,
-                     uint8_t destination_row) {
+                     uint8_t destination_row, uint8_t io_mode = 0) {
   clear_exec_command(dut);
   dut.exec_cmd_valid_i = 1;
   dut.exec_cmd_context_i = 0;
@@ -270,7 +270,7 @@ void configure_route(Vvsp_cluster_memory_wrapper& dut, uint8_t tag,
   dut.exec_cmd_dst_vrf_addr_i = destination_row;
   dut.exec_cmd_write_vrf_i = 1;
   dut.exec_cmd_route_enable_i = 1;
-  dut.exec_cmd_route_io_mode_i = 3;
+  dut.exec_cmd_route_io_mode_i = io_mode;
   dut.exec_cmd_route_op_i = kRouteGather;
 }
 
@@ -430,7 +430,7 @@ int main(int argc, char** argv) {
 
   // An already-active MEMORY action drains before VROUTE may snapshot VRF.
   issue_memory(dut, memory, kMemLoad, 0x4a, kIndexBase, 0xf, 4, 16);
-  configure_route(dut, 0x4b, 3, 4, 5);
+  configure_route(dut, 0x4b, 3, 4, 5, 3);
   for (int cycle = 0; cycle < 5; ++cycle) {
     memory.drive(dut);
     dut.clk_i = 0;
@@ -539,6 +539,55 @@ int main(int argc, char** argv) {
   }
   expect_eq("owner-mismatched route completed", 1, reject_completed);
   dut.group_owner_valid_i = 0xf;
+
+  // Partial dependent route roles are accepted only to produce one ordered
+  // reject. They must never launch the VRF-backed route transaction.
+  for (uint8_t io_mode : {uint8_t{1}, uint8_t{2}}) {
+    configure_route(dut, static_cast<uint8_t>(0x68 + io_mode), 3, 4, 5,
+                    io_mode);
+    bool partial_accepted = false;
+    for (int timeout = 0; timeout < 100; ++timeout) {
+      memory.drive(dut);
+      dut.clk_i = 0;
+      dut.eval();
+      if (dut.exec_cmd_ready_o) {
+        memory.step(dut);
+        clear_exec_command(dut);
+        partial_accepted = true;
+        break;
+      }
+      memory.step(dut);
+    }
+    expect_eq("partial route accepted for ordered reject", 1,
+              partial_accepted);
+    for (int timeout = 0; timeout < 100; ++timeout) {
+      memory.drive(dut);
+      dut.clk_i = 0;
+      dut.eval();
+      if (dut.exec_cpl_valid_o) {
+        expect_eq("partial route completion illegal", 1,
+                  dut.exec_cpl_illegal_o);
+        expect_eq("partial route completion rejected", 1,
+                  dut.exec_cpl_rejected_o);
+        expect_eq("partial completion holds EXEC nonquiescent", 0,
+                  dut.exec_quiescent_o);
+        dut.exec_cpl_ready_i = 1;
+        memory.step(dut);
+        dut.exec_cpl_ready_i = 0;
+        break;
+      }
+      memory.step(dut);
+      if (timeout == 99) {
+        std::cerr << "timeout partial route completion\n";
+        std::exit(1);
+      }
+    }
+  }
+  memory.drive(dut);
+  dut.clk_i = 0;
+  dut.eval();
+  expect_eq("EXEC quiescent after partial rejects", 1,
+            dut.exec_quiescent_o);
 
   expect_eq("memory engine idle", 0, dut.mem_busy_o);
   expect_eq("VRF arbiter idle", 0, dut.vrf_arbiter_busy_o);

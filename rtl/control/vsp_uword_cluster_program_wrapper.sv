@@ -277,6 +277,7 @@ module vsp_uword_cluster_program_wrapper #(
   logic cluster_vrf_arbiter_busy;
   logic cluster_exec_queue_empty;
   logic cluster_exec_tracker_empty;
+  logic cluster_exec_quiescent;
   logic [CONTEXT_COUNT-1:0] cluster_context_quiescent;
   logic cluster_controller_protocol_error;
   logic cluster_exec_protocol_error;
@@ -723,6 +724,7 @@ module vsp_uword_cluster_program_wrapper #(
     .vrf_arbiter_busy_o(cluster_vrf_arbiter_busy),
     .exec_queue_empty_o(cluster_exec_queue_empty),
     .exec_tracker_empty_o(cluster_exec_tracker_empty),
+    .exec_quiescent_o(cluster_exec_quiescent),
     .exec_context_children_quiescent_o(cluster_context_quiescent),
     .protocol_error_clear_i,
     .controller_protocol_error_o(cluster_controller_protocol_error),
@@ -880,7 +882,8 @@ module vsp_uword_cluster_program_wrapper #(
       adapter_action_is_end ^ adapter_record_ready ^
       (^program_group_mask_q) ^ cluster_mem_busy ^
       cluster_vrf_arbiter_busy ^ cluster_exec_queue_empty ^
-      cluster_exec_tracker_empty ^ (^cluster_context_quiescent) ^
+      cluster_exec_tracker_empty ^ cluster_exec_quiescent ^
+      (^cluster_context_quiescent) ^
       state_cmd_valid ^ state_cmd_ready ^ state_busy ^
       adapter_memory_base_read_valid ^
       (^adapter_memory_base_read_reg) ^

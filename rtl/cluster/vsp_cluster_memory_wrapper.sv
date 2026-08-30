@@ -168,6 +168,9 @@ module vsp_cluster_memory_wrapper #(
                                                exec_context_children_quiescent_o,
   output logic                              exec_queue_empty_o,
   output logic                              exec_tracker_empty_o,
+  // Stronger than queue/tracker emptiness: includes accepted work between
+  // those structures and ordered command-completion retirement.
+  output logic                              exec_quiescent_o,
   input  logic                              protocol_error_clear_i,
   output logic                              exec_protocol_error_o,
   output logic                              mem_protocol_error_o,
@@ -306,6 +309,7 @@ module vsp_cluster_memory_wrapper #(
   /* verilator lint_on UNUSED */
   logic route_busy;
   logic route_protocol_error;
+  logic cluster_exec_quiescent;
   logic mem_engine_cmd_valid;
   logic mem_engine_cmd_ready;
   /* verilator lint_off UNUSED */
@@ -332,6 +336,7 @@ module vsp_cluster_memory_wrapper #(
 
   assign exec_queue_empty_o = !(|exec_queue_occupancy) && !route_busy;
   assign exec_tracker_empty_o = !(|exec_tracker_occupancy) && !route_busy;
+  assign exec_quiescent_o = cluster_exec_quiescent && !route_busy;
 
   assign issue_slot_grant = {ISSUE_SLOTS{1'b1}};
   assign exec_protocol_error_o = cluster_exec_protocol_error ||
@@ -344,10 +349,8 @@ module vsp_cluster_memory_wrapper #(
   // same-row update.  A pending route has deterministic priority over a new
   // MEMORY command; an already-active MEMORY/EXEC command drains first.
   assign route_request = exec_cmd_valid_i && exec_cmd_route_enable_i;
-  assign route_admission_quiescent =
-      !(|exec_queue_occupancy) && !(|exec_tracker_occupancy) &&
-      !cluster_exec_cpl_valid && !mem_busy_o && !mem_cpl_valid_o &&
-      !vrf_arbiter_busy_o;
+  assign route_admission_quiescent = cluster_exec_quiescent &&
+      !mem_busy_o && !mem_cpl_valid_o && !vrf_arbiter_busy_o;
   assign route_launch_valid = route_request && route_admission_quiescent;
   assign route_launch_fire = route_launch_valid && route_cmd_ready;
   assign mem_engine_cmd_valid = mem_cmd_valid_i && !route_busy &&
@@ -365,7 +368,8 @@ module vsp_cluster_memory_wrapper #(
       !exec_cmd_write_mrf_i && !exec_cmd_export_narrow_i &&
       !exec_cmd_use_imm_i && !exec_cmd_mask_enable_i &&
       !exec_cmd_reduce_enable_i &&
-      exec_cmd_route_io_mode_i == 2'b11 &&
+      (exec_cmd_route_io_mode_i == 2'b00 ||
+       exec_cmd_route_io_mode_i == 2'b11) &&
       exec_cmd_route_op_i == ROUTE_OP_GATHER &&
       !(|exec_cmd_route_index_i) &&
       !(|exec_cmd_route_broadcast_index_i) &&
@@ -568,6 +572,7 @@ module vsp_cluster_memory_wrapper #(
     .queue_occupancy_o(exec_queue_occupancy),
     .tracker_occupancy_o(exec_tracker_occupancy),
     .context_exec_quiescent_o(exec_context_children_quiescent_o),
+    .quiescent_o(cluster_exec_quiescent),
     .protocol_error_clear_i(protocol_error_clear_i),
     .protocol_error_o(cluster_exec_protocol_error)
   );
