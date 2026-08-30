@@ -26,8 +26,9 @@ strict single-active controller
 
 There is one PC, one execution context and one issue slot in the executable
 profile.  The PC advances by four bytes for every stream word, including an
-extension/body word.  `J/BEQ/BNE` may redirect that single PC; there is no
-second PC, prediction, delay slot, CALL/RET or exception restart.
+extension/body word.  `J` and direct-comparison branches may redirect that
+single PC; there is no second PC, prediction, delay slot, CALL/RET or exception
+restart.
 
 `FETCH_WORDS=4` means that the I-side can return four consecutive 32-bit stream
 words in one bundle.  It does not mean four instructions are issued.  A bundle

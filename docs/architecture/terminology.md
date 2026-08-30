@@ -79,7 +79,7 @@ physical `SIMD group` 没有对应关系，文档不得把二者简称为同一�
 | dispatch class | **internal action dispatch category**；决定 action 进入 `EXEC`、`MEMORY` 或 `CONTROL` 路径，不属于编程模型 |
 | `EXEC` | 进入 SIMD group execution path 的 dispatch class；当前产品入口承载算术、逻辑、窄化与 reduction，不承载寄存器全域 VROUTE |
 | `MEMORY` | 进入 vector memory engine 的 dispatch class；同时承载 `UNIT_STRIDE` 与 `INDEX_U8` |
-| `CONTROL` | 进入 controller-local/state path 的 dispatch class；当前包含 state action、`J/BEQ/BNE` 和最终 `END` |
+| `CONTROL` | 进入 controller-local/state path 的 dispatch class；当前包含 state action、`J`、六种双寄存器比较 branch 和最终 `END` |
 | branch redirect | sequencer-local CONTROL action 对唯一 program PC 的更新；会清除尚未发射的年轻 fetch/framer 状态，不创建新 context 或 PC |
 | `END` | 等待 EXEC、MEMORY、VRF arbiter 和完成路径强静止后退休的流结束动作；不清 RF、不转移 owner |
 | action completion | action 的统一有序退休记录；保留 class/context/tag/requested-group-mask 与 status |

@@ -81,7 +81,7 @@ digraph vsp_current_integration {
       color="#4e8f62"
     ];
     branch_control [
-      label="CONTROL branch\nJ / BEQ / BNE\nrange check + redirect/flush + completion",
+      label="CONTROL branch\nJ + EQ/NE/LT/GE signed/unsigned\nrange check + redirect/flush + completion",
       fillcolor="#ecf8ef",
       color="#4e8f62"
     ];

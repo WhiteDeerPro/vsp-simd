@@ -2,10 +2,10 @@
 # four-word fetch bundle, intentionally exercising redirect of a prefetched
 # terminal record.
 
-    SMOVI rd=1 imm=3
+    LI rd=1 imm=3
 
 loop:
-    SADDI rd=1 rs1=1 imm=-1
+    ADDI rd=1 rs1=1 imm=-1
     BNEZ rs1=1 target=loop
 
-    CONTROL_END
+    END

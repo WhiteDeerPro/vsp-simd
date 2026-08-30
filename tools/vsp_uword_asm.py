@@ -66,13 +66,30 @@ STATE_OPS = {
     "sadd": 1,
     "saddi": 2,
 }
+STATE_ALIASES = {
+    "li": "smovi",
+    "add": "sadd",
+    "addi": "saddi",
+}
 BRANCH_CONDITIONS = {
     "j": 0,
     "beq": 1,
     "bne": 2,
+    "blt": 3,
+    "bge": 4,
+    "bltu": 5,
+    "bgeu": 6,
     "beqz": 1,
     "bnez": 2,
+    "bltz": 3,
+    "bgez": 4,
+    "bgtz": 3,
+    "blez": 4,
 }
+SINGLE_REGISTER_BRANCHES = {
+    "beqz", "bnez", "bltz", "bgez", "bgtz", "blez",
+}
+ZERO_FIRST_BRANCHES = {"bgtz", "blez"}
 MEMORY_OPS = {
     "vload": 0,
     "vstore": 1,
@@ -299,7 +316,10 @@ def encode_branch(tokens: list[str], operation: str, line_number: int,
                                   line_number),
             0, STATE_REGS - 1, line_number,
         )
-        if operation in {"beq", "bne"}:
+        if operation in ZERO_FIRST_BRANCHES:
+            rs2 = rs1
+            rs1 = 0
+        elif operation not in SINGLE_REGISTER_BRANCHES:
             rs2 = require_range(
                 "rs2", parse_integer(
                     take_named(named, "rs2", None, line_number), line_number
@@ -327,15 +347,15 @@ def encode_branch(tokens: list[str], operation: str, line_number: int,
 
     # CONTROL branch profile:
     #   [31:28] major C, [27:26] one body word, [25:24] branch family 3,
-    #   [23:22] condition, [21:17] rs1, [16:12] rs2, [11:0] zero.
+    #   [23:21] condition, [20:16] rs1, [15:11] rs2, [10:0] zero.
     # The body is a signed byte displacement relative to this header's PC.
     header = 0
     header |= 0xC << 28
     header |= 1 << 26
     header |= 3 << 24
-    header |= BRANCH_CONDITIONS[operation] << 22
-    header |= rs1 << 17
-    header |= rs2 << 12
+    header |= BRANCH_CONDITIONS[operation] << 21
+    header |= rs1 << 16
+    header |= rs2 << 11
     return [header, displacement & 0xFFFFFFFF]
 
 
@@ -572,6 +592,7 @@ def encode_statement(statement: str, line_number: int, current_pc: int = 0,
 
     operation = tokens[0].lower()
     arguments = tokens[1:]
+    operation = STATE_ALIASES.get(operation, operation)
     if operation in {"raw", ".word"}:
         if len(arguments) != 1:
             raise AssemblyError(f"line {line_number}: {operation} expects one word")
@@ -596,9 +617,9 @@ def encode_statement(statement: str, line_number: int, current_pc: int = 0,
         return encode_opaque_record(0xB, arguments, line_number)
     if operation == "control":
         return encode_opaque_record(0xC, arguments, line_number)
-    if operation == "control_end":
+    if operation in {"control_end", "end"}:
         if arguments:
-            raise AssemblyError(f"line {line_number}: CONTROL_END takes no arguments")
+            raise AssemblyError(f"line {line_number}: {operation.upper()} takes no arguments")
         return [0xC0000000]
     raise AssemblyError(f"line {line_number}: unknown operation {tokens[0]!r}")
 

@@ -54,8 +54,9 @@ module vsp_control_uword_decoder #(
   // SMOVI/SADDI own one immediate body word; SADD is a one-word record.
   // State operation code 2'b11 introduces a distinct, fixed two-word branch
   // family:
-  //   [23:22] condition J/BEQ/BNE, [21:17] rs1, [16:12] rs2,
-  //   [11:0] reserved zero; body word = signed PC-relative byte offset.
+  //   [23:21] condition J/BEQ/BNE/BLT/BGE/BLTU/BGEU,
+  //   [20:16] rs1, [15:11] rs2, [10:0] reserved zero;
+  //   body word = signed PC-relative byte offset.
   localparam int CONTROL_BODY_COUNT_MSB = 27;
   localparam int CONTROL_BODY_COUNT_LSB = 26;
   localparam int CONTROL_STATE_OP_MSB = 25;
@@ -71,12 +72,12 @@ module vsp_control_uword_decoder #(
   localparam int CONTROL_ENCODED_REG_W = 5;
   localparam logic [VSP_STATE_OP_W-1:0] CONTROL_BRANCH_FAMILY = 2'b11;
   localparam int CONTROL_BRANCH_COND_MSB = 23;
-  localparam int CONTROL_BRANCH_COND_LSB = 22;
-  localparam int CONTROL_BRANCH_RS1_MSB = 21;
-  localparam int CONTROL_BRANCH_RS1_LSB = 17;
-  localparam int CONTROL_BRANCH_RS2_MSB = 16;
-  localparam int CONTROL_BRANCH_RS2_LSB = 12;
-  localparam int CONTROL_BRANCH_RESERVED_MSB = 11;
+  localparam int CONTROL_BRANCH_COND_LSB = 21;
+  localparam int CONTROL_BRANCH_RS1_MSB = 20;
+  localparam int CONTROL_BRANCH_RS1_LSB = 16;
+  localparam int CONTROL_BRANCH_RS2_MSB = 15;
+  localparam int CONTROL_BRANCH_RS2_LSB = 11;
+  localparam int CONTROL_BRANCH_RESERVED_MSB = 10;
   localparam int CONTROL_BRANCH_RESERVED_LSB = 0;
 
   logic [VSP_UWORD_W-1:0] header;

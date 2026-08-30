@@ -424,7 +424,7 @@ int main(int argc, char** argv) {
   const std::vector<uint32_t> branch_loop_golden = {
       0xc4080000U, 0x00000003U,
       0xc6084000U, 0xffffffffU,
-      0xc7820000U, 0xfffffff8U,
+      0xc7410000U, 0xfffffff8U,
       0xc0000000U};
   if (branch_loop_program != branch_loop_golden) {
     std::cerr << "generated branch-loop example differs from golden\n";
@@ -502,7 +502,7 @@ int main(int argc, char** argv) {
   const std::vector<uint32_t> equal_branch = {
       0xc4080000U, 0x00000007U,
       0xc4100000U, 0x00000007U,
-      0xc7422000U, 0x0000000cU,
+      0xc7211000U, 0x0000000cU,
       0x17822210U, 0xc0000000U};
   program_store(dut, equal_branch);
   launch(dut, kBasePc + 32, 0, 0x1, 0xe8);
@@ -520,6 +520,63 @@ int main(int argc, char** argv) {
                    kStatusOk, 0, true, "BEQ target END");
   expect_eq("BEQ skipped EXEC has no result", 0,
             equal_taken.results.size());
+
+  // Signed and unsigned comparisons intentionally see 0xffffffff
+  // differently.  Each relation below is taken and skips its adjacent EXEC.
+  const std::vector<uint32_t> signed_branches = {
+      0xc4080000U, 0xffffffffU,
+      0xc4100000U, 0x00000001U,
+      0xc7611000U, 0x0000000cU, 0x17822210U,
+      0xc7820800U, 0x0000000cU, 0x17822210U,
+      0xc0000000U};
+  program_store(dut, signed_branches);
+  launch(dut,
+         kBasePc + static_cast<uint32_t>(4 * signed_branches.size()),
+         0, 0x1, 0xec);
+  Run signed_compared = run_until_terminal(dut);
+  expect_eq("signed-branch program completed", 1, signed_compared.done);
+  expect_eq("signed-branch program has no error", 0,
+            signed_compared.error);
+  expect_eq("signed-branch completion count", 5,
+            signed_compared.completions.size());
+  for (size_t index = 0; index < 4; ++index) {
+    check_completion(signed_compared.completions[index], kControl, 0,
+                     static_cast<uint8_t>(0xec + index), 0,
+                     kStatusOk, 0, false,
+                     "signed-branch CONTROL " + std::to_string(index));
+  }
+  check_completion(signed_compared.completions[4], kControl, 0, 0xf0, 0,
+                   kStatusOk, 0, true, "signed-branch target END");
+  expect_eq("signed branches skipped every EXEC", 0,
+            signed_compared.results.size());
+
+  const std::vector<uint32_t> unsigned_branches = {
+      0xc4080000U, 0xffffffffU,
+      0xc4100000U, 0x00000001U,
+      0xc7a20800U, 0x0000000cU, 0x17822210U,
+      0xc7c11000U, 0x0000000cU, 0x17822210U,
+      0xc0000000U};
+  program_store(dut, unsigned_branches);
+  launch(dut,
+         kBasePc + static_cast<uint32_t>(4 * unsigned_branches.size()),
+         0, 0x1, 0xf4);
+  Run unsigned_compared = run_until_terminal(dut);
+  expect_eq("unsigned-branch program completed", 1,
+            unsigned_compared.done);
+  expect_eq("unsigned-branch program has no error", 0,
+            unsigned_compared.error);
+  expect_eq("unsigned-branch completion count", 5,
+            unsigned_compared.completions.size());
+  for (size_t index = 0; index < 4; ++index) {
+    check_completion(unsigned_compared.completions[index], kControl, 0,
+                     static_cast<uint8_t>(0xf4 + index), 0,
+                     kStatusOk, 0, false,
+                     "unsigned-branch CONTROL " + std::to_string(index));
+  }
+  check_completion(unsigned_compared.completions[4], kControl, 0, 0xf8, 0,
+                   kStatusOk, 0, true, "unsigned-branch target END");
+  expect_eq("unsigned branches skipped every EXEC", 0,
+            unsigned_compared.results.size());
 
   // A decoded J may not target the exclusive launch end.  It retires as a
   // runtime CONTROL error without redirecting, then the sequential final END

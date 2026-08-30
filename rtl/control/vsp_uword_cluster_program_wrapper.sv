@@ -497,6 +497,16 @@ module vsp_uword_cluster_program_wrapper #(
         branch_taken = control_read_rs1_data == control_read_rs2_data;
       VSP_BRANCH_COND_BNE:
         branch_taken = control_read_rs1_data != control_read_rs2_data;
+      VSP_BRANCH_COND_BLT:
+        branch_taken = $signed(control_read_rs1_data) <
+                       $signed(control_read_rs2_data);
+      VSP_BRANCH_COND_BGE:
+        branch_taken = $signed(control_read_rs1_data) >=
+                       $signed(control_read_rs2_data);
+      VSP_BRANCH_COND_BLTU:
+        branch_taken = control_read_rs1_data < control_read_rs2_data;
+      VSP_BRANCH_COND_BGEU:
+        branch_taken = control_read_rs1_data >= control_read_rs2_data;
       default: branch_taken = 1'b0;
     endcase
 

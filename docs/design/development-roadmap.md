@@ -30,7 +30,7 @@ register routing or multi-PC synchronization as prerequisites.
 - mixed EXEC/MEMORY/CONTROL structural predecode;
 - EXEC expander, MEMORY/CONTROL semantic decode and action adapter;
 - single-context sequencer address state (`SMOVI/SADD/SADDI`);
-- PC-relative `J/BEQ/BNE`, source redirect and framer younger-state flush;
+- PC-relative `J/BEQ/BNE/BLT/BGE/BLTU/BGEU`, source redirect and framer younger-state flush;
 - strict one-active-action class controller and ordered completion;
 - `CONTROL.END` and `program_done` reference behavior.
 

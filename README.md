@@ -110,20 +110,21 @@ The strict reference path accepts a mixed stream of:
 - `EXEC` records expanded to canonical SIMD controls;
 - `MEMORY` records decoded as unit-stride or indexed transfers;
 - `CONTROL` state operations `SMOVI`, `SADD`, `SADDI`, single-PC
-  `J/BEQ/BNE`, and `END`.
+  `J/BEQ/BNE/BLT/BGE/BLTU/BGEU`, and `END`.
 
 The sequencer state engine provides 32-bit base-address state.  It is a small
 control/address facility, not a general scalar CPU: it has no scalar memory
 port, call/return, interrupts, privilege state or independent PC.  Branches
-compare two state registers (`BEQZ/BNEZ` use the constant-zero register) and
-redirect the same program PC; they do not create a scalar execution thread.
+compare two state registers (the `*Z` pseudo-ops use the constant-zero
+register) and redirect the same program PC; they do not create a scalar
+execution thread.
 `END` waits for the integrated execution/memory boundary to become quiescent
 and produces an ordered completion; `program_done` means that completion was
 accepted, not that all earlier actions necessarily succeeded.
 
 The uword assembler and behavioral control store form a development format,
 not a frozen public ISA.  Current pseudo-ops include vector ALU/reduction,
-sequencer state, `J/BEQ/BNE/BEQZ/BNEZ`, `VLOAD/VSTORE`,
+sequencer state, direct-comparison branches, `VLOAD/VSTORE`,
 `VGATHER/VSCATTER` and `CONTROL_END`.
 
 ## Repository layout

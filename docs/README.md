@@ -64,7 +64,7 @@ Graphviz 源与生成图和说明文档放在一起：
 | [队列与译码候选](design/instruction-delivery.md) | byte-PC/multi-framer、CONTROL-state/MEMORY semantic decoder 与 strict slot-0 closure 已接；ordered window 独立存在；并发 admission metadata 与 queue-head 接入待办 | uword bundle、PC `+4`、queue、live-head、predecode、expander 与 CPU decoder 差异 |
 | [Internal EXEC uword profile v0](design/exec-uword-profile-v0.md) | 内部实验编码 + RTL 映射 | 32-bit base、optional immediate extension、canonical EXEC 与非法 cause |
 | [数据准备与 DMA 边界](design/data-movement.md) | encoded unit-stride/indexed strict closure 已实现，物理 memory 集成待办 | VLOAD/VSTORE/VGATHER/VSCATTER、VRF arbiter、data-memory 逻辑口、local SRAM 与 DMA |
-| [Sequencer 标量/地址状态](design/sequencer-state.md) | 地址状态已接 strict closure；loop/redirect 待办 | 最小 scalar/address state、MEMORY base 与 loop/redirect 落地顺序 |
+| [Sequencer 标量/地址状态](design/sequencer-state.md) | 地址状态、比较 branch 与 loop/redirect 已接 strict closure | 最小 scalar/address state、寻址裁剪、MEMORY base 与后续调用/回写边界 |
 | [集群实验路线](design/development-roadmap.md) | 单 PC/单 slot strict closure 已实现，memory/loop/测量待办 | wrapper、cluster、indexed memory、地址层、规模与物理化 |
 
 这里的 decoder 属于 sequencer 到执行 group 之间的内部控制层，不意味着 SIMD4

@@ -131,13 +131,13 @@ def main() -> int:
     assert [word.value for word in branches.words] == [
         0xC7000000,
         0x00000010,
-        0xC7464000,
+        0xC7232000,
         0xFFFFFFF8,
-        0xC7BE1000,
+        0xC75F0800,
         0xFFFFFFF8,
-        0xC74A0000,
+        0xC7250000,
         0x00000010,
-        0xC78C0000,
+        0xC7460000,
         0xFFFFFFF0,
         0xC0000000,
     ]
@@ -156,9 +156,56 @@ def main() -> int:
     assert [word.value for word in absolute_branches.words] == [
         0xC7000000,
         0xFFFFFF00,
-        0xC7400000,
+        0xC7200000,
         0x00000000,
     ]
+
+    relational_branches = asm.assemble_text(
+        "BLT rs1=1 rs2=2 target=0\n"
+        "BGE rs1=2 rs2=1 target=0\n"
+        "BLTU rs1=1 rs2=2 target=0\n"
+        "BGEU rs1=2 rs2=1 target=0\n"
+        "BLTZ rs1=3 target=0\n"
+        "BGEZ rs1=4 target=0\n",
+        0,
+    )
+    assert [word.value for word in relational_branches.words] == [
+        0xC7611000, 0x00000000,
+        0xC7820800, 0xFFFFFFF8,
+        0xC7A11000, 0xFFFFFFF0,
+        0xC7C20800, 0xFFFFFFE8,
+        0xC7630000, 0xFFFFFFE0,
+        0xC7840000, 0xFFFFFFD8,
+    ]
+
+    source_aliases = asm.assemble_text(
+        "LI rd=1 imm=3\n"
+        "ADD rd=2 rs1=1 rs2=1\n"
+        "ADDI rd=2 rs1=2 imm=-1\n"
+        "END\n",
+        0,
+    )
+    canonical_source = asm.assemble_text(
+        "SMOVI rd=1 imm=3\n"
+        "SADD rd=2 rs1=1 rs2=1\n"
+        "SADDI rd=2 rs1=2 imm=-1\n"
+        "CONTROL_END\n",
+        0,
+    )
+    assert [word.value for word in source_aliases.words] == [
+        word.value for word in canonical_source.words
+    ]
+
+    assert [word.value for word in asm.assemble_text(
+        "BGTZ rs1=5 target=0", 0
+    ).words] == [word.value for word in asm.assemble_text(
+        "BLT rs1=0 rs2=5 target=0", 0
+    ).words]
+    assert [word.value for word in asm.assemble_text(
+        "BLEZ rs1=6 target=0", 0
+    ).words] == [word.value for word in asm.assemble_text(
+        "BGE rs1=0 rs2=6 target=0", 0
+    ).words]
 
     displacement_boundaries = asm.assemble_text(
         "J target=0x7ffffffc", 0
@@ -238,6 +285,11 @@ def main() -> int:
     expect_error("BEQZ target=0")
     expect_error("BEQZ rs1=1 rs2=0 target=0")
     expect_error("BNEZ rs1=1 mystery=0 target=0")
+    expect_error("BLT rs1=1 target=0")
+    expect_error("BGEU rs1=1 rs2=32 target=0")
+    expect_error("BLTZ rs1=1 rs2=0 target=0")
+    expect_error("BGTZ target=0")
+    expect_error("END extra=1")
     expect_error("J target=0x80000000", 0)
     expect_error("J target=0", 0x80000004)
     expect_error("again: J target=again\nagain: CONTROL_END")

@@ -39,9 +39,9 @@ void tick(Vvsp_uword_action_adapter& dut) {
 
 uint32_t branch_header(uint8_t condition, uint8_t rs1 = 0,
                        uint8_t rs2 = 0) {
-  return 0xc7000000U | (static_cast<uint32_t>(condition) << 22) |
-         (static_cast<uint32_t>(rs1) << 17) |
-         (static_cast<uint32_t>(rs2) << 12);
+  return 0xc7000000U | (static_cast<uint32_t>(condition) << 21) |
+         (static_cast<uint32_t>(rs1) << 16) |
+         (static_cast<uint32_t>(rs2) << 11);
 }
 
 void clear_inputs(Vvsp_uword_action_adapter& dut) {
@@ -126,7 +126,7 @@ int main(int argc, char** argv) {
 
   // A recognized malformed branch keeps its local identity and ordered tag,
   // while canonical control fields remain suppressed by the decoder.
-  drive_branch(dut, branch_header(3), 0U);
+  drive_branch(dut, branch_header(7), 0U);
   expect_eq("malformed branch identity", 1, dut.action_is_branch_o);
   expect_eq("malformed branch rejected", 0, dut.action_legal_o);
   expect_eq("malformed branch diagnostic", 2,

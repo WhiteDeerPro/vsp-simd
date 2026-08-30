@@ -154,7 +154,7 @@
 <title>branch_control</title>
 <path fill="#ecf8ef" stroke="#4e8f62" d="M1471,-247.5C1471,-247.5 1270,-247.5 1270,-247.5 1264,-247.5 1258,-241.5 1258,-235.5 1258,-235.5 1258,-214.5 1258,-214.5 1258,-208.5 1264,-202.5 1270,-202.5 1270,-202.5 1471,-202.5 1471,-202.5 1477,-202.5 1483,-208.5 1483,-214.5 1483,-214.5 1483,-235.5 1483,-235.5 1483,-241.5 1477,-247.5 1471,-247.5"/>
 <text text-anchor="middle" x="1370.5" y="-233.5" font-family="DejaVu Sans" font-size="10.00">CONTROL branch</text>
-<text text-anchor="middle" x="1370.5" y="-222.5" font-family="DejaVu Sans" font-size="10.00">J / BEQ / BNE</text>
+<text text-anchor="middle" x="1370.5" y="-222.5" font-family="DejaVu Sans" font-size="10.00">J + EQ/NE/LT/GE signed/unsigned</text>
 <text text-anchor="middle" x="1370.5" y="-211.5" font-family="DejaVu Sans" font-size="10.00">range check + redirect/flush + completion</text>
 </g>
 <!-- semantic_decode&#45;&gt;branch_control -->

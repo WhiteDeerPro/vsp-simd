@@ -26,7 +26,7 @@ uword 路径目前可执行：
 
 - profile-v0 EXEC；
 - sequencer-local `SMOVI`、`SADD`、`SADDI`；
-- single-PC `J`、`BEQ`、`BNE`（`BEQZ/BNEZ` 为 assembler 伪指令）；
+- single-PC `J` 与 `BEQ/BNE/BLT/BGE/BLTU/BGEU`（`*Z` 形式为 assembler 伪指令）；
 - `VLOAD`、`VSTORE`、`VGATHER`、`VSCATTER` MEMORY record；
 - 最终 `CONTROL.END` 与有序 action completion。
 
@@ -164,8 +164,9 @@ indexed lane access都要等待当前 response。request、response 和 parent c
 可见时查询 base；action 接受后，后续 state 写不能改变在途 descriptor。state engine
 不持有 PC，也不直接访问 dmem。
 
-`J/BEQ/BNE` 由 program wrapper 的 CONTROL-flow path 执行。`BEQ/BNE` 使用 state RF 的
-无副作用双源 query；目标经 widened arithmetic 检查，避免 PC 模回绕伪装成合法地址。
+`J` 与六种比较 branch 由 program wrapper 的 CONTROL-flow path 执行。比较 branch 使用
+state RF 的无副作用双源 query；`BLT/BGE` 按 signed 32-bit，`BLTU/BGEU` 按 unsigned
+32-bit。目标经 widened arithmetic 检查，避免 PC 模回绕伪装成合法地址。
 合法 taken target 必须 4-byte 对齐并落在 launch 的 `[start_pc,end_pc)` 内。运行时非法
 目标产生有序 `CONTROL_ERROR` completion 且不重定向。
 
@@ -189,8 +190,8 @@ indexed lane access都要等待当前 response。request、response 和 parent c
 
 ## 7. 后续边界 `[候选]`
 
-当前仍缺少 scalar load/store、reduction/count 写 state、CALL/RET/间接跳转、关系比较
-branch、CSR、特权态和中断入口。未来若把多 record admission/window 接入产品路径，需要显式
+当前仍缺少 scalar load/store、reduction/count 写 state、CALL/RET/间接跳转、
+CSR、特权态和中断入口。未来若把多 record admission/window 接入产品路径，需要显式
 描述 state RAW/WAW、resolved base、VRF row 和 MEMORY 依赖；不能把更多 record view
 或 issue slot 当成多 PC。
 

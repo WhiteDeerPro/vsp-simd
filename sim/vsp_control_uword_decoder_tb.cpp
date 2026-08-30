@@ -13,6 +13,10 @@ uint64_t checks = 0;
 constexpr uint8_t kBranchJ = 0;
 constexpr uint8_t kBranchBeq = 1;
 constexpr uint8_t kBranchBne = 2;
+constexpr uint8_t kBranchBlt = 3;
+constexpr uint8_t kBranchBge = 4;
+constexpr uint8_t kBranchBltu = 5;
+constexpr uint8_t kBranchBgeu = 6;
 
 [[noreturn]] void fail(const std::string& what, uint64_t expected,
                        uint64_t actual) {
@@ -29,9 +33,9 @@ void expect_eq(const std::string& what, uint64_t expected,
 
 uint32_t branch_header(uint8_t condition, uint8_t rs1 = 0,
                        uint8_t rs2 = 0) {
-  return 0xc7000000U | (static_cast<uint32_t>(condition) << 22) |
-         (static_cast<uint32_t>(rs1) << 17) |
-         (static_cast<uint32_t>(rs2) << 12);
+  return 0xc7000000U | (static_cast<uint32_t>(condition) << 21) |
+         (static_cast<uint32_t>(rs1) << 16) |
+         (static_cast<uint32_t>(rs2) << 11);
 }
 
 void drive_record(Vvsp_control_uword_decoder& dut, uint32_t header,
@@ -78,7 +82,23 @@ int main(int argc, char** argv) {
   expect_eq("BNE rs1", 4, dut.branch_rs1_o);
   expect_eq("BNE rs2", 1, dut.branch_rs2_o);
 
-  drive_record(dut, branch_header(3), 0U);
+  drive_record(dut, branch_header(kBranchBlt, 1, 2), 4U);
+  expect_eq("BLT legal", 1, dut.legal_o);
+  expect_eq("BLT condition", kBranchBlt, dut.branch_cond_o);
+
+  drive_record(dut, branch_header(kBranchBge, 2, 1), 4U);
+  expect_eq("BGE legal", 1, dut.legal_o);
+  expect_eq("BGE condition", kBranchBge, dut.branch_cond_o);
+
+  drive_record(dut, branch_header(kBranchBltu, 1, 2), 4U);
+  expect_eq("BLTU legal", 1, dut.legal_o);
+  expect_eq("BLTU condition", kBranchBltu, dut.branch_cond_o);
+
+  drive_record(dut, branch_header(kBranchBgeu, 2, 1), 4U);
+  expect_eq("BGEU legal", 1, dut.legal_o);
+  expect_eq("BGEU condition", kBranchBgeu, dut.branch_cond_o);
+
+  drive_record(dut, branch_header(7), 0U);
   expect_eq("reserved condition keeps branch identity", 1,
             dut.is_branch_o);
   expect_eq("reserved condition rejected", 0, dut.legal_o);
@@ -129,6 +149,6 @@ int main(int argc, char** argv) {
 
   dut.final();
   std::cout << "vsp_control_uword_decoder_tb: " << checks
-            << " J/BEQ/BNE decode and malformed-record checks passed\n";
+            << " direct-compare branch decode and malformed-record checks passed\n";
   return 0;
 }
