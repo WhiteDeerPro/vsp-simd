@@ -24,7 +24,8 @@ VSP / SoC 子系统（未来）
     ├── 4-word uword bundle framing / class predecode（独立参考 RTL 已实现）
     ├── byte-PC program source / control-store model / bundle assembler（独立参考 RTL 已实现）
     ├── multi-record framer / slot-0 action adapter / strict program wrapper（已接通）
-    ├── ordered action window（参考 RTL 已验证，尚未接入 strict program path）
+    ├── ordered action window（含 predecessor-barrier 记账；尚未接入 strict program path）
+    ├── route rendezvous table（DEP_IN/DEP_OUT 配对/退休门槛 leaf；尚未接入 program path）
     ├── sequencer address-state engine（已接入 strict slot-0 program path）
     ├── ordered I-side fetch 仿真模型（simulation only）
     ├── ordered dmem 仿真模型（可配置 FIFO outstanding；simulation only）
@@ -64,7 +65,12 @@ VSP / SoC 子系统（未来）
   `io[1:0]` 已贯穿编码和 canonical payload：`00=LOCAL`、`01=DEP_IN`、
   `10=DEP_OUT`、`11=DEP_INOUT`，其中 `dependency=|io`；当前 engine 可执行 `LOCAL`
   以及 role-complete 的 `DEP_INOUT`。后者仍要求上游满足 dependency barrier，但当前
-  single-active 路径尚无双槽证明；`DEP_IN/DEP_OUT` 当前有序拒绝且不访问 VRF；
+  single-active 路径尚无双槽证明；结构预解码已直接产生 route mode、
+  `barrier-before` 与 `pair-required` 元数据，独立 ordered action window 会令
+  barrier entry 等到退休队头再发射。独立 rendezvous leaf 可按
+  `{context,epoch,route_id}` 收集 `DEP_IN/DEP_OUT`，并在两个 participant frontier
+  达到 fence token 后交付 wave；这些部件尚未接成 concurrent program path。
+  `DEP_IN/DEP_OUT` 当前有序拒绝且不访问 VRF；
 - 可接相邻 SIMD group 边界的双向 slide，用于组成更宽的逻辑执行组；
 - mask-aware 的组合 reduction tree，可求和、最小值、最大值和获胜 lane；
 - 由 `ABSDIFF_U + REDUCE_SUM_U` 组合出的 SAD 验证内核；

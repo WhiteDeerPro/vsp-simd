@@ -89,10 +89,14 @@ domain 的局部 byte 排列解释。
 | ordered I-side fetch model | read-only uword bundle 的 simulation-only endpoint；带 byte PC、address metadata、fault 和 FIFO ordered response，不表示 I-cache 已实现 |
 | uword bundle | 同拍交给内部组合扫描逻辑的一组连续 32-bit uword stream word；不是 cache line、IFetch response 或软件 instruction bundle |
 | uword record | stream 中由一个 header 和零至多个 opaque body word 组成的结构记录；当前 EXEC record 也称 EXEC packet |
-| bundle predecoder | 只判定 uword record 边界、major 是否已定义和 `EXEC/MEMORY/CONTROL` class 的内部组合逻辑；不做完整 admission legality、资源派生或 class-specific decode |
+| bundle predecoder | 判定 uword record 边界、major/class，并提前派生 ROUTE 的 mode、barrier-before 与 pair-required；不做完整 admission legality、通用资源派生或 class-specific operand decode |
 | bundle assembler | 保存 bundle 边界上的未完成 record，并依序输出完整或 EOF 截断 record 的有状态 framing 模块 |
 | multi-record framer | 跨 bundle 保存 tail，并以 packed-prefix 同时暴露若干完整 record 的 framing 模块；当前 strict wrapper 只消费其 slot 0 |
-| ordered action window | 保存已解析 action、按 group/shared dependency 选择候选并按序退休的浅窗口；当前为独立参考 RTL，不是 scalar issue engine |
+| ordered action window | 保存已解析 action、按 group/shared dependency 选择候选并按序退休的浅窗口；它是顺序依赖表和候选选择 reference，不是 scalar issue engine，也尚未接入 concurrent wrapper |
+| barrier-before | 一条 action 在发射前等待指定 ordered scope 的更老 action 真实退休；当前浅窗口的 scope 是全局 sequence，future route token 才可缩小到 participant flow |
+| serializing action | 比 barrier-before 更强的顺序类别；它还阻止更年轻 action issue，至于 admission 是否停止由前端终止/流控策略决定。当前 `END` 同时触发全局 serializing 与 fetch cutoff，route dependency 目标只需要 barrier-before |
+| retirement frontier | 每槽已经按序退休的最大 sequence，或等价的 pre-barrier pending 计数；queue/slot empty 不能替代它，因为 ingress、reject、completion 与 engine transaction 仍可能未退休 |
+| barrier token | 绑定 slot、context/epoch、route ID 与 fence sequence 的顺序标记；到达 token 表示该槽不再让 younger action 越过，但 token 自身尚不是 accepted route outstanding |
 | action adapter | 把 uword record 与 launch envelope/context/tag 结合为 canonical action 的边界；结构 class 已识别不表示 class-specific semantic decode 已完成 |
 | uword byte PC | controller 内部 uword stream 的 byte address；当前每个 32-bit stream word（包括 extension/body）使地址增加 4，不等同于 SIMD4 的 architectural PC |
 | EXEC uword profile v0 | 当前用于实验的 `32-bit base + optional immediate extension` 内部 EXEC 表示；不包含 action envelope、MEMORY/CONTROL 或外部 ISA 承诺 |
@@ -106,6 +110,7 @@ domain 的局部 byte 排列解释。
 | route wave | 同一 execution context 内已经配齐 source/destination roles、完成 participant 旧操作 drain、并以 union group mask 原子接受的跨 mask execution parent；participant tag 可不同并在共同执行后分别完成；当前 `DEP_INOUT` 只是 role-complete 单 descriptor，尚无双槽 drain/parent/fan-out closure，`LOCAL` 不属于 dependency wave |
 | rendezvous fragment | `DEP_IN`/`DEP_OUT` route descriptor；可由有限 pre-admission table 捕获，也可停在 queue head 等待同时可见的 peer，但在 `wave_accept` 前不得占有 execution tracker、group 或 route-engine outstanding 资源；当前双槽配对前端尚未接入 |
 | fragment capture / wave accept | 前者只把 descriptor 收入有限 rendezvous staging；后者在 participant 配齐后原子预留 union resources 与全部 completion credit，并真正建立 route outstanding |
+| rendezvous entry | pre-admission 状态项，保存匹配键、participant/role、各槽 fence、opaque payload 与 cancel 状态；独立 `vsp_route_rendezvous_table` leaf 已验证两 role 收集、frontier 门槛和 REJECT/CANCEL，但它不是 execution tracker，也尚未接入 route engine |
 | ordered dmem model | `dmem_req/rsp` 的 simulation-only byte-array endpoint；可接受多个无 ID request，但只按 request 顺序返回，不表示物理 SRAM/cache 已实现 |
 | request / response / completion | decoupled 协议中的请求、带数据返回和事务完成通知 |
 | subrequest / beat | 一个 command 向 group endpoint 或 memory endpoint 拆出的原子传输 |

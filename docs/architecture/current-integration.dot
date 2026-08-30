@@ -200,7 +200,12 @@ digraph vsp_current_integration {
       color="#b58b23"
     ];
     action_window [
-      label="ordered action window\n4 entries; 2 EXEC views + 1 side view",
+      label="ordered action window\n4 entries; 2 EXEC views + 1 side view\nglobal predecessor-barrier metadata",
+      fillcolor="#fff7dc",
+      color="#b58b23"
+    ];
+    route_rendezvous [
+      label="route rendezvous table leaf\nDEP_IN/DEP_OUT key match\nparticipant frontier + terminal staging",
       fillcolor="#fff7dc",
       color="#b58b23"
     ];
@@ -218,7 +223,17 @@ digraph vsp_current_integration {
 
     framer -> admission_gap [style=dashed, color="#b58b23", label="slots 0..2"];
     admission_gap -> action_window [style=dashed, color="#b58b23"];
+    admission_gap -> route_rendezvous [
+      style=dashed,
+      color="#b58b23",
+      label="pair-required candidate"
+    ];
     action_window -> late_decode [style=dashed, color="#b58b23"];
+    route_rendezvous -> binding_gap [
+      style=dashed,
+      color="#b58b23",
+      label="WAVE / REJECT / CANCEL"
+    ];
     late_decode -> binding_gap [style=dashed, color="#b58b23"];
     binding_gap -> strict_controller [style=dashed, color="#b58b23"];
   }

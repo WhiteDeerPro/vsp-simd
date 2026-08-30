@@ -61,6 +61,7 @@ void clear_admission(Vvsp_ordered_action_window& dut) {
   dut.admit_dep_read_i = 0;
   dut.admit_dep_write_i = 0;
   dut.admit_split_ok_i = 0;
+  dut.admit_barrier_before_i = 0;
   dut.admit_serializing_i = 0;
   dut.admit_end_i = 0;
 }
@@ -88,7 +89,7 @@ void set_admission(Vvsp_ordered_action_window& dut, unsigned lane,
                    uint16_t pc, uint8_t action_class, uint8_t group_mask,
                    uint16_t raw_record, uint8_t dep_read,
                    uint8_t dep_write, bool split_ok, bool serializing = false,
-                   bool end = false) {
+                   bool end = false, bool barrier_before = false) {
   dut.admit_valid_i |= uint8_t{1} << lane;
   dut.admit_pc_i = replace_field(dut.admit_pc_i, lane, 16, pc);
   dut.admit_class_i =
@@ -104,6 +105,7 @@ void set_admission(Vvsp_ordered_action_window& dut, unsigned lane,
   dut.admit_dep_write_i =
       replace_field(dut.admit_dep_write_i, lane, 4, dep_write);
   dut.admit_split_ok_i |= uint8_t(split_ok) << lane;
+  dut.admit_barrier_before_i |= uint8_t(barrier_before) << lane;
   dut.admit_serializing_i |= uint8_t(serializing) << lane;
   dut.admit_end_i |= uint8_t(end) << lane;
 }
@@ -397,6 +399,81 @@ int main(int argc, char** argv) {
   retire_one(dut, 7);
   retire_one(dut, 8);
 
+  // A route dependency is a predecessor barrier, not a guess based on empty
+  // issue views.  Disjoint older actions may issue together, but the barrier
+  // remains hidden until both completed records actually retire.
+  clear_admission(dut);
+  set_admission(dut, 0, 0x170, kClassExec, 0x1, 0x9111, 0, 0, true);
+  set_admission(dut, 1, 0x174, kClassExec, 0x2, 0xa222, 0, 0, true);
+  set_admission(dut, 2, 0x178, kClassExec, 0x4, 0xbd44, 0, 0, false,
+                false, false, true);
+  tick(dut);
+  clear_admission(dut);
+  eval_low(dut);
+  expect_eq("pre-barrier actions issue in parallel", 0x3,
+            dut.exec_issue_valid_o);
+  expect_eq("first pre-barrier sequence", 9,
+            field(dut.exec_issue_seq_o, 0, 8));
+  expect_eq("second pre-barrier sequence", 10,
+            field(dut.exec_issue_seq_o, 1, 8));
+  expect_eq("barrier is not exposed early", 0,
+            dut.exec_issue_barrier_before_o);
+  // A predecessor-only barrier does not become a full serializing fence.
+  // A younger operation on an unrelated group may enter the window and run;
+  // it still cannot retire ahead of the barrier.
+  clear_admission(dut);
+  set_admission(dut, 0, 0x17c, kClassExec, 0x8, 0xce88, 0, 0, true);
+  eval_low(dut);
+  expect_eq("younger disjoint action may be admitted", 1,
+            dut.admit_ready_o & 1U);
+  dut.exec_issue_ready_i = 0x3;
+  tick(dut);
+  dut.exec_issue_ready_i = 0;
+  clear_admission(dut);
+
+  eval_low(dut);
+  expect_eq("barrier does not block unrelated younger issue", 1,
+            dut.exec_issue_valid_o & 1U);
+  expect_eq("younger disjoint sequence", 12,
+            field(dut.exec_issue_seq_o, 0, 8));
+  expect_eq("younger action is not itself a barrier", 0,
+            dut.exec_issue_barrier_before_o & 1U);
+  dut.exec_issue_ready_i = 1;
+  tick(dut);
+  dut.exec_issue_ready_i = 0;
+  complete_groups(dut, 12, 0x8);
+
+  clear_completions(dut);
+  set_completion(dut, 0, 9, 0x1);
+  set_completion(dut, 1, 10, 0x2);
+  tick(dut);
+  clear_completions(dut);
+  eval_low(dut);
+  expect_eq("completed but unretired predecessors still hold barrier", 0,
+            dut.exec_issue_valid_o);
+  expect_eq("two predecessor retire views", 0x3,
+            dut.retire_valid_o);
+  dut.retire_ready_i = 0x3;
+  tick(dut);
+  dut.retire_ready_i = 0;
+
+  eval_low(dut);
+  expect_eq("barrier route reaches issue after retirement", 1,
+            dut.exec_issue_valid_o & 1U);
+  expect_eq("barrier route sequence", 11,
+            field(dut.exec_issue_seq_o, 0, 8));
+  expect_eq("barrier metadata preserved at issue", 1,
+            dut.exec_issue_barrier_before_o & 1U);
+  dut.exec_issue_ready_i = 1;
+  tick(dut);
+  dut.exec_issue_ready_i = 0;
+  complete_groups(dut, 11, 0x4);
+  eval_low(dut);
+  expect_eq("barrier metadata preserved at retirement", 1,
+            dut.retire_barrier_before_o & 1U);
+  retire_one(dut, 11);
+  retire_one(dut, 12);
+
   // END cuts off younger records in the same admission group, stops fetch,
   // waits until it reaches the retirement head, and remains sticky until a
   // program restart clears the independent window.
@@ -407,9 +484,9 @@ int main(int argc, char** argv) {
   set_admission(dut, 2, 0x188, kClassExec, 0x2, 0xc022, 0, 0, true);
   eval_low(dut);
   expect_eq("END rejects younger lane", 0x3, dut.admit_ready_o);
-  expect_eq("END sequences accepted prefix", 9,
+  expect_eq("END sequences accepted prefix", 13,
             field(dut.admit_seq_o, 0, 8));
-  expect_eq("END sequence", 10, field(dut.admit_seq_o, 1, 8));
+  expect_eq("END sequence", 14, field(dut.admit_seq_o, 1, 8));
   tick(dut);
   clear_admission(dut);
   eval_low(dut);
@@ -420,11 +497,11 @@ int main(int argc, char** argv) {
   dut.exec_issue_ready_i = 1;
   tick(dut);
   dut.exec_issue_ready_i = 0;
-  complete_groups(dut, 9, 0x1);
+  complete_groups(dut, 13, 0x1);
   eval_low(dut);
   expect_eq("END still waits for older retirement", 0,
             dut.side_issue_valid_o);
-  retire_one(dut, 9);
+  retire_one(dut, 13);
   eval_low(dut);
   expect_eq("END reaches side lane", 1, dut.side_issue_valid_o);
   expect_eq("END class", kClassControl, dut.side_issue_class_o);
@@ -434,7 +511,7 @@ int main(int argc, char** argv) {
   tick(dut);
   dut.side_issue_ready_i = 0;
   clear_completions(dut);
-  set_completion(dut, 0, 10, 0, true);
+  set_completion(dut, 0, 14, 0, true);
   eval_low(dut);
   expect_eq("END completion accepted", 1, dut.complete_ready_o & 1U);
   tick(dut);

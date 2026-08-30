@@ -27,8 +27,12 @@ Graphviz 源文件为 [`current-integration.dot`](current-integration.dot)。
 action admission 读取 state base，现有 memory engine 接收快照后的 descriptor。
 
 `vsp_uword_multi_framer` 最多可同时暴露三条 record，`vsp_ordered_action_window`
-也已有四项窗口、两个 EXEC view 和一个 side view，但 strict wrapper 仍只消费 slot 0。
-window、late-decode holding stage 与 class engines 尚未组成并发 program path。
+也已有四项窗口、两个 EXEC view 和一个 side view；结构 predecoder 会把非零 route
+mode 标成 `barrier-before`，并区分需要配对的 `DEP_IN/DEP_OUT`。window 能让这类 entry
+等到所有更老项真正退休后才暴露。新增的 `vsp_route_rendezvous_table`
+是独立 leaf reference：收集两个 partial role、比较 participant retirement token，并对
+illegal/conflict/flush 产生可背压 terminal。strict wrapper 仍只消费 slot 0；predecoder、
+window、rendezvous、late-decode holding stage 与 class engines 尚未组成并发 program path。
 
 `vsp_ordered_ifetch_model` 仍是尚未绑定到 strict program path 的独立 I-side bundle
 endpoint，需要 launch address metadata/fault adapter。与它不同，

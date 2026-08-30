@@ -210,6 +210,23 @@ serializing/END 在到达年龄头部前不发射，END admission 会拒绝同�
 重复、未知 sequence、未发射 group 或形状错误的 completion 仍会被 ready/valid
 边界消费，以免错误报告反向堵死 engine；它们不修改完成状态，并置 sticky protocol error。
 
+因此这份 window 更准确地说是一张浅层**顺序依赖表**：entry 保存年龄、已发射/已完成
+group 和共享依赖，候选 view 从中选择不违反年龄与 hazard 的 action。它尚未接入当前
+concurrent wrapper，也没有 route rendezvous entry、per-slot barrier token 或双 completion
+fan-out。不能把两个 EXEC view 直接解释成两个已经闭合的程序槽。
+仓库中的 `vsp_route_rendezvous_table` 是另一个独立 leaf，不在这个 window 内部，
+也尚未连到其 issue view。
+
+`barrier-before` 与 `serializing` 需要分开：当前 window 的前者要求 entry 到达全局
+retirement head 才发射；future per-flow token 才能把等待范围缩成 participant 槽，并让
+无关槽独立推进。后者还会阻止更年轻 action issue，并可要求整个作用域 quiescent；
+admission cutoff 是 END/framer 的另一项职责，不由 `serializing` 位本身完成。
+future dependency route 使用 barrier-before；当前 `END` 是更保守的全局 serializing
+动作。`LOCAL` route 两者都不隐含，尽管当前 blocking wrapper 仍可能因实现互斥而等待
+本地 EXEC/MEMORY/VRF 排空。
+现有 window 不保存 flow ID，所以它尚不能实现“同 participant 的 younger 留在
+token 之后、其他 participant 的 older 继续走”这项精确语义。
+
 四项深度目前只给 4-word fetch、三项 admission、engine backpressure 和短距离依赖
 提供一个小的解耦空间。它没有预测分支产生的未决路径，也没有 rename、speculative
 issue、epoch 或错误路径回滚，因此不能按 CPU branch-prediction instruction queue
@@ -360,6 +377,30 @@ sched_meta`。context 由所属逻辑 FIFO 隐含；默认宽度只是 elaborati
 
 `sched_meta` 不是软件或 sequencer 可以任意填写的第二份资源声明；它必须由硬件
 predecoder 生成，并在 canonical expansion 时复核关键约束。
+
+ROUTE admission predecode 只需提前派生下面的调度事实，完整 `vs/vi/vd` 仍留给晚译码：
+
+| mode | dependency | pair-required | predecode 结果 |
+|---|---:|---:|---|
+| `00 LOCAL` | 0 | 0 | 普通自包含 EXEC route，无隐式 barrier token |
+| `01 DEP_IN` | 1 | 1 | destination-role fragment；future pair 前端捕获，当前路径有序 reject |
+| `10 DEP_OUT` | 1 | 1 | source-role fragment；future pair 前端捕获，当前路径有序 reject |
+| `11 DEP_INOUT` | 1 | 0 | role-complete descriptor，不等 half peer，但仍生成 barrier-before metadata 并等待 participant 旧操作退休 |
+
+`pair-required=0` 不等于 `dependency=0`。特别是 `DEP_INOUT` 可以省去 half-descriptor
+匹配，却不能省去双槽 retirement 证明。当前 predecoder/window/concurrent wrapper 尚未
+连接这组 metadata；表中 pair/barrier 行为是目标接口，不是已接入吞吐能力。
+`pair-required=1` 的 record 必须在普通 single-entry window issue 之前被 rendezvous
+capture 截获，否则较老 half 到达 head 后可能阻止后续 peer 变成可见候选。
+不能只因结构 predecode 看到 `pair-required` 就无条件进入长期等待：入表前应
+完成匹配键/role/profile 的最小合法性检查，或使 late-decode failure 能立即按原
+sequence/tag 转成有序 reject/cancel。否则一条非法 half 会被误当成“peer 还没到”。
+另外，现有 issue view 会在 downstream 背压时锁定候选 payload；pairer 不能等到这个
+锁定点之后才决定只接 route，否则尤其在单 issue-view 参数下，一条年轻的
+被锁 action 可能长期遮住刚刚满足 drain 的 barrier。pairer 应放在候选选择/锁定之前，
+或显式预留可重选的 issue capacity。
+当前独立 rendezvous leaf 已要求 `fragment_legal` 并对非法/同 role 冲突给出
+REJECT，但 profile 合法性信号、queue capture 和原 sequence/tag 的有序完成回送仍未接线。
 当前四个字段使用独立参数宽度只是为了先验证 FIFO。接入 profile/predecoder 时，应由
 唯一的 `uword_t/resolved_t/sched_meta_t`（或等价 profile type）的 `$bits` 驱动这些
 宽度，避免 controller top 人工重复 `32/16/16`；这仍不要求确定最终 ISA。

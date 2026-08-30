@@ -434,6 +434,19 @@ count result 由 function 自动产生，不占 base 字段。reduction 仍只�
 `10=DEP_OUT`、`11=DEP_INOUT`，并定义 `dependency=|mode`。`LOCAL` 是自包含 route，
 不隐含跨槽 barrier；DEP 模式为 cooperative route 声明 dependency role。
 
+结构预解码不需要展开完整 EXEC bundle，就能为每个完整 record 产生
+`route/mode/barrier-before/pair-required`：`00` 的后两项均为零，`01/10` 同时设置
+barrier 与 pair-required，`11` 只设置 barrier。`barrier-before` 进入浅层 ordered
+action window 后要求该 entry 到达退休队头才可发射；它不同于 END 使用的
+`serializing`，不会仅凭自身存在就阻止无资源冲突的年轻 action。当前两模块仍是独立
+reference，尚未接入 strict slot-0 program path。`pair-required=1` 的 fragment 必须先
+转入 rendezvous capture，不能作为普通单 entry barrier 塞进 window 后等待位于其后的
+peer；其中的 barrier 位用于形成 participant token/fence。
+当前已有一份未接入顶层的 `vsp_route_rendezvous_table` leaf，可收集两种 half role、
+等待两个 participant retirement frontier，并在 illegal/conflict/flush 时输出
+REJECT/CANCEL；它尚未从本 predecode 获得实际 record，也没有与 resource/credit grant
+和 route engine 闭合。
+
 ROUTE 是纯寄存器形式的向量 gather：数据来自 `vs`，每个目的 byte 的 8-bit
 索引来自 `vi`，结果写入 `vd`。它固定展开成
 `SIMD_OP_PASS_A / ELEM_MODE_BYTE / route_enable=1 /

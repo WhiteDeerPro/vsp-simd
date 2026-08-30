@@ -517,10 +517,10 @@ module vsp_exec_uword_expander #(
         // LOCAL consumes both operands and writes vd.  For a dependent
         // fragment bit 1 publishes the source and bit 0 consumes the index
         // and destination.  Partial fragments never execute separately.
-        raw_reads_vrf_a = (base_word_i[27:26] == 2'b00) ||
-                          base_word_i[27];
-        raw_reads_vrf_b = (base_word_i[27:26] == 2'b00) ||
-                          base_word_i[26];
+        raw_reads_vrf_a = vsp_exec_route_mode_has_source(
+            base_word_i[27:26]);
+        raw_reads_vrf_b = vsp_exec_route_mode_has_destination(
+            base_word_i[27:26]);
         raw_src_a_addr = raw_reads_vrf_a ? base_word_i[25:22] : 4'h0;
         raw_src_b_addr = raw_reads_vrf_b ? base_word_i[9:6] : 4'h0;
         raw_dst_vrf_addr = raw_reads_vrf_b ? base_word_i[21:18] : 4'h0;

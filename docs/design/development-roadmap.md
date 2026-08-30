@@ -186,6 +186,10 @@ frontend/dispatcher/tracker 随机测试继续覆盖 mask overlap、表满和多
   group mask 重叠、共享依赖、split/non-split、乱序 completion、按序 retirement 和
   END cutoff。它尚未接到真实 EXEC/MEMORY/CONTROL engine，不能据此声称当前顶层
   已达到三发射；
+- 该 window 当前是独立的顺序依赖表 reference：保存 sequence、group/shared hazard、
+  child completion 并按序 retirement；它本身没有 per-flow barrier token 或双 completion
+  fan-out，也尚未接入 concurrent wrapper；另一份独立 route rendezvous leaf 已实现
+  fragment 收集/frontier 门槛，但与 window 仍未接线；
 - strict `vsp_uword_cluster_program_wrapper` 已把 slot-0 record/action adapter 接到现有
   state engine/controller，作为 PC→state/MEMORY/EXEC/END 的可执行保序证明；它与
   上述 action window 仍是两条不同 reference，下一步才是把三项 admission 和实际
@@ -309,6 +313,13 @@ datapath。它们不改变 EXEC/MEMORY/CONTROL 的顺序与完成合同。
 tracker、ordered reject/completion、MEMORY outstanding 和 shared VRF arbiter 都已排空；
 slot/queue empty 只是局部观测，不足以单独释放 rendezvous。当前外层 single-active
 controller 尚未接入这项 pair/drain 控制。
+
+建议分三步闭合：先把 per-slot retirement frontier/barrier token 接到并发前端；
+再把已有独立 rendezvous leaf 接在 queue candidate 锁定之前，补齐 profile legality、
+sequence/tag 和 resource summary；最后在原子 resource/credit grant 后闭合
+`READY → RUN → FANOUT`，为两个 participant 保存独立 completion obligation。在这些接线完成前，
+`01/10` 继续走现有有序 reject 路径，不进入 accepted outstanding；role-complete `11`
+可省去 fragment matching，但仍需 barrier-before drain。
 
 `benes_network` 和既有多级网络文档保留为探索材料，不接入当前数据通路，也不作为
 decoder/class-router 的前置条件。

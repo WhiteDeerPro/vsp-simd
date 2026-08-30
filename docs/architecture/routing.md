@@ -548,6 +548,43 @@ resource_group_mask  src_group_mask | dst_group_mask
 - `wave_accept`：所有 participant 已配齐，且 union groups、route engine、VRF hazard 和
   每个 participant 的 completion credit 能同拍原子取得，内部 parent 才进入执行。
 
+rendezvous entry 至少需要保存：
+
+| 类别 | 字段 |
+|---|---|
+| 匹配 | `valid, context, epoch, route_id` |
+| participant | `expected_slot_mask, arrived_slot_mask, role_seen` |
+| 顺序 | 每槽 `barrier_token/fence_seq` 与 retirement-ready 状态 |
+| payload | 每 participant descriptor、tag、source/destination group mask |
+| 终止 | malformed、cancel/flush 状态以及所需 completion credit 数 |
+
+目标全链状态为 `EMPTY → COLLECT → DRAIN → READY → RUN → FANOUT`：COLLECT 只收齐
+participant；DRAIN 等各槽 barrier-before 的旧操作退休；READY 原子申请 union resources
+与全部 completion credit；RUN 之后不再等待 peer；FANOUT 保持 participant completion，
+直到两份（或声明数量的）completion 都被内部可靠边界接管。mismatch、epoch flush 或
+可观察 stream-end 可从 COLLECT/DRAIN 转入带原顺序身份的 cancel/fault，再由下游
+有序退休。
+
+当前新增的 `vsp_route_rendezvous_table` 是未接入顶层的 leaf reference：它已实现
+`{context,epoch,route_id}` 匹配、IN/OUT 不同 participant 检查、双 payload 保留、
+全局 per-participant 单调 frontier/token 门槛、terminal 背压稳定，以及 illegal/
+role-conflict/flush/epoch-advance 的 REJECT/CANCEL；无法放入已占 role 的冲突 fragment
+会保留在独立 fault identity 槽中，不丢失已接受 token/payload。它等价覆盖了表内
+COLLECT/DRAIN 和 READY terminal staging，但没有连接 queue/ordered window，也不拥有
+resource grant、route engine RUN 或 completion FANOUT。若后续改为 per-context token 编号，
+frontier 输入必须同步增加 context 维度；当前合同是每个 participant 的 token 在存活
+epoch 内全局单调且不回绕。
+多个已就绪 key 的 terminal 按 round-robin 交付，不承诺 architectural retirement order；
+opaque payload/token 需携带原 sequence/tag，由下游 ordered completion/retirement 恢复可观察顺序。
+若 fragment fault 与 cancel 同时命中，REJECT 优先；一旦 terminal 已锁存并对下游拉高
+`valid`，后到 flush 不再改写其稳定 payload，由下游 epoch/cancel 边界处理。
+同 key/同 role/同 participant/token/payload 的精确重放被视为幂等 transport replay，
+不创建第二个 retirement obligation；两条独立 architectural action 不得依赖完全相同的
+key 和 payload identity 来区分。
+结构 predecoder 不负责完整 route 合法性；因此 fragment 入表前需要最小 profile/key/role
+检查，或者表必须接受 late-decode failure 并将对应 entry 立即转成带原身份的 fault。
+非法 half 不能被无限期地解释为缺少 peer。
+
 不设置 rendezvous table 也可要求所有 fragment 同时在多个 queue head 可见，并直接做
 原子 `wave_accept`；代价是更强的 head-of-line/program scheduling 约束。一个 execution
 parent 不等于一个 architectural completion：接受时为每个 participant 预留 completion，
@@ -555,6 +592,12 @@ parent 不等于一个 architectural completion：接受时为每个 participant
 逐 byte invalid 只归属有 destination role 的 participant。当前 `LOCAL` 是普通单 action；
 当前 `DEP_INOUT` 也是单 descriptor/单 completion 的 role-complete 形状，但尚未构成带
 双槽 retirement 证明的 cooperative parent。
+
+未来双 participant wave 的完成合同是两项未决 obligation，而不是复制一拍脉冲：每项
+保留原 participant 的 context/tag/mask/status，并在各自 ready/valid fire 前保持稳定；
+任一 completion 被背压时，另一项可以由已预留的独立槽接管。route engine/group 资源在
+数据 commit 完成后即可转交 completion staging，但 route ID/participant tag 在两项都被
+可靠接管前不能复用。当前单 completion engine 不提供这项 fan-out。
 
 对 dependency wave，participant 配齐仍只是必要条件。`wave_accept` 前还必须确认两槽
 在会合点之前的操作已经真实退休：不能只观察 slot/queue empty，还要覆盖 ingress/holding、
@@ -570,9 +613,9 @@ parent 一旦接受，只能等待已经发出的有限 VRF response、固定 ro
 out-of-band flush/epoch teardown 或 table 可直接观察到的 stream-end 才能可靠取消并报告
 孤立 fragment；位于同一阻塞队头之后的普通 END/barrier 不能反过来解锁它。无 table
 方案则由编译器/程序保证各 fragment 同时可见，系统级 abort/watchdog 负责错误恢复。
-当前 RTL 没有 rendezvous table：`DEP_IN/DEP_OUT` 有序拒绝，不会成为等待 peer 的
-accepted outstanding；`DEP_INOUT` 虽可进入 engine，调用方目前也没有双槽 barrier
-证明，因此不能把这条兼容路径视为 cooperative closure。
+当前可执行 program path 没有接入 rendezvous leaf：`DEP_IN/DEP_OUT` 仍有序拒绝，
+不会成为等待 peer 的 accepted outstanding；`DEP_INOUT` 虽可进入 engine，调用方目前
+也没有双槽 barrier 证明，因此不能把这条兼容路径视为 cooperative closure。
 
 ### 当前为什么不选择 Bênes
 

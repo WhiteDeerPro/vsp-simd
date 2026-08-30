@@ -178,6 +178,14 @@ tracker/completion、MEMORY 和 VRF arbiter 排空，同时阻止新 MEMORY；ro
 普通 EXEC/MEMORY admission。外层 strict controller 还保持 program order，但不是
 snapshot/commit 不被交错的唯一保证。当前尚未形成可安全放宽该互斥的精确资源调度。
 
+目标 route dependency 是 barrier-before，而不是把 route 变成全局 serializing：
+participant 槽的 younger action 不得越过，但另一槽为到达同一会合点而执行的 older
+action 仍应推进。当前 blocking wrapper 的全局互斥更保守，是 single-active reference
+的实现边界，不表示 future concurrent scheduler 必须维持相同串行范围。现有
+ordered action window 只有全局 sequence，没有 flow/participant identity；因此它只能
+实现“本 entry 等全局旧项退休”，不能单靠 `barrier-before` 区分同槽 younger
+与另一槽的无关 younger。这项精确范围属于 future per-flow token/gate。
+
 更完整的并发调度模型仍可派生独立 mask：
 
 ```text
@@ -207,9 +215,37 @@ completion、MEMORY outstanding，以及 shared VRF arbiter 中尚未完成的�
 等待中的 fragment 不得设置全局 route busy 或阻塞另一槽推进其旧操作。当前外层仍为
 single-active，双槽 pair/drain admission 尚未接入。
 
+已有的独立 `vsp_route_rendezvous_table` leaf 采用小型 pre-admission entry，而不把
+half route 塞入 execution tracker：`{valid, context, epoch, route_id}` 作为匹配键，另存
+IN/OUT 各自的 participant、barrier token 和 opaque payload，以及 reject/cancel 状态。
+未来接线时，payload 中需要带入原 descriptor/tag 与 source/destination group summary，
+而 expected participant 和 completion-credit 属于外层 admission/resource 合同。
+当前 leaf 覆盖 `EMPTY/COLLECT/DRAIN` 及可背压的 WAVE/REJECT/CANCEL terminal staging：
+它要求两 role 来自不同 participant，按各自单调 frontier 比较 token，并保留双方
+opaque payload。它尚未获得真实 queue/retirement 信号，也没有实现 READY→RUN 的
+union resource/completion-credit 原子申请。只有未来这个 grant handshake 才属于
+accepted outstanding；表内 COLLECT/DRAIN 不占 group、route engine、tracker 或 completion slot。
+冲突或非法 fragment 若无法填入原 IN/OUT 槽，leaf 会额外保留 fault role/
+participant/token/payload。多个 ready key 之间以 round-robin 选 terminal；本表不实施
+architectural retirement order，下游需用 opaque payload 中的原 sequence/tag 恢复顺序。
+fault 与 cancel 同拍时 REJECT 优先；terminal 一旦进入可背压 staging 便保持稳定，
+后到 flush 由下游 epoch 处理，不在表内改写已暴露 payload。
+
+`pair-required` 是结构预译码结果，不代表 fragment 已通过完整合法性检查。
+因此 capture 之前必须完成足以配对的 profile/key/role 检查；若采用晚译码，
+late-decode failure 必须用原 sequence/tag 将 entry 转成有序 reject/cancel，不得让
+malformed half 永久留在 `COLLECT`。
+
+RUN 完成后需要为两个 participant 保留两项 completion obligation。每项沿用原
+context/tag/mask/status，并独立遵守 ready/valid 稳定；共同 transport fault 可复制到两项，
+destination-byte invalid 只归属 destination participant。全部 completion capacity 必须在
+READY→RUN 前预留，避免 parent 已接受后因第二项 completion 无处落地而形成 hold-and-wait。
+当前 engine 仍是单 action/单 completion reference，rendezvous terminal 也只是 parent handoff，
+没有这项 fan-out。
+
 孤立 descriptor 只能由 out-of-band flush/epoch teardown、table 可观察的 stream-end 或
-系统 abort 取消；不能指望堵在它后面的普通 END/barrier 破局。当前 RTL 尚无这个配对
-入口。当前 RTL 对 `DEP_IN/DEP_OUT` 产生有序 reject 且不访问 VRF；`DEP_INOUT` 可进入
+系统 abort 取消；不能指望堵在它后面的普通 END/barrier 破局。当前可执行 program path
+尚无这个配对入口。当前 engine 路径对 `DEP_IN/DEP_OUT` 产生有序 reject 且不访问 VRF；`DEP_INOUT` 可进入
 engine，但上游尚未证明另一槽已 drain，因此只是 reference compatibility，不是双槽
 cooperative closure。
 `vsp_lane_gather` 与固定四次 group-word/local-route 继续作为综合 A/B reference；拓扑

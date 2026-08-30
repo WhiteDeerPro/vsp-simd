@@ -43,6 +43,10 @@ module vsp_ordered_action_window #(
   input  logic [(ADMIT_LANES*DEP_W)-1:0] admit_dep_read_i,
   input  logic [(ADMIT_LANES*DEP_W)-1:0] admit_dep_write_i,
   input  logic [ADMIT_LANES-1:0] admit_split_ok_i,
+  // A predecessor barrier waits until its entry reaches the retirement head,
+  // but unlike serializing it does not by itself stop unrelated younger
+  // actions.  Nonzero route dependency modes map to this bit.
+  input  logic [ADMIT_LANES-1:0] admit_barrier_before_i,
   input  logic [ADMIT_LANES-1:0] admit_serializing_i,
   input  logic [ADMIT_LANES-1:0] admit_end_i,
 
@@ -70,6 +74,7 @@ module vsp_ordered_action_window #(
   output logic [(EXEC_SLOTS*DEP_W)-1:0] exec_issue_dep_read_o,
   output logic [(EXEC_SLOTS*DEP_W)-1:0] exec_issue_dep_write_o,
   output logic [EXEC_SLOTS-1:0] exec_issue_split_ok_o,
+  output logic [EXEC_SLOTS-1:0] exec_issue_barrier_before_o,
 
   // A side slot chooses the oldest ready non-EXEC record: MEMORY, CONTROL, or
   // an undefined class that must reach the ordered reject path. This is
@@ -98,6 +103,7 @@ module vsp_ordered_action_window #(
   output logic [(SIDE_SLOTS*DEP_W)-1:0] side_issue_dep_read_o,
   output logic [(SIDE_SLOTS*DEP_W)-1:0] side_issue_dep_write_o,
   output logic [SIDE_SLOTS-1:0] side_issue_split_ok_o,
+  output logic [SIDE_SLOTS-1:0] side_issue_barrier_before_o,
   output logic [SIDE_SLOTS-1:0] side_issue_serializing_o,
   output logic [SIDE_SLOTS-1:0] side_issue_end_o,
 
@@ -136,6 +142,7 @@ module vsp_ordered_action_window #(
   output logic [(RETIRE_SLOTS*DEP_W)-1:0] retire_dep_read_o,
   output logic [(RETIRE_SLOTS*DEP_W)-1:0] retire_dep_write_o,
   output logic [RETIRE_SLOTS-1:0] retire_split_ok_o,
+  output logic [RETIRE_SLOTS-1:0] retire_barrier_before_o,
   output logic [RETIRE_SLOTS-1:0] retire_serializing_o,
   output logic [RETIRE_SLOTS-1:0] retire_end_o,
   output logic program_end_retired_o,
@@ -161,6 +168,7 @@ module vsp_ordered_action_window #(
   logic [DEP_W-1:0] dep_read_q [WINDOW_DEPTH];
   logic [DEP_W-1:0] dep_write_q [WINDOW_DEPTH];
   logic split_ok_q [WINDOW_DEPTH];
+  logic barrier_before_q [WINDOW_DEPTH];
   logic serializing_q [WINDOW_DEPTH];
   logic end_q [WINDOW_DEPTH];
 
@@ -283,7 +291,8 @@ module vsp_ordered_action_window #(
             |(older_reads & dep_write_q[entry]);
         issue_blocked = entry_complete[entry] || older_serializing ||
                         shared_conflict ||
-                        (serializing_q[entry] && (age != 0));
+                        ((barrier_before_q[entry] ||
+                          serializing_q[entry]) && (age != 0));
 
         if (!issue_blocked) begin
           if (|target_mask_q[entry]) begin
@@ -327,6 +336,7 @@ module vsp_ordered_action_window #(
     exec_issue_dep_read_o = '0;
     exec_issue_dep_write_o = '0;
     exec_issue_split_ok_o = '0;
+    exec_issue_barrier_before_o = '0;
     for (int slot = 0; slot < EXEC_SLOTS; slot++) begin
       exec_selected_index[slot] = '0;
       exec_selected_mask[slot] = '0;
@@ -383,6 +393,7 @@ module vsp_ordered_action_window #(
         exec_issue_dep_read_o[(slot*DEP_W) +: DEP_W] = dep_read_q[entry];
         exec_issue_dep_write_o[(slot*DEP_W) +: DEP_W] = dep_write_q[entry];
         exec_issue_split_ok_o[slot] = split_ok_q[entry];
+        exec_issue_barrier_before_o[slot] = barrier_before_q[entry];
       end
     end
   end
@@ -399,6 +410,7 @@ module vsp_ordered_action_window #(
     side_issue_dep_read_o = '0;
     side_issue_dep_write_o = '0;
     side_issue_split_ok_o = '0;
+    side_issue_barrier_before_o = '0;
     side_issue_serializing_o = '0;
     side_issue_end_o = '0;
     for (int slot = 0; slot < SIDE_SLOTS; slot++) begin
@@ -461,6 +473,7 @@ module vsp_ordered_action_window #(
         side_issue_dep_read_o[(slot*DEP_W) +: DEP_W] = dep_read_q[entry];
         side_issue_dep_write_o[(slot*DEP_W) +: DEP_W] = dep_write_q[entry];
         side_issue_split_ok_o[slot] = split_ok_q[entry];
+        side_issue_barrier_before_o[slot] = barrier_before_q[entry];
         side_issue_serializing_o[slot] = serializing_q[entry];
         side_issue_end_o[slot] = end_q[entry];
       end
@@ -600,6 +613,7 @@ module vsp_ordered_action_window #(
     retire_dep_read_o = '0;
     retire_dep_write_o = '0;
     retire_split_ok_o = '0;
+    retire_barrier_before_o = '0;
     retire_serializing_o = '0;
     retire_end_o = '0;
     retire_count = 0;
@@ -636,6 +650,7 @@ module vsp_ordered_action_window #(
         retire_dep_read_o[(slot*DEP_W) +: DEP_W] = dep_read_q[entry];
         retire_dep_write_o[(slot*DEP_W) +: DEP_W] = dep_write_q[entry];
         retire_split_ok_o[slot] = split_ok_q[entry];
+        retire_barrier_before_o[slot] = barrier_before_q[entry];
         retire_serializing_o[slot] = serializing_q[entry];
         retire_end_o[slot] = end_q[entry];
       end
@@ -682,6 +697,7 @@ module vsp_ordered_action_window #(
         dep_read_q[entry] <= '0;
         dep_write_q[entry] <= '0;
         split_ok_q[entry] <= 1'b0;
+        barrier_before_q[entry] <= 1'b0;
         serializing_q[entry] <= 1'b0;
         end_q[entry] <= 1'b0;
       end
@@ -784,6 +800,7 @@ module vsp_ordered_action_window #(
           dep_write_q[entry] <=
               admit_dep_write_i[(lane*DEP_W) +: DEP_W];
           split_ok_q[entry] <= admit_split_ok_i[lane];
+          barrier_before_q[entry] <= admit_barrier_before_i[lane];
           serializing_q[entry] <= admit_serializing_i[lane] |
                                   admit_end_i[lane];
           end_q[entry] <= admit_end_i[lane];

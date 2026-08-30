@@ -21,6 +21,40 @@ package vsp_exec_uword_pkg;
   localparam logic [VSP_EXEC_ROUTE_IO_W-1:0]
       VSP_EXEC_ROUTE_IO_DEP_INOUT = 2'b11;
 
+  // Route-mode predicates are kept next to the encoding so predecode,
+  // canonical expansion, and scheduling metadata cannot silently disagree.
+  // LOCAL is role-complete even though neither encoded role bit is set.
+  function automatic logic vsp_exec_route_mode_dependent(
+      input logic [VSP_EXEC_ROUTE_IO_W-1:0] mode);
+    vsp_exec_route_mode_dependent = |mode;
+  endfunction
+
+  function automatic logic vsp_exec_route_mode_has_source(
+      input logic [VSP_EXEC_ROUTE_IO_W-1:0] mode);
+    vsp_exec_route_mode_has_source =
+        (mode == VSP_EXEC_ROUTE_IO_LOCAL) || mode[1];
+  endfunction
+
+  function automatic logic vsp_exec_route_mode_has_destination(
+      input logic [VSP_EXEC_ROUTE_IO_W-1:0] mode);
+    vsp_exec_route_mode_has_destination =
+        (mode == VSP_EXEC_ROUTE_IO_LOCAL) || mode[0];
+  endfunction
+
+  function automatic logic vsp_exec_route_mode_pair_required(
+      input logic [VSP_EXEC_ROUTE_IO_W-1:0] mode);
+    vsp_exec_route_mode_pair_required =
+        mode == VSP_EXEC_ROUTE_IO_DEP_IN ||
+        mode == VSP_EXEC_ROUTE_IO_DEP_OUT;
+  endfunction
+
+  function automatic logic vsp_exec_route_mode_role_complete(
+      input logic [VSP_EXEC_ROUTE_IO_W-1:0] mode);
+    vsp_exec_route_mode_role_complete =
+        mode == VSP_EXEC_ROUTE_IO_LOCAL ||
+        mode == VSP_EXEC_ROUTE_IO_DEP_INOUT;
+  endfunction
+
   typedef enum logic [VSP_EXEC_UWORD_FORMAT_W-1:0] {
     VSP_EXEC_UWORD_FMT_ALU          = 4'h1,
     VSP_EXEC_UWORD_FMT_CMP          = 4'h2,
@@ -138,6 +172,13 @@ package vsp_exec_uword_pkg;
         vsp_exec_uword_format_defined = 1'b1;
       default: vsp_exec_uword_format_defined = 1'b0;
     endcase
+  endfunction
+
+  function automatic logic vsp_exec_uword_is_route(
+      input logic [VSP_EXEC_UWORD_W-1:0] word);
+    vsp_exec_uword_is_route =
+        word[VSP_EXEC_UWORD_W-1 -: VSP_EXEC_UWORD_FORMAT_W] ==
+            VSP_EXEC_UWORD_FMT_ROUTE;
   endfunction
 
   // Record framing needs to know whether an EXEC base word owns the following
