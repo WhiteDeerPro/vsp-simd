@@ -65,8 +65,9 @@ EXEC_ROUTE vs=1 vi=3 vd=2
 
 `vs` 是数据 VRF row，`vi` 是保存逐 byte 8-bit index 的 VRF row，`vd` 是目的
 VRF row。展开结果固定为 `PASS_A/BYTE/GATHER/write_vrf`，所有 immediate route
-control 为零。重复索引自然表达广播；偏移索引表达 domain 内 slide mapping，越界或
-inactive source 按当前 VROUTE 规则补零。现有
+control 为零。重复索引自然表达广播；偏移索引表达 domain 内 slide mapping。越界或
+inactive source 会关闭对应目的 byte 的写使能并保留旧 `vd`；需要 zero-fill slide 时，
+程序必须先清零目的值或显式选择一个有效零源。现有
 4×4 `simd_route` 可以继续作为 cluster route 的叶端物理资源，但没有独立的
 immediate router 编码。
 
@@ -106,19 +107,20 @@ VROUTE v0 的 `group_mask` 来自 canonical action envelope，不来自 `fmt=0xd
 
 - inactive destination：不产生 byte write，原 `vd` 保持；
 - active destination 且 index 合法、source byte 有效：写所选 source byte；
-- active destination 但 index 越界，或指向未选中/无效 source byte：确定性写零，并在
-  engine 内置 invalid-element bit；
+- active destination 但 index 越界，或指向未选中/无效 source byte：不产生该 byte
+  write，原 `vd` 保持，同时在 engine 内置 invalid-element bit；
 - 重复 index 合法，直接表达 multicast/broadcast；空 `group_mask` 拒绝且不写回。
 
 逐 byte invalid-element mask 当前保存在 route completion 内部，但统一 EXEC completion
-envelope 尚未将它暴露给上级。read-side error 在首次 destination write 前终止，因而完整
+envelope 尚未将它暴露给上级。invalid-element 只是诊断，不把 action 标成 illegal、
+rejected 或 protocol error。read-side error 在首次 destination write 前终止，因而完整
 保留旧目的值；write 逐组提交，若后续 write 失败，较早已经接受的 group write 可能已经
 生效，并通过 illegal-group status 报告。
 
-默认 16-byte domain 可让程序把 16..255 的索引用作确定性零填充，因此任意长度 tail
-仍可得到无污染的零值；这不是“目的 byte 不写回”的 predicate 语义。若后续需要 tail
-undisturbed，或把 domain 扩到 256 byte 使全部 8-bit index 都合法，必须增加独立的
-lane-active mask（例如 action metadata/MRF 路径），不能继续依赖 OOB index。
+默认 16-byte domain 可让程序把 16..255 的索引用作 per-byte no-write sentinel，从而
+得到 tail-undisturbed 行为；它不提供确定性零填充。独立 lane-active mask（例如 action
+metadata/MRF 路径）仍有价值，尤其当 route domain 扩到 256 byte、全部 8-bit index 都
+成为合法源地址时。
 
 ### 叶端 `simd_route` 的 slide boundary
 
@@ -208,21 +210,28 @@ diagnostic 不同，不能把它们静默等同；已接入 VROUTE 的 out-of-ra
 这里记录的是被比较过但未被当前 cluster wrapper 选择的多 pass 实现。目标仍是
 byte-lane register gather，不是 indexed memory load：四个相邻
 SIMD4 group 各提供一个 32-bit VRF row，共同形成 16-byte source、16-byte index 和
-16-byte destination view。它与已接入 VROUTE 共用同一 4-group route-domain 语义；
-差异只在候选物理数据通路和时序。语义写成：
+16-byte destination view。它与已接入 VROUTE 共用有效 index 的 4-group
+route-domain mapping 和 invalid/no-write 合同，因而未来可替换当前 datapath 而不改变
+语义：
 
 ```text
 for i in 0..15:
     if destination_active[i]:
         source_ok = index[i] < 16 && source_active[index[i]]
-        destination[i] = source_ok ? source[index[i]] : 0
+        if source_ok:
+            destination[i] = source[index[i]]
+        else:
+            write_enable[i] = 0
+            invalid[i] = 1
 ```
 
 重复 index 合法并形成 multicast/broadcast；每个 destination byte 只有一个 producer，
 因此不是 scatter。index 可由 VRF 的第二读操作数提供。为了让超范围值不会被低四位
 截断后回绕，首版即使只访问 16 个 byte，也应保存并检查完整的 8-bit index。
 `source_active/destination_active` 由 action 的 group mask 按每组四个 byte 展开；
-inactive destination 不写回，active destination 的越界索引或 inactive source 写零。
+inactive destination 不写回；active destination 的越界索引或 inactive source 同样
+关闭写使能、保留目的值，但额外产生 invalid 诊断。four-pass reference 的 result
+write-mask 同样只标记 valid hit，OOB mask 独立保留诊断信息。
 
 ### 源侧 local route 后接 word multicast：原算法成立
 
@@ -380,7 +389,8 @@ hierarchy 也仍含 `M²` word connectivity；它不是全局扩展到任意规�
    `vs`，再逐组读取 `vi`，完整 snapshot 后才计算和写回；
 3. `group_mask` 按每组选中四个 byte；engine 能遵守 RF response mask，但当前 endpoint
    回显全一 request mask，因此部署路径仍是 whole-group active。inactive destination
-   保持旧值，active invalid destination 确定性写零；
+   与 active invalid destination 都保持旧值；后者额外设置逐 byte invalid 诊断，但不使
+   action 异常；
 4. `vsp_vrf_gather` 一次组合形成整个 route-domain result，随后经同一 arbiter 逐组选中
    destination row masked write。这里没有 four-pass route latency，也没有并行四组 commit；
 5. completion 只在最后一个被选 group 的 write response 完成后产生。下游背压期间
@@ -482,15 +492,18 @@ DR[lane] = SR[IR[lane]]
 `domain_byte = 4 * group-local slot + lane offset`，把同一 row number 在四个 group
 中的 fragment 依 slot 顺序连接；它不按 8-bit SIMD4 static ID 排列。索引由 VRF 提供，
 因此可以是运行时计算结果。8-bit index 保持 0..255 的完整值；当前 16-byte domain 仅
-0..15 合法。active destination 的 out-of-range index 或 inactive source 写零，inactive
-destination 则禁止 byte write。该逐 byte 语义由 `vsp_vrf_gather` 实现，不沿用 local
-`simd_crossbar` 的整操作 `illegal_o` 行为。
+0..15 合法。active destination 的 out-of-range index 或 inactive source 会关闭对应
+byte write、保留原 `vd` 并设置 invalid 诊断；inactive destination 同样禁止 byte write，
+但不设置这项诊断。两种情况都不会使 action illegal。该逐 byte 语义由
+`vsp_vrf_gather` 实现，不沿用 local `simd_crossbar` 的整操作 `illegal_o` 行为。
 
 首版 `group_mask` 按 group-local slot 编号，并对选中 group 的四个 byte 整组启用；它
 同时限定 source/index capture 与 destination commit。因而 index 指向未选中 group 的
-byte 时，等同于指向 inactive source 并写零。engine 接口保留 response-mask 合并逻辑，
+byte 时，等同于指向 inactive source 并禁止该目的 byte 写回。engine 接口保留
+response-mask 合并逻辑，
 但当前 endpoint 不提供独立 byte validity；`fmt=0xd` 也不携带 MRF selector 或 per-byte
-predicate，所以选中组内的 tail 目前只能用 OOB index 做确定性零填充。
+predicate，所以选中组内的 tail 可用 OOB index 得到 undisturbed 行为；zero-fill 仍需
+预清 `vd` 或显式有效零源。
 
 ### 语义边界：只做 gather
 

@@ -276,7 +276,8 @@ source/index row，调用 `vsp_vrf_gather` 形成默认 16-byte 结果，再逐�
 completion 已接回 EXEC 路径。wrapper 还会让 pending route 等待既有 EXEC/MEMORY/VRF
 transaction 排空，并在 pending/busy 期间门控新的冲突 admission；该安全边界不只依赖
 外层 strict controller。已有组内 4×4 `simd_crossbar/simd_route` 仍作为内部叶端资源
-保留，但当前 cluster VROUTE 没有物理复用它。
+保留，但当前 cluster VROUTE 没有物理复用它。OOB index 或 invalid source 会关闭对应
+目的 byte write、保留 `vd` 并设置仅供诊断的 invalid mask，不使 action 异常。
 
 固定 16×16 byte crossbar 已按该基线实现为 `vsp_lane_gather`：纯 gather、九种 mode
 （含动态 GATHER）、rotate wrap 报告，独立验证通过。选它而不是先做动态 Bênes/Omega
@@ -290,7 +291,8 @@ Bênes route-setting 或 conflict retry。用户给出的 source-local 反对角
 对当前 VSP，word-first、destination-local 次序控制更简单，也应列入综合候选。它们都
 需要 source/index snapshot、result staging、四组原子资源预留和并行 masked commit。
 当前 `vsp_word_first_gather_phase` 与 `vsp_four_pass_gather_engine` 已验证前两项及
-valid/ready 背压，但尚未连接 group VRF，也不是已经接入的四级吞吐流水。详细证明、
+valid-hit-only write mask、OOB 诊断和 valid/ready 背压，但尚未连接 group VRF，也不是
+已经接入的四级吞吐流水。详细证明、
 成本边界及 memory trade-off 见
 [路由](../architecture/routing.md)。
 

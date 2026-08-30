@@ -1,6 +1,6 @@
 // CLASS: cluster register-route transaction
 // CLAIM: a VRF-backed 4xSIMD4 route snapshots vs/vi before any vd write,
-//        preserves inactive groups, zeroes active invalid selections and
+//        preserves inactive groups and active invalid destination bytes, and
 //        holds one lossless completion under backpressure.
 // NON_CLAIMS: parallel RF capture/commit timing, final PPA, larger route trees.
 
@@ -269,7 +269,8 @@ int main(int argc, char** argv) {
   consume(dut, vrf);
 
   // Only groups 0 and 2 exist in this route domain.  Inactive destinations
-  // preserve vd; active selections of group 1, group 3 or OOB byte 16 write 0.
+  // preserve vd; active selections of missing groups or OOB bytes also leave
+  // their corresponding destination bytes untouched.
   Bytes partial_index{};
   partial_index.fill(0);
   partial_index[0] = 0;
@@ -289,11 +290,11 @@ int main(int argc, char** argv) {
   launch(dut, vrf, 0x5, 1, 4, 5, 0x52);
   run_to_completion(dut, vrf);
   const Bytes partial_result = unpack_rows(vrf.rows, 5);
-  expect(partial_result[0] == source[0] && partial_result[1] == 0 &&
-             partial_result[2] == source[8] && partial_result[3] == 0,
+  expect(partial_result[0] == source[0] && partial_result[1] == 0xa5 &&
+             partial_result[2] == source[8] && partial_result[3] == 0xa5,
          "partial", "group zero values");
-  expect(partial_result[8] == source[11] && partial_result[9] == 0 &&
-             partial_result[10] == source[2] && partial_result[11] == 0,
+  expect(partial_result[8] == source[11] && partial_result[9] == 0xa5 &&
+             partial_result[10] == source[2] && partial_result[11] == 0xa5,
          "partial", "group two values");
   for (unsigned lane : {4u, 5u, 6u, 7u, 12u, 13u, 14u, 15u})
     expect(partial_result[lane] == 0xa5, "partial", "inactive preserved");
@@ -302,6 +303,71 @@ int main(int argc, char** argv) {
   expect(vrf.reads - reads_before_partial == 4 &&
              vrf.writes - writes_before_partial == 2,
          "partial", "masked transaction counts");
+  consume(dut, vrf);
+
+  // One active destination group may mix valid and invalid selections.  The
+  // commit is byte-granular: valid lanes update while invalid lanes preserve
+  // the old vd bytes in the very same 32-bit VRF row.
+  Bytes mixed_index{};
+  mixed_index.fill(0);
+  mixed_index[0] = 3;    // present source group 0
+  mixed_index[1] = 4;    // missing source group 1
+  mixed_index[2] = 10;   // missing source group 2
+  mixed_index[3] = 200;  // OOB
+  for (unsigned group = 0; group < kGroups; ++group)
+    vrf.rows[group][9] = pack_group(mixed_index, group);
+  vrf.rows[0][13] = 0x44332211u;
+  const uint64_t writes_before_mixed = vrf.writes;
+  launch(dut, vrf, 0x1, 1, 9, 13, 0x5d);
+  run_to_completion(dut, vrf);
+  expect(vrf.rows[0][13] == 0x44332223u,
+         "mixed validity", "byte-granular preserved destination");
+  expect(dut.cpl_invalid_element_mask_o == 0x000eu,
+         "mixed validity", "invalid element mask");
+  expect(vrf.writes - writes_before_mixed == 1,
+         "mixed validity", "one partial group write");
+  consume(dut, vrf);
+
+  // An active group whose four selections all miss still completes through a
+  // legal zero-mask VRF write transaction.  The transaction keeps completion
+  // sequencing simple while changing no destination byte.
+  Bytes all_invalid_index{};
+  all_invalid_index.fill(255);
+  all_invalid_index[8] = 0;    // inactive source group 0
+  all_invalid_index[9] = 4;    // inactive source group 1
+  all_invalid_index[10] = 12;  // inactive source group 3
+  all_invalid_index[11] = 200;  // OOB
+  for (unsigned group = 0; group < kGroups; ++group)
+    vrf.rows[group][14] = pack_group(all_invalid_index, group);
+  vrf.rows[2][15] = 0x78563412u;
+  const uint64_t writes_before_all_invalid = vrf.writes;
+  launch(dut, vrf, 0x4, 1, 14, 15, 0x5e);
+  run_to_completion(dut, vrf);
+  expect(vrf.rows[2][15] == 0x78563412u,
+         "all invalid", "destination unchanged");
+  expect(dut.cpl_invalid_element_mask_o == 0x0f00u,
+         "all invalid", "invalid element mask");
+  expect(vrf.writes - writes_before_all_invalid == 1,
+         "all invalid", "zero-mask group write completes");
+  consume(dut, vrf);
+
+  // No-write lanes also preserve the pre-route value when vd aliases vs.
+  // Valid lanes must still select from the complete source snapshot.
+  Bytes mixed_alias_index{};
+  mixed_alias_index.fill(0);
+  mixed_alias_index[0] = 3;
+  mixed_alias_index[1] = 4;
+  mixed_alias_index[2] = 200;
+  mixed_alias_index[3] = 0;
+  for (unsigned group = 0; group < kGroups; ++group)
+    vrf.rows[group][9] = pack_group(mixed_alias_index, group);
+  vrf.rows[0][14] = 0x88776655u;
+  launch(dut, vrf, 0x1, 14, 9, 14, 0x5f);
+  run_to_completion(dut, vrf);
+  expect(vrf.rows[0][14] == 0x55776688u,
+         "mixed alias", "valid snapshot and invalid preservation");
+  expect(dut.cpl_invalid_element_mask_o == 0x0006u,
+         "mixed alias", "invalid element mask");
   consume(dut, vrf);
 
   // All reads precede all writes, so destination/source aliasing is defined.

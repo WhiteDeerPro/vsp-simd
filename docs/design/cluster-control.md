@@ -164,9 +164,11 @@ arbiter 串行捕获选中 group 的 source row，再捕获 index row；完整 s
 
 首版只使用一份 resolved `action_group_mask`：每个 bit 同时决定该 group 的 source/index
 capture 和 destination commit，并整组展开成四个 destination byte。未选中的目的保持
-旧值；active destination 的 index 越界或指向未选中/无效 source 时确定性写零。engine
-会合并 VRF response mask，但当前 endpoint 只回显全一 request mask；指令也不编码 MRF
-selector 或逐 byte predicate，所以选中组内 tail 目前只能零填充。当前 wrapper 自身已有
+旧值；active destination 的 index 越界或指向未选中/无效 source 时，也关闭对应 byte
+write 并保留旧值，同时生成 invalid-element 诊断。该诊断不使 action illegal、rejected
+或 protocol error。engine 会合并 VRF response mask，但当前 endpoint 只回显全一 request
+mask；指令也不编码 MRF selector 或逐 byte predicate。选中组内可用 OOB index 得到
+tail-undisturbed；zero-fill 需预清目的值或选择显式有效零源。当前 wrapper 自身已有
 drain/互斥门控：pending VROUTE 等待既有 EXEC queue/
 tracker/completion、MEMORY 和 VRF arbiter 排空，同时阻止新 MEMORY；route busy 期间阻止
 普通 EXEC/MEMORY admission。外层 strict controller 还保持 program order，但不是

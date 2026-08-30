@@ -78,15 +78,14 @@ void tick(Vvsp_four_pass_gather_engine& dut) {
 Expected reference(const Bytes& source, const Bytes& index,
                    uint16_t active_mask, uint8_t context, uint8_t tag) {
   Expected expected;
-  expected.write_mask = active_mask;
   expected.context = context;
   expected.tag = tag;
   for (unsigned lane = 0; lane < kLanes; ++lane) {
     if (((active_mask >> lane) & 1u) == 0) continue;
     if (index[lane] < kLanes) {
       expected.data[lane] = source[index[lane]];
+      expected.write_mask |= static_cast<uint16_t>(1u << lane);
     } else {
-      expected.data[lane] = 0;
       expected.oob_mask |= static_cast<uint16_t>(1u << lane);
     }
   }

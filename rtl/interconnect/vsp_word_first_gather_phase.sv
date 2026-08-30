@@ -48,8 +48,8 @@ module vsp_word_first_gather_phase (
   );
 
   // Derive the word and byte selects directly from the captured full-byte
-  // index.  Out-of-range indices select a harmless word/byte zero here and
-  // are forced to a zero result below; they must never wrap through [3:0].
+  // index.  Out-of-range indices select a harmless word/byte zero here but
+  // never assert the later byte write-enable; they must not wrap via [3:0].
   always_comb begin
     word_select = '0;
     byte_select = '0;
@@ -84,7 +84,8 @@ module vsp_word_first_gather_phase (
 
       selected_lane = int'(byte_select[(group*2) +: 2]);
       selected_we_o[group] =
-          active_mask_i[(group*LANES_PER_GROUP) + int'(phase_i)];
+          active_mask_i[(group*LANES_PER_GROUP) + int'(phase_i)] &&
+          index_valid[group];
       selected_oob_o[group] =
           active_mask_i[(group*LANES_PER_GROUP) + int'(phase_i)] &&
           !index_valid[group];

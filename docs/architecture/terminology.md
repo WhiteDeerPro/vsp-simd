@@ -51,7 +51,7 @@ HALF/WORD 的 element-level 语义需要由微码组合或后续 action 定义�
 | SIMD4 static ID | 每个 SIMD4 group 的不可变 8-bit 拓扑身份，当前由 `SIMD4_BASE_ID + group-local slot` 形成，可覆盖 0..255；它用于集成、可观测性和后续拓扑元数据，不是 PC、context、`group_mask` bit position 或 VROUTE byte index |
 | execution cluster | 多个 SIMD group 的发射、所有权、共享资源和完成集成域；当前参考 profile 是四组，不是固定架构上限 |
 | route domain | 一次 register gather 共享同一 byte-index 坐标空间的一组 SIMD group；当前已接入 profile 以一个四组 cluster 作为一个 domain，共 16 个 byte slot |
-| route-domain-relative byte index | `vi` VRF row 中的 8-bit 元素；它选择当前 route domain 内的源 byte，默认映射为 `4 * group-local slot + lane offset`。当前四组 domain 的合法值为 0..15，16..255 不截断、不回绕，而按 invalid index 处理 |
+| route-domain-relative byte index | `vi` VRF row 中的 8-bit 元素；它选择当前 route domain 内的源 byte，默认映射为 `4 * group-local slot + lane offset`。当前四组 domain 的合法值为 0..15；16..255 不截断、不回绕，而按 invalid index 关闭对应 byte write 并保留 `vd` |
 | Vector ALU / execution path | 执行逐元素算术、逻辑、局部 route 和 lane reduction 的路径 |
 | VRF row | 一个 SIMD group 内的 4×8-bit 物理寄存器片段，不等同于一个完整 RVV vector register |
 | accumulator register file (`ARF`) | VSP 特有的宽累加状态；当前每个 physical lane 保存一个 32-bit accumulator |
@@ -110,11 +110,13 @@ domain 的局部 byte 排列解释。
 `fmt=0xd` 的指令字段，也不引用 MRF。首版把每个选中 bit 展开为该 SIMD4 group 的四个
 destination byte，并只捕获这些 group 的 `vs`/`vi` VRF row。未选中的目的 group 不写回
 并保留原 `vd`，其源 byte 也不进入本次 route domain 的有效源集合。选中的目的 byte 若
-索引为 16..255，或指向未选中的源 byte，则确定性写零并在 route engine 内形成
-invalid-element 诊断。当前 group endpoint 回显全一 read request mask，VRF 不保存 byte
-validity，因此没有选中 group 内的 tail-undisturbed predicate；OOB 只能形成零填充。
-统一 EXEC completion 也尚未暴露逐 byte invalid 诊断。这个 whole-group profile 是现有
-集成合同，不排除后续 action metadata/MRF path 增加独立 lane-active mask。
+索引为 16..255，或指向未选中的源 byte，则不产生该 byte write、保留原 `vd`，并在
+route engine 内形成 invalid-element 诊断。该诊断不把 action 标成 illegal、rejected 或
+protocol error；统一 EXEC completion 目前也尚未暴露它。当前 group endpoint 回显全一
+read request mask，VRF 不保存 byte validity，因此指令仍没有独立的 lane-active
+predicate；但程序可以用 OOB index 得到 tail-undisturbed。zero-fill 需要先清零 `vd` 或
+选择显式有效零源。这个 whole-group profile 是现有集成合同，不排除后续 action
+metadata/MRF path 增加独立 lane-active mask。
 
 协议细节中可以在首次定义后使用 parent command / child request 来说明层级，但概览和
 编程语义优先使用 command、subrequest、beat、client 和 endpoint，避免把实现树当成

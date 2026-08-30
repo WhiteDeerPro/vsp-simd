@@ -4,9 +4,9 @@
 // legal and therefore implement multicast without arbitration.  Destination
 // activity and source presence are deliberately separate:
 //
-//   inactive destination       -> no write
-//   active + present source    -> selected byte
-//   active + OOB/missing source-> deterministic zero + invalid bit
+//   inactive destination        -> no write
+//   active + present source     -> selected byte
+//   active + OOB/missing source -> no write + invalid bit
 //
 // Keeping the full index byte until after the range check prevents values
 // 16..255 from silently wrapping through a four-bit crossbar select.
@@ -26,7 +26,7 @@ module vsp_vrf_gather #(
 );
   always_comb begin
     result_data_o = '0;
-    result_write_mask_o = destination_active_i;
+    result_write_mask_o = '0;
     result_invalid_mask_o = '0;
 
     for (int destination = 0; destination < LANES; destination++) begin
@@ -38,6 +38,7 @@ module vsp_vrf_gather #(
         if (source_index < LANES && source_valid_i[source_index]) begin
           result_data_o[(destination*DATA_W) +: DATA_W] =
               source_data_i[(source_index*DATA_W) +: DATA_W];
+          result_write_mask_o[destination] = 1'b1;
         end else begin
           result_invalid_mask_o[destination] = 1'b1;
         end

@@ -439,8 +439,10 @@ ROUTE_OP_GATHER`，canonical `src_a=vs`、`src_b=vi`。旧的 immediate
 首版不编码 MRF selector、narrow export 或 reduction。目的 group 的有效性来自
 resolved `action_group_mask` sideband；该 sideband 不塞进本字。当前 cluster 接入用
 同一 mask 选择 source/index capture 与 destination commit，并把每个选中 group 整组
-展开为四个 active byte；活动目的的越界索引或指向 inactive source 的索引写确定零，
-inactive 目的不写回。独立 source/destination mask 与更细 predicate 不属于 v0 编码。
+展开为四个 active byte。活动目的的越界索引或指向 inactive source 的索引关闭对应
+byte write、保留 `vd` 并设置 invalid-element 诊断；inactive 目的同样不写回，但不设置
+该诊断。invalid 不使 action 异常。独立 source/destination mask 与更细 predicate 不属于
+v0 编码。
 
 示例：
 

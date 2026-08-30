@@ -102,7 +102,7 @@ module vsp_four_pass_gather_engine #(
         result_context_q <= cmd_context_i;
         result_tag_q <= cmd_tag_i;
         result_data_q <= '0;
-        result_write_mask_q <= cmd_active_mask_i;
+        result_write_mask_q <= '0;
         result_oob_mask_q <= '0;
       end else if (busy_q) begin
         for (int group = 0; group < GROUPS; group++) begin
@@ -112,6 +112,7 @@ module vsp_four_pass_gather_engine #(
           if (pass_selected_we[group]) begin
             result_data_q[(destination_lane*DATA_W) +: DATA_W] <=
                 pass_selected_byte[(group*DATA_W) +: DATA_W];
+            result_write_mask_q[destination_lane] <= 1'b1;
           end
           if (pass_selected_oob[group]) begin
             result_oob_mask_q[destination_lane] <= 1'b1;

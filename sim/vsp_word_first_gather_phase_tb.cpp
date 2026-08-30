@@ -71,17 +71,18 @@ void expect_case(Vvsp_word_first_gather_phase& dut, const std::string& label,
       const bool active = ((active_mask >> lane) & 1u) != 0;
       const bool in_range = index[lane] < kLanes;
 
-      if ((((write_enables >> group) & 1u) != 0) != active) {
+      if ((((write_enables >> group) & 1u) != 0) !=
+          (active && in_range)) {
         fail(label, "write enable", phase);
       }
       if ((((oob >> group) & 1u) != 0) != (active && !in_range)) {
         fail(label, "oob", phase);
       }
 
-      if (active) {
+      if (active && in_range) {
         const uint8_t selected_byte =
             static_cast<uint8_t>(selected >> (group * 8));
-        const uint8_t expected_byte = in_range ? source[index[lane]] : 0;
+        const uint8_t expected_byte = source[index[lane]];
         if (selected_byte != expected_byte) {
           fail(label, "selected byte", phase);
         }
@@ -100,7 +101,6 @@ void expect_case(Vvsp_word_first_gather_phase& dut, const std::string& label,
     if (index[lane] < kLanes) {
       expected[lane] = source[index[lane]];
     } else {
-      expected[lane] = 0;
       expected_oob |= static_cast<uint16_t>(1u << lane);
     }
   }
