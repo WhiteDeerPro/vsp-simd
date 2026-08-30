@@ -189,7 +189,7 @@ digraph vsp_current_integration {
   }
 
   subgraph cluster_parallel_candidate {
-    label="RTL references not integrated into the strict closure";
+    label="Standalone concurrent references not integrated into the strict closure";
     color="#c59a3a";
     style="rounded,dashed";
 
@@ -205,7 +205,28 @@ digraph vsp_current_integration {
       color="#b58b23"
     ];
     route_rendezvous [
-      label="route rendezvous table leaf\nDEP_IN/DEP_OUT key match\nparticipant frontier + terminal staging",
+      label="route rendezvous table\nDEP_IN/DEP_OUT key match\nfrontier gate + terminal staging",
+      fillcolor="#fff7dc",
+      color="#b58b23"
+    ];
+    route_wave [
+      label="route-wave controller\nCOLLECT / LAUNCH / RUN / FANOUT\nstable parent + independent completions",
+      fillcolor="#fff7dc",
+      color="#b58b23"
+    ];
+    route_resource [
+      label="union-resource grant boundary\nsrc | dst groups + engine\nexternal arbiter not yet bound",
+      style="rounded,dashed,filled",
+      fillcolor="#fff7dc",
+      color="#b58b23"
+    ];
+    route_engine [
+      label="VRF register-route engine\nseparate src/dst masks\ncapture -> ROUTE_RESULT -> commit\nsingle active parent",
+      fillcolor="#fff7dc",
+      color="#b58b23"
+    ];
+    route_fanout [
+      label="participant completion staging\nIN and OUT backpressure independently",
       fillcolor="#fff7dc",
       color="#b58b23"
     ];
@@ -215,7 +236,7 @@ digraph vsp_current_integration {
       color="#b58b23"
     ];
     binding_gap [
-      label="missing concurrent class-engine binding",
+      label="missing program-path frontier,\nresource and ordered-retirement binding",
       style="rounded,dashed,filled",
       fillcolor="#fff7dc",
       color="#b58b23"
@@ -229,14 +250,26 @@ digraph vsp_current_integration {
       label="pair-required candidate"
     ];
     action_window -> late_decode [style=dashed, color="#b58b23"];
-    route_rendezvous -> binding_gap [
+    action_window -> route_wave [
       style=dashed,
       color="#b58b23",
-      label="WAVE / REJECT / CANCEL"
+      label="future real participant frontier"
     ];
+    route_rendezvous -> route_wave [color="#b58b23", label="terminal"];
+    route_wave -> route_resource [color="#b58b23", label="stable parent"];
+    route_resource -> route_engine [color="#b58b23", label="atomic accept"];
+    route_engine -> route_fanout [color="#8056a6", label="parent completion"];
+    route_fanout -> binding_gap [style=dashed, color="#b58b23"];
     late_decode -> binding_gap [style=dashed, color="#b58b23"];
     binding_gap -> strict_controller [style=dashed, color="#b58b23"];
   }
+
+  route_engine -> vrf_arbiter [
+    dir=both,
+    style=dashed,
+    color="#b58b23",
+    label="future shared VRF binding\nstandalone path exposes transactions"
+  ];
 
   state_engine [
     label="sequencer-local state engine\nper-context 32-bit state RF\nSMOVI / SADD / SADDI + base query",

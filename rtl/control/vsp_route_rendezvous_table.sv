@@ -1,5 +1,7 @@
-// Leaf reference for pairing dependent route fragments before execution.
-// It owns no execution resource and is intentionally not integrated yet.
+// Leaf for pairing dependent route fragments before execution.
+// It owns no execution resource.  It can be verified independently and is
+// also used by vsp_route_wave_controller; queue/program-path binding remains
+// an outer integration concern.
 module vsp_route_rendezvous_table #(
   parameter int ENTRY_COUNT       = 4,
   parameter int CONTEXT_COUNT     = 2,
@@ -82,9 +84,6 @@ module vsp_route_rendezvous_table #(
 );
   import vsp_exec_uword_pkg::*;
 
-  localparam logic [1:0] TERM_WAVE   = 2'd0;
-  localparam logic [1:0] TERM_REJECT = 2'd1;
-  localparam logic [1:0] TERM_CANCEL = 2'd2;
   localparam logic [CAUSE_W-1:0] CAUSE_BAD_FRAGMENT = CAUSE_W'(1);
   localparam logic [CAUSE_W-1:0] CAUSE_ROLE_CONFLICT = CAUSE_W'(2);
   localparam logic [CAUSE_W-1:0] CAUSE_PARTICIPANT_CONFLICT = CAUSE_W'(3);
@@ -110,6 +109,14 @@ module vsp_route_rendezvous_table #(
   logic [TOKEN_W-1:0] fault_token_q [ENTRY_COUNT];
   logic [PAYLOAD_W-1:0] fault_payload_q [ENTRY_COUNT];
 
+  // Epoch is a context property, not merely an event sampled by entries that
+  // happened to be resident during epoch_advance.  The first accepted fragment
+  // with an in-range context establishes it; an explicit advance supersedes
+  // that implicit initialization.  Old-epoch fragments are still handshaken so
+  // their original identity can retire through a CANCEL terminal.
+  logic current_epoch_valid_q [CONTEXT_COUNT];
+  logic [EPOCH_W-1:0] current_epoch_q [CONTEXT_COUNT];
+
   logic key_found;
   logic free_found;
   logic [INDEX_W-1:0] key_index;
@@ -120,6 +127,8 @@ module vsp_route_rendezvous_table #(
   logic [INDEX_W-1:0] terminal_rr_q;
   logic [ENTRY_COUNT-1:0] entry_cancel_effective;
   logic fragment_cancel_now;
+  logic fragment_context_valid;
+  logic fragment_epoch_stale;
   logic terminal_key_busy;
 
   logic terminal_valid_q;
@@ -158,6 +167,21 @@ module vsp_route_rendezvous_table #(
   endfunction
 
   always_comb begin
+    fragment_context_valid =
+        int'(fragment_context_i) < CONTEXT_COUNT;
+    fragment_epoch_stale = 1'b0;
+    if (fragment_context_valid) begin
+      if (epoch_advance_valid_i &&
+          fragment_context_i == epoch_advance_context_i) begin
+        // The new epoch is effective on the same edge as the advance.
+        fragment_epoch_stale =
+            fragment_epoch_i != epoch_advance_new_epoch_i;
+      end else if (current_epoch_valid_q[int'(fragment_context_i)]) begin
+        fragment_epoch_stale =
+            fragment_epoch_i != current_epoch_q[int'(fragment_context_i)];
+      end
+    end
+
     key_found = 1'b0;
     free_found = 1'b0;
     key_index = '0;
@@ -183,9 +207,7 @@ module vsp_route_rendezvous_table #(
     fragment_cancel_now =
         (flush_valid_i && fragment_context_i == flush_context_i &&
          fragment_epoch_i == flush_epoch_i) ||
-        (epoch_advance_valid_i &&
-         fragment_context_i == epoch_advance_context_i &&
-         fragment_epoch_i != epoch_advance_new_epoch_i);
+        fragment_epoch_stale;
     // Once both roles are present, collection is closed even while retirement
     // frontiers delay terminal emission.  This avoids accepting a fragment in
     // the same cycle that the completed entry is captured and freed. A key in
@@ -199,7 +221,18 @@ module vsp_route_rendezvous_table #(
 
   always_comb begin
     for (int entry = 0; entry < ENTRY_COUNT; entry++) begin
+      logic entry_epoch_stale;
+      entry_epoch_stale = 1'b0;
+      if (valid_q[entry]) begin
+        if (int'(context_q[entry]) < CONTEXT_COUNT) begin
+          if (current_epoch_valid_q[int'(context_q[entry])]) begin
+            entry_epoch_stale =
+                epoch_q[entry] != current_epoch_q[int'(context_q[entry])];
+          end
+        end
+      end
       entry_cancel_effective[entry] = cancel_q[entry] ||
+          (valid_q[entry] && entry_epoch_stale) ||
           (flush_valid_i && valid_q[entry] &&
            context_q[entry] == flush_context_i &&
            epoch_q[entry] == flush_epoch_i) ||
@@ -235,7 +268,7 @@ module vsp_route_rendezvous_table #(
     if (!rst_ni) begin
       terminal_rr_q <= '0;
       terminal_valid_q <= 1'b0;
-      terminal_kind_q <= TERM_WAVE;
+      terminal_kind_q <= VSP_ROUTE_TERMINAL_WAVE;
       terminal_cause_q <= '0;
       terminal_context_q <= '0;
       terminal_epoch_q <= '0;
@@ -253,6 +286,10 @@ module vsp_route_rendezvous_table #(
       terminal_fault_participant_q <= '0;
       terminal_fault_token_q <= '0;
       terminal_fault_payload_q <= '0;
+      for (int context_idx = 0; context_idx < CONTEXT_COUNT; context_idx++) begin
+        current_epoch_valid_q[context_idx] <= 1'b0;
+        current_epoch_q[context_idx] <= '0;
+      end
       for (int entry = 0; entry < ENTRY_COUNT; entry++) begin
         valid_q[entry] <= 1'b0;
         in_valid_q[entry] <= 1'b0;
@@ -268,6 +305,22 @@ module vsp_route_rendezvous_table #(
       end
     end else begin
       if (terminal_valid_q && terminal_ready_i) terminal_valid_q <= 1'b0;
+
+      if (epoch_advance_valid_i &&
+          int'(epoch_advance_context_i) < CONTEXT_COUNT) begin
+        current_epoch_valid_q[int'(epoch_advance_context_i)] <= 1'b1;
+        current_epoch_q[int'(epoch_advance_context_i)] <=
+            epoch_advance_new_epoch_i;
+      end
+
+      if (fragment_valid_i && fragment_ready_o && fragment_context_valid) begin
+        if (!current_epoch_valid_q[int'(fragment_context_i)] &&
+            !(epoch_advance_valid_i &&
+              fragment_context_i == epoch_advance_context_i)) begin
+          current_epoch_valid_q[int'(fragment_context_i)] <= 1'b1;
+          current_epoch_q[int'(fragment_context_i)] <= fragment_epoch_i;
+        end
+      end
 
       for (int entry = 0; entry < ENTRY_COUNT; entry++) begin
         if (flush_valid_i && valid_q[entry] &&
@@ -414,9 +467,11 @@ module vsp_route_rendezvous_table #(
 
       if (terminal_capture) begin
         terminal_valid_q <= 1'b1;
-        terminal_kind_q <= reject_q[terminal_index] ? TERM_REJECT :
+        terminal_kind_q <= reject_q[terminal_index] ?
+                           VSP_ROUTE_TERMINAL_REJECT :
                            (entry_cancel_effective[terminal_index] ?
-                                TERM_CANCEL : TERM_WAVE);
+                                VSP_ROUTE_TERMINAL_CANCEL :
+                                VSP_ROUTE_TERMINAL_WAVE);
         terminal_cause_q <= cause_q[terminal_index];
         terminal_context_q <= context_q[terminal_index];
         terminal_epoch_q <= epoch_q[terminal_index];

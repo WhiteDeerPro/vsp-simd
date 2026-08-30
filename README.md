@@ -25,7 +25,7 @@ VSP / SoC 子系统（未来）
     ├── byte-PC program source / control-store model / bundle assembler（独立参考 RTL 已实现）
     ├── multi-record framer / slot-0 action adapter / strict program wrapper（已接通）
     ├── ordered action window（含 predecessor-barrier 记账；尚未接入 strict program path）
-    ├── route rendezvous table（DEP_IN/DEP_OUT 配对/退休门槛 leaf；尚未接入 program path）
+    ├── route-wave pipeline（配对/退休门槛/原子 grant/真实 VRF route/双 completion；独立闭环）
     ├── sequencer address-state engine（已接入 strict slot-0 program path）
     ├── ordered I-side fetch 仿真模型（simulation only）
     ├── ordered dmem 仿真模型（可配置 FIFO outstanding；simulation only）
@@ -59,18 +59,23 @@ VSP / SoC 子系统（未来）
 - SIMD group 内的一份直接 crossbar，支持重复索引的 gather、lane broadcast 与 permutation；
 - 单字 `EXEC_ROUTE vs/vi/vd/io` 编制与 `fmt=0xd` canonical expansion：数据和逐 byte
   索引均来自 VRF，旧的 index/broadcast/slide immediate control 已取消；当前 cluster
-  以 blocking engine 经共享 VRF arbiter 串行捕获 source/index、完成 16-byte gather，再
-  逐组 masked commit；OOB 或 invalid source 关闭对应 byte write 并保留 `vd`，invalid
+  以 blocking engine 经共享 VRF arbiter 串行捕获 source/index、完成 16-byte gather，
+  经显式 `ROUTE_RESULT` 寄存边界后再逐组 masked commit；OOB 或 invalid source 关闭对应
+  byte write 并保留 `vd`，invalid
   mask 只诊断、不使 action 异常；
   `io[1:0]` 已贯穿编码和 canonical payload：`00=LOCAL`、`01=DEP_IN`、
   `10=DEP_OUT`、`11=DEP_INOUT`，其中 `dependency=|io`；当前 engine 可执行 `LOCAL`
   以及 role-complete 的 `DEP_INOUT`。后者仍要求上游满足 dependency barrier，但当前
-  single-active 路径尚无双槽证明；结构预解码已直接产生 route mode、
+  strict single-active 程序路径尚无双槽证明；结构预解码已直接产生 route mode、
   `barrier-before` 与 `pair-required` 元数据，独立 ordered action window 会令
-  barrier entry 等到退休队头再发射。独立 rendezvous leaf 可按
+  barrier entry 等到退休队头再发射。独立 route-wave pipeline 可按
   `{context,epoch,route_id}` 收集 `DEP_IN/DEP_OUT`，并在两个 participant frontier
-  达到 fence token 后交付 wave；这些部件尚未接成 concurrent program path。
-  `DEP_IN/DEP_OUT` 当前有序拒绝且不访问 VRF；
+  达到 fence token 后，原子申请 source/destination union mask，驱动真实 VRF route
+  engine，再向两个 participant 独立回送 completion；它按 context 保持 epoch fence，
+  且能在 `parent_fire` 前把 flush/epoch kill 转成双 CANCEL，已经进入 RUN 的事务不回滚。
+  它尚未接入 multi-queue/strict program path；RR ready-wave 选择也需要未来的
+  program-age/admission contract 约束有副作用的执行次序。因而 strict 路径中的
+  `DEP_IN/DEP_OUT` 仍有序拒绝且不访问 VRF；
 - 可接相邻 SIMD group 边界的双向 slide，用于组成更宽的逻辑执行组；
 - mask-aware 的组合 reduction tree，可求和、最小值、最大值和获胜 lane；
 - 由 `ABSDIFF_U + REDUCE_SUM_U` 组合出的 SAD 验证内核；
@@ -155,8 +160,11 @@ arbiter 串行捕获选中 group 的 source/index row，使用 `vsp_vrf_gather` 
 结果，逐组 masked commit 后进入 cluster completion。memory wrapper 会先排空既有
 ordinary EXEC/MEMORY/VRF transaction；pending route 阻止新 MEMORY，route busy 阻止
 新 ordinary EXEC/MEMORY，因而安全性不只依赖外层 strict controller。当前仍是
-single-active blocking 实现；并行 capture/commit、独立 source/destination mask、
-细粒度 predicate、双槽 dependency rendezvous 和并发 resource-aware scheduling 尚未完善。
+  single-active blocking 实现，但已经区分 source/destination mask，并在 gather 与首次
+  写回之间加入显式结果寄存级。独立 route-wave pipeline 已闭合双片段 rendezvous、
+  union-resource grant、真实 route RUN 与双 completion fan-out；并行 VRF capture/commit、
+  细粒度 predicate、将该 pipeline 绑定到 multi-queue program path，以及可持续 `II=1`
+  的多 outstanding route 仍未实现。
 非零 dependency route 后续只能在两槽旧操作真实退休、ingress/tracker/reject/completion、
 MEMORY 与 VRF arbiter 都排空后接受；slot/queue 暂时为空本身不足以构成这个条件。
 `vsp_lane_gather` 与

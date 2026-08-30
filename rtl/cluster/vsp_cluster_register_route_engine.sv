@@ -3,8 +3,11 @@
 // The first deployed profile is four SIMD4 groups: four source rows and four
 // index rows are snapshotted through the shared VRF transaction boundary,
 // routed as one 16-byte vector, then committed as four destination rows.  The
-// serial transport is an integration choice, not an architectural promise;
-// the snapshot/gather/commit contract also admits a later parallel RF port.
+// route result is registered between the complete snapshot and the first
+// destination write, giving capture, route, and commit explicit timing and
+// ownership boundaries.  The serial transport is an integration choice, not
+// an architectural promise; the snapshot/gather/commit contract also admits a
+// later parallel RF port.
 module vsp_cluster_register_route_engine #(
   parameter int GROUP_COUNT       = 4,
   parameter int LANES_PER_GROUP   = 4,
@@ -26,7 +29,11 @@ module vsp_cluster_register_route_engine #(
   input  logic                              cmd_legal_i,
   input  logic [CONTEXT_W-1:0]              cmd_context_i,
   input  logic [TAG_W-1:0]                  cmd_tag_i,
-  input  logic [GROUP_COUNT-1:0]            cmd_group_mask_i,
+  // Source capture and destination/index capture are separate domains for a
+  // paired DEP_OUT/DEP_IN wave. LOCAL and role-complete DEP_INOUT simply drive
+  // the same mask on both inputs.
+  input  logic [GROUP_COUNT-1:0]            cmd_source_group_mask_i,
+  input  logic [GROUP_COUNT-1:0]            cmd_destination_group_mask_i,
   input  logic [VRF_ADDR_W-1:0]             cmd_source_row_i,
   input  logic [VRF_ADDR_W-1:0]             cmd_index_row_i,
   input  logic [VRF_ADDR_W-1:0]             cmd_destination_row_i,
@@ -98,6 +105,7 @@ module vsp_cluster_register_route_engine #(
     STATE_IDLE,
     STATE_READ_REQUEST,
     STATE_READ_RESPONSE,
+    STATE_ROUTE_RESULT,
     STATE_WRITE_REQUEST,
     STATE_WRITE_RESPONSE,
     STATE_COMPLETE
@@ -109,6 +117,8 @@ module vsp_cluster_register_route_engine #(
   logic [CONTEXT_W-1:0] context_q;
   logic [TAG_W-1:0] tag_q;
   logic [GROUP_COUNT-1:0] group_mask_q;
+  logic [GROUP_COUNT-1:0] source_group_mask_q;
+  logic [GROUP_COUNT-1:0] destination_group_mask_q;
   logic [VRF_ADDR_W-1:0] source_row_q;
   logic [VRF_ADDR_W-1:0] index_row_q;
   logic [VRF_ADDR_W-1:0] destination_row_q;
@@ -136,6 +146,8 @@ module vsp_cluster_register_route_engine #(
   logic [VECTOR_W-1:0] gathered_data;
   logic [TOTAL_LANES-1:0] gathered_write_mask;
   logic [TOTAL_LANES-1:0] gathered_invalid_mask;
+  logic [VECTOR_W-1:0] route_result_data_q;
+  logic [TOTAL_LANES-1:0] route_result_write_mask_q;
 
   logic read_cpl_fire;
   logic read_rsp_fire;
@@ -148,28 +160,38 @@ module vsp_cluster_register_route_engine #(
   logic write_cpl_fire;
   logic write_identity_error;
 
-  logic first_group_valid;
-  logic [GROUP_ID_W-1:0] first_group;
-  logic next_group_valid;
-  logic [GROUP_ID_W-1:0] next_group;
+  logic first_destination_group_valid;
+  logic [GROUP_ID_W-1:0] first_destination_group;
+  logic next_source_group_valid;
+  logic [GROUP_ID_W-1:0] next_source_group;
+  logic next_destination_group_valid;
+  logic [GROUP_ID_W-1:0] next_destination_group;
 
   always_comb begin
-    first_group_valid = 1'b0;
-    first_group = '0;
+    first_destination_group_valid = 1'b0;
+    first_destination_group = '0;
     for (int group = 0; group < GROUP_COUNT; group++) begin
-      if (!first_group_valid && group_mask_q[group]) begin
-        first_group_valid = 1'b1;
-        first_group = GROUP_ID_W'(group);
+      if (!first_destination_group_valid &&
+          destination_group_mask_q[group]) begin
+        first_destination_group_valid = 1'b1;
+        first_destination_group = GROUP_ID_W'(group);
       end
     end
 
-    next_group_valid = 1'b0;
-    next_group = '0;
+    next_source_group_valid = 1'b0;
+    next_source_group = '0;
+    next_destination_group_valid = 1'b0;
+    next_destination_group = '0;
     for (int group = 0; group < GROUP_COUNT; group++) begin
-      if (!next_group_valid && group > int'(group_q) &&
-          group_mask_q[group]) begin
-        next_group_valid = 1'b1;
-        next_group = GROUP_ID_W'(group);
+      if (!next_source_group_valid && group > int'(group_q) &&
+          source_group_mask_q[group]) begin
+        next_source_group_valid = 1'b1;
+        next_source_group = GROUP_ID_W'(group);
+      end
+      if (!next_destination_group_valid && group > int'(group_q) &&
+          destination_group_mask_q[group]) begin
+        next_destination_group_valid = 1'b1;
+        next_destination_group = GROUP_ID_W'(group);
       end
     end
   end
@@ -228,9 +250,9 @@ module vsp_cluster_register_route_engine #(
   assign vrf_write_tag_o = tag_q;
   assign vrf_write_group_o = group_q;
   assign vrf_write_row_o = destination_row_q;
-  assign vrf_write_mask_o = gathered_write_mask[
+  assign vrf_write_mask_o = route_result_write_mask_q[
       (group_q*LANES_PER_GROUP) +: LANES_PER_GROUP];
-  assign vrf_write_data_o = gathered_data[(group_q*ROW_W) +: ROW_W];
+  assign vrf_write_data_o = route_result_data_q[(group_q*ROW_W) +: ROW_W];
   assign vrf_write_cpl_ready_o = state_q == STATE_WRITE_RESPONSE;
   assign write_cpl_fire = vrf_write_cpl_valid_i && vrf_write_cpl_ready_o;
   assign write_identity_error = write_cpl_fire &&
@@ -257,6 +279,8 @@ module vsp_cluster_register_route_engine #(
       context_q <= '0;
       tag_q <= '0;
       group_mask_q <= '0;
+      source_group_mask_q <= '0;
+      destination_group_mask_q <= '0;
       source_row_q <= '0;
       index_row_q <= '0;
       destination_row_q <= '0;
@@ -276,6 +300,8 @@ module vsp_cluster_register_route_engine #(
       cpl_rejected_q <= 1'b0;
       cpl_empty_mask_q <= 1'b0;
       cpl_invalid_mask_q <= '0;
+      route_result_data_q <= '0;
+      route_result_write_mask_q <= '0;
       protocol_error_q <= 1'b0;
     end else begin
       if (protocol_error_clear_i) protocol_error_q <= 1'b0;
@@ -291,7 +317,10 @@ module vsp_cluster_register_route_engine #(
           if (cmd_valid_i && cmd_ready_o) begin
             context_q <= cmd_context_i;
             tag_q <= cmd_tag_i;
-            group_mask_q <= cmd_group_mask_i;
+            group_mask_q <= cmd_source_group_mask_i |
+                            cmd_destination_group_mask_i;
+            source_group_mask_q <= cmd_source_group_mask_i;
+            destination_group_mask_q <= cmd_destination_group_mask_i;
             source_row_q <= cmd_source_row_i;
             index_row_q <= cmd_index_row_i;
             destination_row_q <= cmd_destination_row_i;
@@ -304,11 +333,13 @@ module vsp_cluster_register_route_engine #(
             cpl_rejected_q <= 1'b0;
             cpl_empty_mask_q <= 1'b0;
             cpl_invalid_mask_q <= '0;
+            route_result_data_q <= '0;
+            route_result_write_mask_q <= '0;
 
             for (int group = 0; group < GROUP_COUNT; group++) begin
               for (int lane = 0; lane < LANES_PER_GROUP; lane++) begin
                 destination_active_q[(group*LANES_PER_GROUP) + lane] <=
-                    cmd_group_mask_i[group];
+                    cmd_destination_group_mask_i[group];
               end
             end
 
@@ -325,10 +356,12 @@ module vsp_cluster_register_route_engine #(
                 int'(cmd_destination_row_i) >= VRF_ROWS) begin
               cpl_illegal_q <= 1'b1;
               cpl_rejected_q <= 1'b1;
-              error_group_mask_q <= cmd_group_mask_i;
+              error_group_mask_q <= cmd_source_group_mask_i |
+                                    cmd_destination_group_mask_i;
               cpl_valid_q <= 1'b1;
               state_q <= STATE_COMPLETE;
-            end else if (!(|cmd_group_mask_i)) begin
+            end else if (!(|cmd_source_group_mask_i) ||
+                         !(|cmd_destination_group_mask_i)) begin
               cpl_rejected_q <= 1'b1;
               cpl_empty_mask_q <= 1'b1;
               cpl_valid_q <= 1'b1;
@@ -337,7 +370,8 @@ module vsp_cluster_register_route_engine #(
               // The command mask is nonempty; derive its first group directly
               // from the command rather than the just-written snapshot.
               for (int group = GROUP_COUNT-1; group >= 0; group--) begin
-                if (cmd_group_mask_i[group]) group_q <= GROUP_ID_W'(group);
+                if (cmd_source_group_mask_i[group])
+                  group_q <= GROUP_ID_W'(group);
               end
               read_index_q <= 1'b0;
               state_q <= STATE_READ_REQUEST;
@@ -393,30 +427,51 @@ module vsp_cluster_register_route_engine #(
                              LANES_PER_GROUP] <= read_rsp_mask_next;
             end
 
-            if (next_group_valid) begin
-              group_q <= next_group;
+            if ((!read_index_q && next_source_group_valid) ||
+                (read_index_q && next_destination_group_valid)) begin
+              group_q <= read_index_q ? next_destination_group :
+                                        next_source_group;
               state_q <= STATE_READ_REQUEST;
             end else if (!read_index_q) begin
-              read_index_q <= 1'b1;
-              group_q <= first_group;
-              state_q <= STATE_READ_REQUEST;
+              if (!first_destination_group_valid) begin
+                // Both masks were checked at admission; reaching this branch
+                // without a destination is an internal protocol failure.
+                protocol_error_q <= 1'b1;
+                cpl_illegal_q <= 1'b1;
+                cpl_rejected_q <= 1'b1;
+                cpl_valid_q <= 1'b1;
+                state_q <= STATE_COMPLETE;
+              end else begin
+                read_index_q <= 1'b1;
+                group_q <= first_destination_group;
+                state_q <= STATE_READ_REQUEST;
+              end
             end else if (read_current_error || |error_group_mask_q) begin
               // Abort before the first destination write if any snapshot is
               // unavailable.  This preserves vd on every read-side failure.
               cpl_valid_q <= 1'b1;
               state_q <= STATE_COMPLETE;
             end else begin
-              group_q <= first_group;
-              state_q <= STATE_WRITE_REQUEST;
+              group_q <= first_destination_group;
+              state_q <= STATE_ROUTE_RESULT;
             end
           end
         end
 
+        STATE_ROUTE_RESULT: begin
+          // All source and index rows are now immutable snapshots.  Register
+          // the complete route result before advertising the first write so
+          // the wide gather path cannot become part of the VRF request path.
+          // This remains a single-active engine: the result stage is a timing
+          // boundary, not a second outstanding command slot.
+          route_result_data_q <= gathered_data;
+          route_result_write_mask_q <= gathered_write_mask;
+          cpl_invalid_mask_q <= gathered_invalid_mask;
+          state_q <= STATE_WRITE_REQUEST;
+        end
+
         STATE_WRITE_REQUEST: begin
           if (vrf_write_valid_o && vrf_write_ready_i) begin
-            // All source/index snapshots are stable before the first commit,
-            // so this also captures invalid-source diagnostics for aliases.
-            cpl_invalid_mask_q <= gathered_invalid_mask;
             state_q <= STATE_WRITE_RESPONSE;
           end
         end
@@ -427,8 +482,8 @@ module vsp_cluster_register_route_engine #(
               error_group_mask_q[group_q] <= 1'b1;
               cpl_illegal_q <= 1'b1;
             end
-            if (next_group_valid) begin
-              group_q <= next_group;
+            if (next_destination_group_valid) begin
+              group_q <= next_destination_group;
               state_q <= STATE_WRITE_REQUEST;
             end else begin
               cpl_valid_q <= 1'b1;

@@ -1,7 +1,8 @@
 // CLASS: cluster register-route transaction
 // CLAIM: a VRF-backed 4xSIMD4 route snapshots vs/vi before any vd write,
-//        preserves inactive groups and active invalid destination bytes, and
-//        holds one lossless completion under backpressure.
+//        preserves inactive groups and active invalid destination bytes,
+//        registers the complete route result before commit, and holds both
+//        write requests and completion losslessly under backpressure.
 // NON_CLAIMS: parallel RF capture/commit timing, final PPA, larger route trees.
 
 #include "Vvsp_cluster_register_route_engine.h"
@@ -79,6 +80,7 @@ struct VrfModel {
   bool read_error = false;
   bool block_read_cpl = false;
   bool block_read_rsp = false;
+  bool block_write_request = false;
   bool write_pending = false;
   uint8_t write_context = 0;
   uint8_t write_tag = 0;
@@ -91,7 +93,7 @@ struct VrfModel {
 
   void step(Vvsp_cluster_register_route_engine& dut) {
     dut.vrf_read_ready_i = 1;
-    dut.vrf_write_ready_i = 1;
+    dut.vrf_write_ready_i = !block_write_request;
 
     dut.vrf_read_cpl_valid_i = read_cpl_pending && !block_read_cpl;
     dut.vrf_read_rsp_valid_i = read_rsp_pending && !block_read_rsp;
@@ -183,6 +185,8 @@ struct VrfModel {
 void reset(Vvsp_cluster_register_route_engine& dut, VrfModel& vrf) {
   dut.cmd_valid_i = 0;
   dut.cmd_legal_i = 1;
+  dut.cmd_source_group_mask_i = 0;
+  dut.cmd_destination_group_mask_i = 0;
   dut.cpl_ready_i = 0;
   dut.protocol_error_clear_i = 0;
   dut.rst_ni = 0;
@@ -195,10 +199,13 @@ void reset(Vvsp_cluster_register_route_engine& dut, VrfModel& vrf) {
 
 void launch(Vvsp_cluster_register_route_engine& dut, VrfModel& vrf,
             uint8_t mask, uint8_t source, uint8_t index, uint8_t destination,
-            uint8_t tag, bool legal = true, uint8_t io_mode = 0) {
+            uint8_t tag, bool legal = true, uint8_t io_mode = 0,
+            int destination_mask = -1) {
   dut.cmd_context_i = 0;
   dut.cmd_tag_i = tag;
-  dut.cmd_group_mask_i = mask;
+  dut.cmd_source_group_mask_i = mask;
+  dut.cmd_destination_group_mask_i =
+      destination_mask < 0 ? mask : static_cast<uint8_t>(destination_mask);
   dut.cmd_source_row_i = source;
   dut.cmd_index_row_i = index;
   dut.cmd_destination_row_i = destination;
@@ -284,6 +291,107 @@ int main(int argc, char** argv) {
                dut.cpl_invalid_element_mask_o == held_invalid,
            "completion stall", "stable");
   }
+  consume(dut, vrf);
+
+  // The final index response closes the immutable snapshot, but no destination
+  // request may be exposed until the explicit route-result register edge. Once
+  // exposed, write payload and byte enables remain stable while the shared VRF
+  // endpoint applies backpressure.
+  vrf.rows[0][10] = 0x44332211u;
+  vrf.rows[0][11] = 0xff010203u;
+  vrf.rows[0][12] = 0xa5a5a5a5u;
+  const uint64_t reads_before_result_stage = vrf.reads;
+  const uint64_t writes_before_result_stage = vrf.writes;
+  vrf.block_write_request = true;
+  launch(dut, vrf, 0x1, 10, 11, 12, 0x48);
+
+  unsigned result_stage_timeout = 0;
+  while ((vrf.reads - reads_before_result_stage != 2 ||
+          vrf.read_cpl_pending || vrf.read_rsp_pending) &&
+         result_stage_timeout++ < 40) {
+    vrf.step(dut);
+  }
+  expect(result_stage_timeout < 40, "route result stage", "snapshot timeout");
+  expect(!dut.vrf_write_valid_o &&
+             vrf.writes == writes_before_result_stage,
+         "route result stage", "no commit on final snapshot edge");
+
+  vrf.step(dut);
+  expect(dut.vrf_write_valid_o && !dut.vrf_write_ready_i,
+         "route result stage", "registered write visible");
+  const uint32_t held_route_data = dut.vrf_write_data_o;
+  const uint8_t held_route_mask = dut.vrf_write_mask_o;
+  const uint16_t held_route_invalid = dut.cpl_invalid_element_mask_o;
+  expect(held_route_data == 0x00223344u && held_route_mask == 0x7 &&
+             held_route_invalid == 0x0008u,
+         "route result stage", "registered payload");
+
+  vrf.rows[0][10] = 0xffffffffu;
+  vrf.rows[0][11] = 0xffffffffu;
+  for (unsigned stall = 0; stall < 3; ++stall) {
+    vrf.step(dut);
+    expect(dut.vrf_write_valid_o && !dut.vrf_write_ready_i &&
+               dut.vrf_write_data_o == held_route_data &&
+               dut.vrf_write_mask_o == held_route_mask &&
+               dut.cpl_invalid_element_mask_o == held_route_invalid &&
+               vrf.writes == writes_before_result_stage,
+           "route result stage", "write stall stable");
+  }
+  vrf.block_write_request = false;
+  vrf.step(dut);
+  run_to_completion(dut, vrf);
+  expect(vrf.rows[0][12] == 0xa5223344u &&
+             vrf.writes - writes_before_result_stage == 1,
+         "route result stage", "committed registered payload once");
+  consume(dut, vrf);
+
+  // A cooperative wave may publish sources from one group domain and commit
+  // indexed destinations in another. Source capture uses only the OUT mask;
+  // index capture and writes use only the IN mask, while completion reports
+  // the union resource domain.
+  vrf.rows[0][5] = 0x04030201u;
+  vrf.rows[1][5] = 0x08070605u;
+  vrf.rows[2][5] = 0xeeeeeeeeu;
+  vrf.rows[3][5] = 0xffffffffu;
+  vrf.rows[2][6] = 0x04050607u;  // lanes request 7,6,5,4
+  vrf.rows[3][6] = 0x03020100u;  // lanes request 0,1,2,3
+  vrf.rows[0][7] = 0x11111111u;
+  vrf.rows[1][7] = 0x22222222u;
+  vrf.rows[2][7] = 0x33333333u;
+  vrf.rows[3][7] = 0x44444444u;
+  const uint64_t reads_before_split = vrf.reads;
+  const uint64_t writes_before_split = vrf.writes;
+  launch(dut, vrf, 0x3, 5, 6, 7, 0x49, true, 3, 0xc);
+  run_to_completion(dut, vrf);
+  expect(dut.cpl_group_mask_o == 0xf && !dut.cpl_illegal_o &&
+             !dut.cpl_rejected_o,
+         "split source/destination masks", "completion union");
+  expect(vrf.reads - reads_before_split == 4 &&
+             vrf.writes - writes_before_split == 2,
+         "split source/destination masks", "transport counts");
+  expect(vrf.rows[0][7] == 0x11111111u &&
+             vrf.rows[1][7] == 0x22222222u &&
+             vrf.rows[2][7] == 0x05060708u &&
+             vrf.rows[3][7] == 0x04030201u,
+         "split source/destination masks", "routed values");
+  consume(dut, vrf);
+
+  // A destination may name any global byte, but only bytes published by the
+  // source mask are present in this wave.  Missing-source selections preserve
+  // the old destination byte and are reported in destination-lane space.
+  vrf.rows[2][8] = 0x07040003u;  // request 3,0 (present), 4,7 (absent)
+  vrf.rows[2][9] = 0x88776655u;
+  const uint64_t reads_before_split_missing = vrf.reads;
+  const uint64_t writes_before_split_missing = vrf.writes;
+  launch(dut, vrf, 0x1, 5, 8, 9, 0x4a, true, 3, 0x4);
+  run_to_completion(dut, vrf);
+  expect(vrf.rows[2][9] == 0x88770104u,
+         "split missing source", "invalid bytes preserved");
+  expect(dut.cpl_invalid_element_mask_o == 0x0c00u,
+         "split missing source", "destination invalid mask");
+  expect(vrf.reads - reads_before_split_missing == 2 &&
+             vrf.writes - writes_before_split_missing == 1,
+         "split missing source", "transport counts");
   consume(dut, vrf);
 
   // LOCAL (00) is the same complete, self-contained gather without a
@@ -480,15 +588,27 @@ int main(int argc, char** argv) {
          "index alias", "VRF transaction counts");
   consume(dut, vrf);
 
-  const uint64_t reads_before_empty = vrf.reads;
-  const uint64_t writes_before_empty = vrf.writes;
-  launch(dut, vrf, 0x0, 1, 2, 3, 0x74);
-  run_to_completion(dut, vrf);
-  expect(dut.cpl_rejected_o && dut.cpl_empty_mask_o && !dut.cpl_illegal_o,
-         "empty", "ordered rejection");
-  expect(vrf.reads == reads_before_empty && vrf.writes == writes_before_empty,
-         "empty", "no VRF traffic");
-  consume(dut, vrf);
+  for (const auto& empty_case :
+       {std::array<uint8_t, 3>{0x0, 0xf, 0x74},
+        std::array<uint8_t, 3>{0xf, 0x0, 0x75}}) {
+    const uint8_t source_mask = empty_case[0];
+    const uint8_t destination_mask = empty_case[1];
+    const uint8_t tag = empty_case[2];
+    const std::string label = source_mask == 0 ? "empty source mask"
+                                                : "empty destination mask";
+    const uint64_t reads_before_empty = vrf.reads;
+    const uint64_t writes_before_empty = vrf.writes;
+    launch(dut, vrf, source_mask, 1, 2, 3, tag, true, 0,
+           destination_mask);
+    run_to_completion(dut, vrf);
+    expect(dut.cpl_rejected_o && dut.cpl_empty_mask_o &&
+               !dut.cpl_illegal_o,
+           label, "ordered rejection");
+    expect(vrf.reads == reads_before_empty &&
+               vrf.writes == writes_before_empty,
+           label, "no VRF traffic");
+    consume(dut, vrf);
+  }
 
   // A write-side failure is reported for the exact group, but it cannot roll
   // back earlier commits. The engine continues with later groups, so the

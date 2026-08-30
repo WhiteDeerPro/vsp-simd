@@ -21,6 +21,16 @@ package vsp_exec_uword_pkg;
   localparam logic [VSP_EXEC_ROUTE_IO_W-1:0]
       VSP_EXEC_ROUTE_IO_DEP_INOUT = 2'b11;
 
+  // Internal route-wave terminal categories.  These belong to the
+  // rendezvous/completion protocol rather than the instruction encoding.
+  localparam int VSP_ROUTE_TERMINAL_KIND_W = 2;
+  localparam logic [VSP_ROUTE_TERMINAL_KIND_W-1:0]
+      VSP_ROUTE_TERMINAL_WAVE   = 2'd0;
+  localparam logic [VSP_ROUTE_TERMINAL_KIND_W-1:0]
+      VSP_ROUTE_TERMINAL_REJECT = 2'd1;
+  localparam logic [VSP_ROUTE_TERMINAL_KIND_W-1:0]
+      VSP_ROUTE_TERMINAL_CANCEL = 2'd2;
+
   // Route-mode predicates are kept next to the encoding so predecode,
   // canonical expansion, and scheduling metadata cannot silently disagree.
   // LOCAL is role-complete even though neither encoded role bit is set.

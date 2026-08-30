@@ -504,10 +504,12 @@ byte write、保留原 `vd` 并设置 invalid 诊断；inactive destination 同�
 但不设置这项诊断。两种情况都不会使 action illegal。该逐 byte 语义由
 `vsp_vrf_gather` 实现，不沿用 local `simd_crossbar` 的整操作 `illegal_o` 行为。
 
-当前可执行的单 descriptor `LOCAL/DEP_INOUT group_mask` 按 group-local slot 编号，并对选中 group 的四个 byte
-整组启用；它同时限定 source/index capture 与 destination commit。因而 index 指向未选中 group 的
-byte 时，等同于指向 inactive source 并禁止该目的 byte 写回。engine 接口保留
-response-mask 合并逻辑，
+当前 strict 程序路径中的单 descriptor `LOCAL/DEP_INOUT group_mask` 按 group-local slot
+编号，并对选中 group 的四个 byte 整组启用；wrapper 把同一个 mask 同时送到 source 和
+destination 端。独立 route-wave pipeline 则能把 `DEP_OUT` 的 source mask 与 `DEP_IN`
+的 destination/index mask 分别送入同一个 engine，并以二者并集申请资源。无论哪种入口，
+index 指向 source mask 外的 byte 都等同于指向 inactive source，并禁止该目的 byte写回。
+engine 接口保留 response-mask 合并逻辑，
 但当前 endpoint 不提供独立 byte validity；`fmt=0xd` 也不携带 MRF selector 或 per-byte
 predicate，所以选中组内的 tail 可用 OOB index 得到 undisturbed 行为；zero-fill 仍需
 预清 `vd` 或显式有效零源。
@@ -565,19 +567,45 @@ participant；DRAIN 等各槽 barrier-before 的旧操作退休；READY 原子�
 可观察 stream-end 可从 COLLECT/DRAIN 转入带原顺序身份的 cancel/fault，再由下游
 有序退休。
 
-当前新增的 `vsp_route_rendezvous_table` 是未接入顶层的 leaf reference：它已实现
+`vsp_route_rendezvous_table` 仍可作为独立 leaf 验证，同时已经被
+`vsp_route_wave_controller` 实例化。table 已实现
 `{context,epoch,route_id}` 匹配、IN/OUT 不同 participant 检查、双 payload 保留、
 全局 per-participant 单调 frontier/token 门槛、terminal 背压稳定，以及 illegal/
 role-conflict/flush/epoch-advance 的 REJECT/CANCEL；无法放入已占 role 的冲突 fragment
 会保留在独立 fault identity 槽中，不丢失已接受 token/payload。它等价覆盖了表内
-COLLECT/DRAIN 和 READY terminal staging，但没有连接 queue/ordered window，也不拥有
-resource grant、route engine RUN 或 completion FANOUT。若后续改为 per-context token 编号，
+COLLECT/DRAIN 和 READY terminal staging。除此之外，table 为每个 context 持久保存
+current epoch fence：首个被接受且 context 在范围内的 fragment 建立初值，显式 epoch
+advance 更新 fence；随后到达的旧 epoch fragment 仍完成入口握手，但只形成保留原 identity 的
+CANCEL obligation，不能借表项已经释放而重新使用旧 key。其外层 controller 新增
+`COLLECT → LAUNCH → RUN → FANOUT` 控制：WAVE terminal 锁存后，LAUNCH 保持一个稳定的
+parent 请求；只有下游同时授予 union group 资源并接受 route-engine command 才进入 RUN；
+engine completion 再转成两个可独立背压的 participant completion。REJECT/CANCEL 不启动
+engine，并保留已捕获的 IN、OUT 或冲突 fault identity。若后续改为 per-context token 编号，
 frontier 输入必须同步增加 context 维度；当前合同是每个 participant 的 token 在存活
 epoch 内全局单调且不回绕。
-多个已就绪 key 的 terminal 按 round-robin 交付，不承诺 architectural retirement order；
-opaque payload/token 需携带原 sequence/tag，由下游 ordered completion/retirement 恢复可观察顺序。
+
+当前实现把依赖记账分成四个可观察阶段：
+
+| 阶段 | 保存的状态 | 拥有的执行资源 | 允许的推进 |
+|---|---|---|---|
+| `COLLECT/DRAIN` | table entry、两 role payload、participant/token、fault/cancel | 无 group、无 engine | peer 配齐且 frontier 达到后形成 terminal；可同时保存多个 key |
+| `LAUNCH` | 一个稳定 parent、source/destination/union mask、两份 completion identity | completion staging 容量；尚未拥有 engine/group | 原子 resource+engine handshake 后进入 RUN；在此之前仍可取消 |
+| `RUN` | parent identity 与 engine outstanding | union groups、route engine、VRF child transaction | 只等待有限 read/result/write/completion；不再等待 peer，启动后 flush 不回滚 |
+| `FANOUT` | 两份 participant completion obligation | 不再需要 route datapath；route ID 仍占用 | 两项可独立 ready/valid 消费，全部接管后释放 key |
+
+这相当于常见的“等待表 + 原子 issue + outstanding owner + completion queue”，但没有
+rename/乱序回滚；表项不是 reservation station，LAUNCH 前也不持有部分执行资源。
+多个已就绪 key 的 terminal 按 round-robin 交付，不承诺 architectural issue/retirement
+order。sequence/tag 可以让 completion 在下游按序退休，却不能撤销已经发生的 VRF 写回；
+因此当前独立入口只允许同时 ready 的 waves 在程序语义上可重排。若程序要求 age order，
+未来 binding 必须在 terminal 被 controller 捕获前通过 admission/frontier 只暴露
+age-eligible wave，或把 terminal 仲裁改为 age-aware；在较年轻 wave 已进入 LAUNCH 后
+才压低 `parent_ready` 不能让表重新选择较老 wave。RR 本身不能充当这个 gate。
 若 fragment fault 与 cancel 同时命中，REJECT 优先；一旦 terminal 已锁存并对下游拉高
-`valid`，后到 flush 不再改写其稳定 payload，由下游 epoch/cancel 边界处理。
+`valid`，后到 flush 不改写 table 的稳定 payload。外层 controller 会记住对 staged WAVE
+的 kill，并在接管 terminal 时把它转成 CANCEL；若 parent 已在 LAUNCH，则匹配的 flush/
+epoch advance 在组合上撤销 `parent_valid`，优先于同拍 `parent_ready`。只有实际
+`parent_fire` 才是不可回退点；进入 RUN 后 flush 不回滚 VRF 事务或已经提交的写回。
 同 key/同 role/同 participant/token/payload 的精确重放被视为幂等 transport replay，
 不创建第二个 retirement obligation；两条独立 architectural action 不得依赖完全相同的
 key 和 payload identity 来区分。
@@ -593,16 +621,18 @@ parent 不等于一个 architectural completion：接受时为每个 participant
 当前 `DEP_INOUT` 也是单 descriptor/单 completion 的 role-complete 形状，但尚未构成带
 双槽 retirement 证明的 cooperative parent。
 
-未来双 participant wave 的完成合同是两项未决 obligation，而不是复制一拍脉冲：每项
+双 participant wave 的完成合同是两项未决 obligation，而不是复制一拍脉冲：每项
 保留原 participant 的 context/tag/mask/status，并在各自 ready/valid fire 前保持稳定；
 任一 completion 被背压时，另一项可以由已预留的独立槽接管。route engine/group 资源在
 数据 commit 完成后即可转交 completion staging，但 route ID/participant tag 在两项都被
-可靠接管前不能复用。当前单 completion engine 不提供这项 fan-out。
+可靠接管前不能复用。当前 route-wave controller 用固定 completion registers 提供这项
+fan-out；普通 single-descriptor route engine 自身仍只产生一个 parent completion。
 
 对 dependency wave，participant 配齐仍只是必要条件。`wave_accept` 前还必须确认两槽
 在会合点之前的操作已经真实退休：不能只观察 slot/queue empty，还要覆盖 ingress/holding、
 tracker、ordered reject/completion、MEMORY outstanding 与 shared VRF arbiter 中的请求和
-响应。当前外层仍是 single-active，因此尚未接入这套双槽 drain/pair admission。
+响应。独立 pipeline 由显式 `participant_frontier_i` 提供这项证明；真实 multi-queue
+program path 尚未产生并连接这些 frontier，因此目前不能把独立闭环等同于程序级接入。
 
 parent 一旦接受，只能等待已经发出的有限 VRF response、固定 route/commit 阶段及已
 预留 completion buffer 的背压；不能再等待另一个 slot、未来指令或运行中扩大的 mask。
@@ -613,7 +643,12 @@ parent 一旦接受，只能等待已经发出的有限 VRF response、固定 ro
 out-of-band flush/epoch teardown 或 table 可直接观察到的 stream-end 才能可靠取消并报告
 孤立 fragment；位于同一阻塞队头之后的普通 END/barrier 不能反过来解锁它。无 table
 方案则由编译器/程序保证各 fragment 同时可见，系统级 abort/watchdog 负责错误恢复。
-当前可执行 program path 没有接入 rendezvous leaf：`DEP_IN/DEP_OUT` 仍有序拒绝，
+parent handshake 之后由 route engine 拥有有限事务，flush/epoch advance 不撤销已启动的
+VRF 读写；它们只把仍在 table、staged terminal 或 LAUNCH 中且尚未 `parent_fire` 的 wave
+转成 CANCEL。若以后加入投机取消，
+需要另行定义 engine abort 与已提交写回语义，不能复用 table flush 暗示 rollback。
+
+当前可执行 strict program path 没有接入 route-wave pipeline：`DEP_IN/DEP_OUT` 仍有序拒绝，
 不会成为等待 peer 的 accepted outstanding；`DEP_INOUT` 虽可进入 engine，调用方目前
 也没有双槽 barrier 证明，因此不能把这条兼容路径视为 cooperative closure。
 
@@ -660,8 +695,12 @@ FFT/小波是这里的主要负载依据：它们的 butterfly 在 stride 跨过
 `fmt=0xd` 已产生 `vs/vi/vd` 和 dependency canonical operands；当前 engine 直接处理
 `LOCAL` 和 role-complete 的 `DEP_INOUT`，但后者的双槽 dependency precondition 尚未由
 当前上游证明；`DEP_IN/DEP_OUT` 当前有序拒绝且不访问 VRF。`vsp_cluster_register_route_engine`
-经 cluster VRF arbiter 捕获 operands，调用 `vsp_vrf_gather` 并写回，已接入 controller/
-cluster completion 路径。`vsp_lane_gather`、`vsp_four_pass_gather_engine`、参数化
+经 cluster VRF arbiter 捕获 operands，调用 `vsp_vrf_gather`，把结果锁存到显式
+`ROUTE_RESULT` stage 后再写回，已接入 controller/cluster completion 路径；它仍是
+single-active，并未因此达到 `II=1`。另有独立 `vsp_cluster_route_wave_pipeline` 已把
+rendezvous/frontier、原子 union-resource handshake、真实 VRF engine 和双 completion
+fan-out 接成可执行闭环，但尚未绑定 queue/program frontend。`vsp_lane_gather`、
+`vsp_four_pass_gather_engine`、参数化
 `benes_network` 与 Omega 方案只作为实现研究材料保留，不接入正式 VROUTE 路径。
 
 ## Broadcast 边界

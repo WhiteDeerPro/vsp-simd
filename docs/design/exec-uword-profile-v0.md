@@ -442,10 +442,11 @@ action window 后要求该 entry 到达退休队头才可发射；它不同于 E
 reference，尚未接入 strict slot-0 program path。`pair-required=1` 的 fragment 必须先
 转入 rendezvous capture，不能作为普通单 entry barrier 塞进 window 后等待位于其后的
 peer；其中的 barrier 位用于形成 participant token/fence。
-当前已有一份未接入顶层的 `vsp_route_rendezvous_table` leaf，可收集两种 half role、
-等待两个 participant retirement frontier，并在 illegal/conflict/flush 时输出
-REJECT/CANCEL；它尚未从本 predecode 获得实际 record，也没有与 resource/credit grant
-和 route engine 闭合。
+当前 `vsp_route_rendezvous_table` 可收集两种 half role、等待两个 participant retirement
+frontier，并在 illegal/conflict/flush 时输出 REJECT/CANCEL；其外层 route-wave controller
+和 cluster pipeline 已闭合稳定 parent、union-resource handshake、真实 VRF route engine
+与双 completion fan-out。它尚未从本 predecode/queue 获得实际 record/frontier，外部
+resource grant 也尚未绑定真实 scheduler。
 
 ROUTE 是纯寄存器形式的向量 gather：数据来自 `vs`，每个目的 byte 的 8-bit
 索引来自 `vi`，结果写入 `vd`。它固定展开成
@@ -459,7 +460,8 @@ ROUTE_OP_GATHER`，canonical `src_a=vs`、`src_b=vi`。旧的 immediate
 `DEP_IN/DEP_OUT` 当前有序拒绝且不产生 VRF transaction；未来 pair 前端只能在
 participant 配齐与两槽旧操作真实退休后形成 accepted outstanding。这里的 drain 不以 slot/queue empty
 代替，需要覆盖 ingress/holding、tracker、ordered reject/completion、MEMORY outstanding
-和 shared VRF arbiter。当前外层仍为 single-active，双槽 pair 尚未接入。
+和 shared VRF arbiter。独立 route-wave pipeline 已实现双槽 pair/drain 接口与执行闭环，
+但 strict program path 仍为 single-active，尚未把 queue/window 的真实 frontier 接入。
 
 Canonical operand 由 mode 派生：`LOCAL` 和 `DEP_INOUT` 都保留 `vs/vi/vd` 并写
 `vd`；`DEP_OUT` 只保留 `vs`；`DEP_IN` 只保留 `vi/vd` 和写目的角色。后两者只是
@@ -471,8 +473,9 @@ resolved `action_group_mask` sideband；该 sideband 不塞进本字。当前单
 同一 mask 选择 source/index capture 与 destination commit，并把每个选中 group 整组
 展开为四个 active byte。活动目的的越界索引或指向 inactive source 的索引关闭对应
 byte write、保留 `vd` 并设置 invalid-element 诊断；inactive 目的同样不写回，但不设置
-该诊断。invalid 不使 action 异常。独立 source/destination mask 与更细 predicate 不属于
-v0 编码。
+该诊断。invalid 不使 action 异常。一条 v0 descriptor 不同时编码两份 mask；独立
+route-wave pipeline 通过两个 fragment 的 action sideband 形成 source/destination mask，
+不改变本字布局。更细 predicate 仍不属于 v0 编码。
 
 示例：
 
@@ -664,13 +667,15 @@ profile v0 已给 VRF-indexed ROUTE 分配 `fmt=0xd` 并归入 EXEC；cluster wr
 outstanding。默认 16-byte route domain
 通过 shared VRF arbiter 串行捕获
 选中 group 的 `vs`/`vi` row，
-完整 snapshot 进入 gather，再逐组 masked commit；最后一个 write 完成后才产生 EXEC
-completion。wrapper 在启动前排空既有 ordinary EXEC/MEMORY/VRF transaction；pending
+完整 snapshot 进入 gather，经显式 registered `ROUTE_RESULT` stage 后再逐组 masked
+commit；最后一个 write 完成后才产生 EXEC completion。wrapper 在启动前排空既有
+ordinary EXEC/MEMORY/VRF transaction；pending
 route 阻止新 MEMORY，route busy 阻止新 ordinary EXEC/MEMORY，所以 snapshot/commit
 互斥不只依赖外层 strict controller。
 
-仍待完善的是并行 VRF capture/commit、独立 source/destination mask、细粒度 predicate、
-动态 owner state 与精确 resource/dependency metadata、multi-action scheduling；这些属于
+engine canonical 接口已支持独立 source/destination mask；独立 route-wave pipeline 也已
+用两份 fragment sideband 驱动它。仍待完善的是并行 VRF capture/commit、细粒度 predicate、
+动态 owner state 与精确 program-path resource/dependency metadata、multi-action scheduling；这些属于
 cluster transport/scheduler，不改变本 profile 的 bit layout。旧的 SIMD4-local
 immediate ROUTE 不再具有 profile-v0 编码；已有 4×4 `simd_route` 可以作为叶端实现
 资源保留。

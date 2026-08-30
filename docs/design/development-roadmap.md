@@ -188,8 +188,8 @@ frontend/dispatcher/tracker 随机测试继续覆盖 mask overlap、表满和多
   已达到三发射；
 - 该 window 当前是独立的顺序依赖表 reference：保存 sequence、group/shared hazard、
   child completion 并按序 retirement；它本身没有 per-flow barrier token 或双 completion
-  fan-out，也尚未接入 concurrent wrapper；另一份独立 route rendezvous leaf 已实现
-  fragment 收集/frontier 门槛，但与 window 仍未接线；
+  fan-out，也尚未接入 concurrent wrapper；独立 route-wave pipeline 已实现 fragment
+  收集/frontier 门槛、parent RUN 和双 completion，但与 window 仍未接线；
 - strict `vsp_uword_cluster_program_wrapper` 已把 slot-0 record/action adapter 接到现有
   state engine/controller，作为 PC→state/MEMORY/EXEC/END 的可执行保序证明；它与
   上述 action window 仍是两条不同 reference，下一步才是把三项 admission 和实际
@@ -279,8 +279,9 @@ broadcast/slide/immediate index。`LOCAL` 不隐含跨槽 barrier；当前 engin
 和 role-complete 的 `DEP_INOUT`，但尚无双槽 drain 证明。`DEP_IN/DEP_OUT` 当前有序拒绝；
 未来 pair 前端只能在配对与 drain 完成后形成 accepted outstanding。
 `vsp_cluster_register_route_engine` 已通过 shared VRF arbiter 串行捕获选中 group 的
-source/index row，调用 `vsp_vrf_gather` 形成默认 16-byte 结果，再逐组 masked commit；
-completion 已接回 EXEC 路径。wrapper 还会让 pending route 等待既有 EXEC/MEMORY/VRF
+source/index row，调用 `vsp_vrf_gather` 形成默认 16-byte 结果；完整结果先进入显式
+`ROUTE_RESULT` 寄存级，再逐组 masked commit，completion 已接回 EXEC 路径。wrapper
+还会让 pending route 等待既有 EXEC/MEMORY/VRF
 transaction 排空，并在 pending/busy 期间门控新的冲突 admission；该安全边界不只依赖
 外层 strict controller。已有组内 4×4 `simd_crossbar/simd_route` 仍作为内部叶端资源
 保留，但当前 cluster VROUTE 没有物理复用它。OOB index 或 invalid source 会关闭对应
@@ -303,21 +304,28 @@ valid-hit-only write mask、OOB 诊断和 valid/ready 背压，但尚未连接 g
 成本边界及 memory trade-off 见
 [路由](../architecture/routing.md)。
 
-当前 closure 是 blocking、single-active、串行 VRF transport；一份
-`action_group_mask` 同时约束 source/index capture 与 destination commit，并按整组四个
-byte 展开。后续完善项是并行 capture/commit、独立 source/destination mask、细粒度
-predicate、精确 resource metadata、多 action scheduling，以及根据综合结果替换 gather
+当前 route engine 仍是 blocking、single-active、串行 VRF transport；strict 单 descriptor
+入口仍把同一份 `action_group_mask` 同时送到 source/destination。engine 的 canonical
+接口已区分两者，并在 capture 与 commit 之间增加显式 `ROUTE_RESULT` 寄存级。独立
+`vsp_cluster_route_wave_pipeline` 已把 `DEP_OUT` source mask 与 `DEP_IN`
+destination/index mask 合并为一个 parent，以 union mask 进行原子 resource handshake，
+驱动真实 VRF route engine，并把 parent completion 拆成两个独立、可背压的 completion。
+后续完善项是并行 capture/commit、细粒度 predicate、精确 program-path resource
+metadata、带 program-age 合同的多 action scheduling，以及根据综合结果替换 gather
 datapath。它们不改变 EXEC/MEMORY/CONTROL 的顺序与完成合同。
 
 双槽 dependency route 的 admission 还需以真实退休为界：两槽旧操作的 ingress/holding、
 tracker、ordered reject/completion、MEMORY outstanding 和 shared VRF arbiter 都已排空；
-slot/queue empty 只是局部观测，不足以单独释放 rendezvous。当前外层 single-active
-controller 尚未接入这项 pair/drain 控制。
+slot/queue empty 只是局部观测，不足以单独释放 rendezvous。独立 pipeline 当前接收显式
+participant frontier 并已验证等待期间不触碰 VRF；当前外层 single-active controller 和
+multi-queue program path 尚未生成/接入这些 frontier。
 
-建议分三步闭合：先把 per-slot retirement frontier/barrier token 接到并发前端；
-再把已有独立 rendezvous leaf 接在 queue candidate 锁定之前，补齐 profile legality、
-sequence/tag 和 resource summary；最后在原子 resource/credit grant 后闭合
-`READY → RUN → FANOUT`，为两个 participant 保存独立 completion obligation。在这些接线完成前，
+剩余 program-path 工作可分三步：先让 per-slot retirement frontier/barrier token 从并发
+前端到达现有 route-wave fragment 口；再把 capture 放在 queue candidate 锁定之前，并
+补齐 sequence/tag、route ID 和 resource summary 的真实来源；最后把现有
+`resource_valid/ready` 接到 group/VRF 资源仲裁与 ordered retirement。独立闭环已经提供
+`READY → RUN → FANOUT` 和两个 participant 的 completion obligation，不应在 strict
+controller 后再复制一套会合状态。在这些接线完成前，
 `01/10` 继续走现有有序 reject 路径，不进入 accepted outstanding；role-complete `11`
 可省去 fragment matching，但仍需 barrier-before drain。
 

@@ -196,8 +196,9 @@ resource_group_mask  src_group_mask | dst_group_mask
 
 未来 scheduler 可在 action 原子接受前解析这些 mask，完成精确资源预留；在 index
 capture 前不能推导真实 source 集合时，也可以显式提供 source mask，或保守占用完整
-route domain。并行 VRF capture/commit、独立 source/destination mask、细粒度 predicate
-和 resource-aware multi-action scheduling 都是当前 blocking closure 之后的增强。
+route domain。当前 route engine 接口与独立 route-wave pipeline 已区分 source/destination
+mask；并行 VRF capture/commit、细粒度 predicate 和 resource-aware multi-action
+scheduling 仍是 blocking closure 之后的增强。
 
 `DEP_OUT` 与 `DEP_IN` 不能分别成为两个已接受的 outstanding 再互相等待。那会产生典型
 hold-and-wait：A 已占 source group 等 B，B 又因 A 占用的 group、route engine、队头或
@@ -212,24 +213,36 @@ hold-and-wait：A 已占 source group 等 B，B 又因 A 占用的 group、route
 在 dependency wave 接受前，两槽在会合点之前的操作还必须真实退休。只看到另一槽或
 queue 为空并不充分；drain 需要同时覆盖 ingress/holding、tracker、ordered reject 与
 completion、MEMORY outstanding，以及 shared VRF arbiter 中尚未完成的请求/响应。
-等待中的 fragment 不得设置全局 route busy 或阻塞另一槽推进其旧操作。当前外层仍为
-single-active，双槽 pair/drain admission 尚未接入。
+等待中的 fragment 不得设置全局 route busy 或阻塞另一槽推进其旧操作。独立
+route-wave pipeline 已用显式 participant frontier 验证该边界，但当前 multi-queue/
+program frontend 尚未提供真实 retirement frontier，也没有接入该 pipeline。
 
-已有的独立 `vsp_route_rendezvous_table` leaf 采用小型 pre-admission entry，而不把
+`vsp_route_rendezvous_table` 采用小型 pre-admission entry，而不把
 half route 塞入 execution tracker：`{valid, context, epoch, route_id}` 作为匹配键，另存
 IN/OUT 各自的 participant、barrier token 和 opaque payload，以及 reject/cancel 状态。
 未来接线时，payload 中需要带入原 descriptor/tag 与 source/destination group summary，
 而 expected participant 和 completion-credit 属于外层 admission/resource 合同。
-当前 leaf 覆盖 `EMPTY/COLLECT/DRAIN` 及可背压的 WAVE/REJECT/CANCEL terminal staging：
+table 覆盖 `EMPTY/COLLECT/DRAIN` 及可背压的 WAVE/REJECT/CANCEL terminal staging：
 它要求两 role 来自不同 participant，按各自单调 frontier 比较 token，并保留双方
-opaque payload。它尚未获得真实 queue/retirement 信号，也没有实现 READY→RUN 的
-union resource/completion-credit 原子申请。只有未来这个 grant handshake 才属于
-accepted outstanding；表内 COLLECT/DRAIN 不占 group、route engine、tracker 或 completion slot。
+opaque payload。`vsp_route_wave_controller` 在它外面实现 LAUNCH/RUN/FANOUT；
+`vsp_cluster_route_wave_pipeline` 再把 LAUNCH 接到显式 union-resource grant 和真实
+VRF-backed route engine。只有这个 grant handshake 才属于 accepted outstanding；
+表内 COLLECT/DRAIN 不占 group、route engine 或 tracker，固定 fan-out registers 则在
+parent 启动前已可用。当前缺口是把 queue/ordered window 的真实 frontier 与资源仲裁器
+接到该独立闭环，而不是重新实现 table。
+table 还按 context 持久保存 current epoch fence；显式 advance 后，即使旧表项已经释放，
+晚到的旧 epoch fragment 也只会形成带原 identity 的 CANCEL，不会重新建立旧 wave。
 冲突或非法 fragment 若无法填入原 IN/OUT 槽，leaf 会额外保留 fault role/
 participant/token/payload。多个 ready key 之间以 round-robin 选 terminal；本表不实施
-architectural retirement order，下游需用 opaque payload 中的原 sequence/tag 恢复顺序。
+architectural issue/retirement order。opaque sequence/tag 只能恢复 completion 退休顺序，
+不能撤销已经提交的 VRF 写回；未来 program path 必须保证同时 ready 的 waves 可重排，
+或在 controller 捕获 terminal 前用 admission/frontier gate 只暴露 age-eligible wave，
+也可以把 terminal 仲裁本身改为 age-aware。较年轻 wave 已进入 LAUNCH 后才阻塞 resource
+grant 并不足以恢复较老 wave 的执行机会。
 fault 与 cancel 同拍时 REJECT 优先；terminal 一旦进入可背压 staging 便保持稳定，
-后到 flush 由下游 epoch 处理，不在表内改写已暴露 payload。
+后到 flush 不在表内改写已暴露 payload。controller 会记住 staged WAVE 的 kill；LAUNCH
+中的匹配 kill 还会组合撤销 parent valid，优先于同拍 ready。`parent_fire` 后进入 RUN，
+此后 flush/epoch advance 不回滚 VRF 事务，只影响尚未启动的 wave。
 
 `pair-required` 是结构预译码结果，不代表 fragment 已通过完整合法性检查。
 因此 capture 之前必须完成足以配对的 profile/key/role 检查；若采用晚译码，
@@ -240,12 +253,14 @@ RUN 完成后需要为两个 participant 保留两项 completion obligation。�
 context/tag/mask/status，并独立遵守 ready/valid 稳定；共同 transport fault 可复制到两项，
 destination-byte invalid 只归属 destination participant。全部 completion capacity 必须在
 READY→RUN 前预留，避免 parent 已接受后因第二项 completion 无处落地而形成 hold-and-wait。
-当前 engine 仍是单 action/单 completion reference，rendezvous terminal 也只是 parent handoff，
-没有这项 fan-out。
+当前 engine 仍是单 action/单 parent completion reference；route-wave controller 已把
+parent completion 转成两个独立 obligation。该 controller 的 LAUNCH/RUN/FANOUT 仍各
+只有一个 active wave，不代表 route engine 已支持多 outstanding 或 `II=1`。
 
 孤立 descriptor 只能由 out-of-band flush/epoch teardown、table 可观察的 stream-end 或
 系统 abort 取消；不能指望堵在它后面的普通 END/barrier 破局。当前可执行 program path
-尚无这个配对入口。当前 engine 路径对 `DEP_IN/DEP_OUT` 产生有序 reject 且不访问 VRF；`DEP_INOUT` 可进入
+尚无这个配对入口；独立 pipeline 已有入口但不持有 PC/queue。当前 strict engine 路径对
+`DEP_IN/DEP_OUT` 产生有序 reject 且不访问 VRF；`DEP_INOUT` 可进入
 engine，但上游尚未证明另一槽已 drain，因此只是 reference compatibility，不是双槽
 cooperative closure。
 `vsp_lane_gather` 与固定四次 group-word/local-route 继续作为综合 A/B reference；拓扑
@@ -552,9 +567,9 @@ engine 并发。
    action；把外部 owner/grant 配置逐步收进有状态 controller；
 3. 保留当前 vector-memory→shared VRF arbiter→wrapper 接线，在 `dmem_*` 下游比较并接入
    物理 local SRAM、cache/MMU adapter 或 DMA 边界；
-4. 保留已接入的 blocking 16-byte VROUTE 作为语义基线；出现吞吐依据后，比较并行
-   capture/commit、独立 source/destination mask、细粒度 predicate 与替代 crossbar
-   hierarchy，不回侵现有 class/retire 合同；
+4. 保留已接入的 blocking 16-byte VROUTE 和独立 route-wave pipeline 作为语义基线；
+   出现吞吐依据后，比较并行 capture/commit、多 outstanding result stages、细粒度
+   predicate 与替代 crossbar hierarchy，不回侵现有 class/retire 合同；
 5. 在 vector memory engine 下游接 DMA/地址空间 adapter，再依据实测比较二维地址
    与多 outstanding，不在
    SIMD group 内处理 cache coherence；

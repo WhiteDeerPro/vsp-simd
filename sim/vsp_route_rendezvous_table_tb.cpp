@@ -92,6 +92,15 @@ void consume(Vvsp_route_rendezvous_table& dut) {
   dut.terminal_ready_i = 0;
 }
 
+void advance_epoch(Vvsp_route_rendezvous_table& dut, uint8_t context,
+                   uint8_t epoch) {
+  dut.epoch_advance_valid_i = 1;
+  dut.epoch_advance_context_i = context;
+  dut.epoch_advance_new_epoch_i = epoch;
+  tick(dut);
+  dut.epoch_advance_valid_i = 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -130,6 +139,7 @@ int main(int argc, char** argv) {
   consume(dut);
 
   // Exact duplicate is idempotent; conflicting duplicate cancels collection.
+  advance_epoch(dut, 0, 2);
   send(dut, 0, 2, 0x20, 1, 0, 5, 0x11223344);
   expect("one collecting entry", 1, dut.occupancy_o);
   send(dut, 0, 2, 0x20, 1, 0, 5, 0x11223344);
@@ -248,7 +258,7 @@ int main(int argc, char** argv) {
   dut.flush_valid_i = 1;
   tick(dut);
   dut.flush_valid_i = 0;
-  expect("staged terminal is not rewritten by later flush", 0,
+  expect("staged terminal is stable under later flush", 0,
          dut.terminal_kind_o);
   expect("staged terminal payload survives later flush", held_payload,
          dut.terminal_out_payload_o);
@@ -285,6 +295,7 @@ int main(int argc, char** argv) {
   expect("pair and orphan released", 0, dut.occupancy_o);
 
   // Exact flush releases an orphan through CANCEL.
+  advance_epoch(dut, 0, 4);
   send(dut, 0, 4, 0x40, 2, 0, 9, 0x40404040);
   dut.flush_context_i = 0;
   dut.flush_epoch_i = 4;
@@ -297,6 +308,7 @@ int main(int argc, char** argv) {
   consume(dut);
 
   // Advancing an epoch cancels older orphaned work for that context.
+  advance_epoch(dut, 1, 5);
   send(dut, 1, 5, 0x50, 1, 1, 10, 0x50505050);
   dut.epoch_advance_context_i = 1;
   dut.epoch_advance_new_epoch_i = 6;
@@ -308,8 +320,30 @@ int main(int argc, char** argv) {
   expect("epoch cancel old epoch", 5, dut.terminal_epoch_o);
   consume(dut);
 
+  // Epoch advance is also an admission fence: a tardy fragment from the old
+  // epoch becomes an explicit CANCEL obligation, while the new epoch remains
+  // available for an ordinary rendezvous on the same route ID.
+  send(dut, 1, 5, 0x51, 2, 0, 11, 0x51515151);
+  wait_terminal(dut);
+  expect("late old epoch cancels", 2, dut.terminal_kind_o);
+  expect("late old epoch retained", 5, dut.terminal_epoch_o);
+  expect("late old epoch identity retained", 1,
+         dut.terminal_out_valid_o);
+  consume(dut);
+
+  send(dut, 1, 6, 0x51, 2, 0, 12, 0x52525252);
+  send(dut, 1, 6, 0x51, 1, 1, 13, 0x53535353);
+  dut.participant_frontier_i = (uint16_t{13} << 8) | 12;
+  wait_terminal(dut);
+  expect("new epoch pairs normally", 0, dut.terminal_kind_o);
+  expect("new epoch preserved", 6, dut.terminal_epoch_o);
+  expect("new epoch has OUT", 1, dut.terminal_out_valid_o);
+  expect("new epoch has IN", 1, dut.terminal_in_valid_o);
+  consume(dut);
+
   // A fragment racing an exact flush is accepted as a CANCEL obligation; it
   // cannot survive merely because the entry did not exist before the edge.
+  advance_epoch(dut, 0, 7);
   dut.flush_context_i = 0;
   dut.flush_epoch_i = 7;
   dut.flush_valid_i = 1;
@@ -324,6 +358,7 @@ int main(int argc, char** argv) {
 
   // A decode fault racing cancellation is reported as REJECT; the accepted
   // identity remains visible, and cancellation never hides the root cause.
+  advance_epoch(dut, 0, 8);
   dut.flush_context_i = 0;
   dut.flush_epoch_i = 8;
   dut.flush_valid_i = 1;
@@ -382,6 +417,7 @@ int main(int argc, char** argv) {
   expect("rr stream consumed", 0, dut.terminal_valid_o);
 
   // terminal_rr_q wrapped from physical entry two back to zero.
+  advance_epoch(dut, 2, 10);
   send(dut, 2, 10, 0xa4, 2, 1, 24, 0xa4a4a4a4);
   dut.flush_context_i = 2;
   dut.flush_epoch_i = 10;

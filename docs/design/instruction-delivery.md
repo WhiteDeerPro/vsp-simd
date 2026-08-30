@@ -399,8 +399,13 @@ sequence/tag 转成有序 reject/cancel。否则一条非法 half 会被误当�
 锁定点之后才决定只接 route，否则尤其在单 issue-view 参数下，一条年轻的
 被锁 action 可能长期遮住刚刚满足 drain 的 barrier。pairer 应放在候选选择/锁定之前，
 或显式预留可重选的 issue capacity。
-当前独立 rendezvous leaf 已要求 `fragment_legal` 并对非法/同 role 冲突给出
-REJECT，但 profile 合法性信号、queue capture 和原 sequence/tag 的有序完成回送仍未接线。
+当前 route-wave controller 已要求 `fragment_legal`，并对非法/同 role 冲突给出
+REJECT；独立 cluster pipeline 也已验证双 completion 回送。尚未接线的是 profile
+predecode 到 fragment 口、真实 queue capture/frontier，以及原 sequence/tag 回 ordered
+retirement 的 program-path binding。
+现有 rendezvous terminal 使用 RR 而非 sequence age。若不同 wave 的 VRF 副作用不可
+重排，binding 必须在 terminal capture 前只让 age-eligible wave 达到 ready，或改用
+age-aware 仲裁；完成端按序退休无法撤销已经提交的寄存器写回。
 当前四个字段使用独立参数宽度只是为了先验证 FIFO。接入 profile/predecoder 时，应由
 唯一的 `uword_t/resolved_t/sched_meta_t`（或等价 profile type）的 `$bits` 驱动这些
 宽度，避免 controller top 人工重复 `32/16/16`；这仍不要求确定最终 ISA。

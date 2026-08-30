@@ -8,9 +8,10 @@ MEMORY 参考闭环、独立并发候选和仿真模型分开，避免把“模�
 
 Graphviz 源文件为 [`current-integration.dot`](current-integration.dot)。
 
-## 1. 两条已经能运行的路径 `[RTL事实]`
+## 1. 三条已经能运行的参考路径 `[RTL事实]`
 
-当前有两条入口不同、但复用同一 vector memory engine 的闭环：
+前两条入口不同并复用同一 vector memory engine；第三条是尚未绑定程序前端的
+dependency-route 执行闭环：
 
 1. uword 程序路径：behavioral control store → linear byte-PC source →
    multi-record framer → **slot 0** holding/action adapter → strict controller。
@@ -21,6 +22,12 @@ Graphviz 源文件为 [`current-integration.dot`](current-integration.dot)。
 2. decoded MEMORY 路径：外部直接提供完整 MEMORY descriptor，经 strict controller
    进入 vector memory engine，再通过 VRF arbiter 和 group state endpoint 完成
    LOAD/STORE。该路径已和 EXEC、END 做过端到端参考回归。
+3. route-wave 路径：外部提供带 participant frontier/token 的 `DEP_OUT/DEP_IN`
+   fragments，rendezvous table 在执行 admission 之前配对；frontier 均到达后，controller
+   保持稳定的 source/destination union-resource 请求。grant 与真实 register-route engine
+   command 同拍接受后，engine 从各自 mask 捕获 VRF source/index，经显式
+   `ROUTE_RESULT` 寄存级再写回 destination mask，最后为两个 participant 保存独立
+   completion。它是可执行 RTL 闭环，但尚未连接 PC、framer、queue 或 ordered window。
 
 因此，“encoded 程序能用地址状态驱动 LOAD/STORE”与“外部 decoded descriptor 入口
 仍可独立使用”都成立。encoded MEMORY 不是独立的新内存实现：semantic decoder 在
@@ -29,10 +36,25 @@ action admission 读取 state base，现有 memory engine 接收快照后的 des
 `vsp_uword_multi_framer` 最多可同时暴露三条 record，`vsp_ordered_action_window`
 也已有四项窗口、两个 EXEC view 和一个 side view；结构 predecoder 会把非零 route
 mode 标成 `barrier-before`，并区分需要配对的 `DEP_IN/DEP_OUT`。window 能让这类 entry
-等到所有更老项真正退休后才暴露。新增的 `vsp_route_rendezvous_table`
-是独立 leaf reference：收集两个 partial role、比较 participant retirement token，并对
-illegal/conflict/flush 产生可背压 terminal。strict wrapper 仍只消费 slot 0；predecoder、
-window、rendezvous、late-decode holding stage 与 class engines 尚未组成并发 program path。
+等到所有更老项真正退休后才暴露。`vsp_route_rendezvous_table` 既可独立验证，也已由
+`vsp_route_wave_controller` 使用：收集两个 partial role、比较 participant retirement
+token，并对 illegal/conflict/flush 产生可背压 terminal。strict wrapper 仍只消费 slot 0；
+predecoder、window、route-wave fragment 入口、late-decode holding stage 与 class engines
+尚未组成并发 program path。尤其不能把 strict controller 放在 rendezvous 前面：它的
+global-single-active ownership 会让先到 half 等待 completion，并阻止 peer 到达。
+
+route engine 中的 `ROUTE_RESULT` 是 timing/ownership boundary：它切断完整 gather 组合
+结果到首次 VRF write request 的路径。capture 和 commit 仍串行，一个 engine 仍只接纳
+一个 active parent；当前没有宣称固定总延迟或 `II=1`。
+
+rendezvous table 可以在一个 parent RUN 时继续收集别的 key，但 controller 仍一次只让一个
+parent 经过 LAUNCH/RUN/FANOUT。table terminal 在背压时保持原 payload；匹配的 flush/
+epoch advance 由 controller 在 `parent_fire` 前转成双 CANCEL，RUN 中已经接受的 VRF
+事务则继续完成，不做回滚。ready terminal 的选择是 RR 而非 age-order；当前独立入口
+要求这些 waves 可重排。未来 program binding 若要求 age order，必须在 terminal 被捕获前
+限制 frontier/admission，或采用 age-aware terminal 仲裁；仅在 LAUNCH 后压低 resource
+ready 不会让表重选较老 wave。这个入口因此既不是完整 program path，也不是 `II=1`
+route pipeline。
 
 `vsp_ordered_ifetch_model` 仍是尚未绑定到 strict program path 的独立 I-side bundle
 endpoint，需要 launch address metadata/fault adapter。与它不同，

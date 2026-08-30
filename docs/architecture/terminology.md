@@ -107,10 +107,11 @@ domain 的局部 byte 排列解释。
 | AGU | address-generation unit；把已解析 base/offset/beat index 变为 effective address，不负责 outstanding response correlation 或 retirement |
 | outstanding transaction | request 已被 endpoint 接受、对应 response 尚未完成的事务；当前 vector memory engine 限制为一个 dmem beat |
 | route dependency mode | `fmt=0xd` 的 2-bit immediate：`00=LOCAL`、`01=DEP_IN`、`10=DEP_OUT`、`11=DEP_INOUT`，并定义 `dependency=|mode`；LOCAL 是无隐式跨槽 barrier 的自包含 route，DEP 模式声明跨槽 dependency role，不是 ready/valid 握手信号 |
-| route wave | 同一 execution context 内已经配齐 source/destination roles、完成 participant 旧操作 drain、并以 union group mask 原子接受的跨 mask execution parent；participant tag 可不同并在共同执行后分别完成；当前 `DEP_INOUT` 只是 role-complete 单 descriptor，尚无双槽 drain/parent/fan-out closure，`LOCAL` 不属于 dependency wave |
-| rendezvous fragment | `DEP_IN`/`DEP_OUT` route descriptor；可由有限 pre-admission table 捕获，也可停在 queue head 等待同时可见的 peer，但在 `wave_accept` 前不得占有 execution tracker、group 或 route-engine outstanding 资源；当前双槽配对前端尚未接入 |
-| fragment capture / wave accept | 前者只把 descriptor 收入有限 rendezvous staging；后者在 participant 配齐后原子预留 union resources 与全部 completion credit，并真正建立 route outstanding |
-| rendezvous entry | pre-admission 状态项，保存匹配键、participant/role、各槽 fence、opaque payload 与 cancel 状态；独立 `vsp_route_rendezvous_table` leaf 已验证两 role 收集、frontier 门槛和 REJECT/CANCEL，但它不是 execution tracker，也尚未接入 route engine |
+| route wave | 同一 execution context 内已经配齐 source/destination roles、完成 participant 旧操作 drain、并以 union group mask 原子接受的跨 mask execution parent；participant tag 可不同并在共同执行后分别完成；独立 route-wave pipeline 已闭合该 parent 与 fan-out，strict program path 尚未接入，`LOCAL` 不属于 dependency wave |
+| rendezvous fragment | `DEP_IN`/`DEP_OUT` route descriptor；可由有限 pre-admission table 捕获，也可停在 queue head 等待同时可见的 peer，但在 `wave_accept` 前不得占有 execution tracker、group 或 route-engine outstanding 资源；当前 fragment 入口是独立 RTL 接口，尚未绑定多 queue 前端 |
+| fragment capture / wave accept | 前者只把 descriptor 收入有限 rendezvous staging；后者在 participant 配齐后原子预留 union resources 与全部 completion capacity，并真正建立 route outstanding；当前独立 pipeline 以 `resource_valid/ready` 表示后者，实际 `parent_fire` 是不可回退点，RUN 不因后续 flush 回滚 |
+| rendezvous entry | pre-admission 状态项，保存匹配键、participant/role、各槽 fence、opaque payload 与 cancel 状态；table 另按 context 持久保存 current epoch fence，使已 advance context 的晚到旧 epoch fragment 只能 CANCEL；`vsp_route_rendezvous_table` 已验证两 role 收集、frontier 门槛和 REJECT/CANCEL，并由 route-wave controller 使用；它本身仍不是 execution tracker，RR terminal 选择也不提供 program age order |
+| route result stage | source/index snapshot 完成后、首个 destination write 之前的寄存边界；当前保存完整 gather data 与 byte-write mask，用于切断宽组合 gather 到 VRF request 的路径，不表示已有第二个 outstanding slot 或 `II=1` |
 | ordered dmem model | `dmem_req/rsp` 的 simulation-only byte-array endpoint；可接受多个无 ID request，但只按 request 顺序返回，不表示物理 SRAM/cache 已实现 |
 | request / response / completion | decoupled 协议中的请求、带数据返回和事务完成通知 |
 | subrequest / beat | 一个 command 向 group endpoint 或 memory endpoint 拆出的原子传输 |
