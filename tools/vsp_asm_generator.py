@@ -1,22 +1,30 @@
 #!/usr/bin/env python3
-"""VSP汇编生成辅助工具
+"""Build current-syntax VSP uword source from static algorithm schedules.
 
-提供高级API来生成VSP uword汇编程序，简化常见图像处理算法的编写。
+This module deliberately stops at readable ``.uasm``.  The exact assembler
+in :mod:`vsp_uword_asm` remains responsible for labels, legality and encoding;
+an RTL harness remains responsible for proving that an assembled program
+actually produces the expected result.
 """
 
-from typing import List
-from dataclasses import dataclass
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, List
+
+
+STATE_REGS = 32
+MEMORY_VRF_ROWS = 16
+MEMORY_MAX_EXPLICIT_SPAN_BYTES = 31
 
 
 @dataclass
 class VRFAllocation:
     """VRF寄存器分配管理"""
     num_rows: int = 16
-    allocated: set = None
-
-    def __post_init__(self):
-        if self.allocated is None:
-            self.allocated = set()
+    allocated: set[int] = field(default_factory=set)
 
     def alloc(self, name: str) -> int:
         """分配一个VRF行"""
@@ -28,7 +36,16 @@ class VRFAllocation:
 
     def alloc_range(self, count: int, base_name: str) -> List[int]:
         """分配连续的VRF行"""
-        return [self.alloc(f"{base_name}{i}") for i in range(count)]
+        if count <= 0:
+            raise ValueError("VRF range count must be positive")
+        for start in range(self.num_rows - count + 1):
+            rows = range(start, start + count)
+            if all(row not in self.allocated for row in rows):
+                self.allocated.update(rows)
+                return list(rows)
+        raise RuntimeError(
+            f"No contiguous range of {count} VRF rows for {base_name}"
+        )
 
     def free(self, row: int):
         """释放VRF行"""
@@ -38,11 +55,36 @@ class VRFAllocation:
 class VSPAsmBuilder:
     """VSP汇编程序构建器"""
 
-    def __init__(self):
+    def __init__(self, *, state_regs: int = STATE_REGS,
+                 vrf_rows: int = MEMORY_VRF_ROWS):
         self.lines: List[str] = []
-        self.labels: set = set()
-        self.vrf_alloc = VRFAllocation()
-        self.state_regs_used: set = set()
+        self.labels: set[str] = set()
+        self.state_regs = state_regs
+        self.vrf_alloc = VRFAllocation(vrf_rows)
+        self.state_regs_used: set[int] = set()
+
+    def _state_reg(self, reg: int) -> int:
+        if reg < 0 or reg >= self.state_regs:
+            raise ValueError(
+                f"state register {reg} is outside 0..{self.state_regs - 1}"
+            )
+        return reg
+
+    def _vrf_row(self, row: int) -> int:
+        if row < 0 or row >= self.vrf_alloc.num_rows:
+            raise ValueError(
+                f"VRF row {row} is outside 0..{self.vrf_alloc.num_rows - 1}"
+            )
+        return row
+
+    @staticmethod
+    def _span_bytes(span_bytes: int) -> int:
+        if span_bytes < 0 or span_bytes > MEMORY_MAX_EXPLICIT_SPAN_BYTES:
+            raise ValueError(
+                "unit-stride span must be 0 (all selected groups) or "
+                f"1..{MEMORY_MAX_EXPLICIT_SPAN_BYTES} bytes"
+            )
+        return span_bytes
 
     def comment(self, text: str):
         """添加注释"""
@@ -71,13 +113,19 @@ class VSPAsmBuilder:
 
     def smovi(self, reg: int, imm: int):
         """加载立即数到状态寄存器"""
+        self._state_reg(reg)
         self.state_regs_used.add(reg)
         self.lines.append(f"SMOVI rd={reg} imm={imm:#x}")
         return self
 
+    def li(self, reg: int, imm: int):
+        """Readable alias for :meth:`smovi`."""
+        return self.smovi(reg, imm)
+
     def sadd(self, dst: int, src1: int, src2: int):
         """状态寄存器加法"""
         for r in [dst, src1, src2]:
+            self._state_reg(r)
             self.state_regs_used.add(r)
         self.lines.append(f"SADD rd={dst} rs1={src1} rs2={src2}")
         return self
@@ -85,6 +133,7 @@ class VSPAsmBuilder:
     def saddi(self, dst: int, src: int, imm: int):
         """状态寄存器立即数加法"""
         for r in [dst, src]:
+            self._state_reg(r)
             self.state_regs_used.add(r)
         self.lines.append(f"SADDI rd={dst} rs1={src} imm={imm}")
         return self
@@ -95,6 +144,9 @@ class VSPAsmBuilder:
               span_bytes: int = 16, addr_space: str = "local",
               addr_context: int = 0):
         """向量加载"""
+        self._vrf_row(vd)
+        self._state_reg(base_reg)
+        self._span_bytes(span_bytes)
         self.lines.append(
             f"VLOAD space={addr_space} addr_context={addr_context} "
             f"sbase={base_reg} vrf={vd} span={span_bytes} offset={offset}")
@@ -104,6 +156,9 @@ class VSPAsmBuilder:
                span_bytes: int = 16, addr_space: str = "local",
                addr_context: int = 0):
         """向量存储"""
+        self._vrf_row(vs)
+        self._state_reg(base_reg)
+        self._span_bytes(span_bytes)
         self.lines.append(
             f"VSTORE space={addr_space} addr_context={addr_context} "
             f"sbase={base_reg} vrf={vs} span={span_bytes} offset={offset}")
@@ -112,6 +167,9 @@ class VSPAsmBuilder:
     def vgather(self, vd: int, vi: int, base_reg: int, offset: int = 0,
                 addr_space: str = "local", addr_context: int = 0):
         """按VRF索引行中的unsigned byte offset执行memory gather。"""
+        self._vrf_row(vd)
+        self._vrf_row(vi)
+        self._state_reg(base_reg)
         self.lines.append(
             f"VGATHER space={addr_space} addr_context={addr_context} "
             f"sbase={base_reg} vd={vd} vi={vi} offset={offset}")
@@ -120,6 +178,9 @@ class VSPAsmBuilder:
     def vscatter(self, vs: int, vi: int, base_reg: int, offset: int = 0,
                  addr_space: str = "local", addr_context: int = 0):
         """按VRF索引行中的unsigned byte offset执行有序memory scatter。"""
+        self._vrf_row(vs)
+        self._vrf_row(vi)
+        self._state_reg(base_reg)
         self.lines.append(
             f"VSCATTER space={addr_space} addr_context={addr_context} "
             f"sbase={base_reg} vs={vs} vi={vi} offset={offset}")
@@ -130,6 +191,8 @@ class VSPAsmBuilder:
     def alu(self, op: str, vd: int, va: int, vb: int,
             mode: str = "byte", mask: str = "none", reduce: str = "none"):
         """通用ALU操作"""
+        for row in [vd, va, vb]:
+            self._vrf_row(row)
         inst = f"EXEC_ALU_RR op={op} mode={mode} va={va} vb={vb} vd={vd}"
         if mask != "none":
             inst += f" mask={mask}"
@@ -141,6 +204,8 @@ class VSPAsmBuilder:
     def alu_imm(self, op: str, vd: int, va: int, imm: int,
                 mode: str = "byte", mask: str = "none"):
         """带立即数的ALU操作"""
+        for row in [vd, va]:
+            self._vrf_row(row)
         inst = f"EXEC_ALU_RI op={op} mode={mode} va={va} vd={vd} imm={imm}"
         if mask != "none":
             inst += f" mask={mask}"
@@ -171,10 +236,33 @@ class VSPAsmBuilder:
 
     def reduce(self, op: str, va: int):
         """Reduction操作（返回标量结果）"""
+        self._vrf_row(va)
         self.lines.append(f"EXEC_REDUCE op={op} va={va}")
         return self
 
     # === 控制操作 ===
+
+    def jump(self, target: str):
+        """Unconditional PC-relative jump to a source label."""
+        self.lines.append(f"J target={target}")
+        return self
+
+    def branch(self, condition: str, src1: int, src2: int,
+               target: str):
+        """Two-register conditional branch.
+
+        The exact assembler checks the condition name and resolves ``target``.
+        """
+        self._state_reg(src1)
+        self._state_reg(src2)
+        self.lines.append(
+            f"{condition.upper()} rs1={src1} rs2={src2} target={target}"
+        )
+        return self
+
+    def bltu(self, src1: int, src2: int, target: str):
+        """Branch when ``src1`` is unsigned-less-than ``src2``."""
+        return self.branch("bltu", src1, src2, target)
 
     def end(self):
         """程序结束"""
@@ -189,8 +277,7 @@ class VSPAsmBuilder:
 
     def save(self, filepath: str):
         """保存到文件"""
-        with open(filepath, 'w') as f:
-            f.write(self.to_string())
+        Path(filepath).write_text(self.to_string() + "\n", encoding="utf-8")
 
 
 class ImageProcessingPatterns:
@@ -264,12 +351,56 @@ class ImageProcessingPatterns:
         builder.blank()
 
         builder.comment("建议方案：")
-        builder.comment("A. 每组使用私有小直方图，最后集中归并")
-        builder.comment("B. 软件展开：顺序处理每个lane")
-        builder.comment("C. 使用reduction + 外部累加器")
+        builder.comment("A. 同组内先合并重复 index，再提交唯一更新")
+        builder.comment("B. 使用不会冲突的更小私有域，最后归并")
+        builder.comment("C. 使用 predicate/reduction 并由上级累加")
         builder.blank()
 
         return builder
+
+
+def generate_brightness_loop(*, input_base: int = 0x40,
+                             output_offset: int = 0x100,
+                             byte_count: int = 48,
+                             increment: int = 40,
+                             vector_bytes: int = 16) -> VSPAsmBuilder:
+    """Generate a closed unit-stride saturating-brightness program.
+
+    ``vector_bytes=16`` is the current four-SIMD4 product profile.  The launch
+    side must select all four groups; the uword stream itself intentionally
+    does not own the launch mask.
+    """
+    if vector_bytes <= 0 or vector_bytes > MEMORY_MAX_EXPLICIT_SPAN_BYTES:
+        raise ValueError("vector_bytes must fit the explicit span field")
+    if byte_count <= 0 or byte_count % vector_bytes:
+        raise ValueError("byte_count must be a positive whole-vector multiple")
+    if increment < 0 or increment > 0xFF:
+        raise ValueError("byte increment must fit one unsigned byte")
+
+    pointer = 1
+    limit = 2
+    source = 0
+    result = 1
+    builder = VSPAsmBuilder()
+
+    builder.comment(f"{byte_count}-byte saturating brightness loop")
+    builder.comment("Launch requirement: four groups selected (group_mask=0xf)")
+    builder.comment(
+        f"dst[p] = min(255, src[p] + {increment}), {byte_count} bytes"
+    )
+    builder.li(pointer, input_base)
+    builder.li(limit, input_base + byte_count)
+    builder.blank()
+
+    builder.label("loop")
+    builder.vload(source, pointer, span_bytes=vector_bytes)
+    builder.alu_imm("add_sat_u", result, source, increment, mode="byte")
+    builder.vstore(result, pointer, offset=output_offset,
+                   span_bytes=vector_bytes)
+    builder.saddi(pointer, pointer, vector_bytes)
+    builder.bltu(pointer, limit, "loop")
+    builder.end()
+    return builder
 
 
 def generate_checkerboard_test():
@@ -403,21 +534,50 @@ def generate_sliding_window_test():
     return builder
 
 
-if __name__ == '__main__':
-    from pathlib import Path
+PROGRAMS: dict[str, Callable[[], VSPAsmBuilder]] = {
+    "brightness_loop": generate_brightness_loop,
+    "checkerboard": generate_checkerboard_test,
+    "reduction": generate_reduction_test,
+    "sliding_window": generate_sliding_window_test,
+}
 
-    output_dir = Path(__file__).parent.parent / 'examples' / 'uword'
 
-    # 生成测试程序
-    tests = {
-        'checkerboard_test.uasm': generate_checkerboard_test(),
-        'reduction_test.uasm': generate_reduction_test(),
-        'sliding_window_test.uasm': generate_sliding_window_test(),
-    }
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="generate and validate current-syntax algorithm uasm"
+    )
+    parser.add_argument(
+        "--program", action="append", choices=sorted(PROGRAMS),
+        help="program to generate; repeat as needed (default: all)",
+    )
+    parser.add_argument(
+        "--output-dir", type=Path,
+        default=Path(__file__).resolve().parents[1] / "build/generated/uword",
+        help="generated source directory (default: build/generated/uword)",
+    )
+    parser.add_argument(
+        "--base-pc", type=lambda value: int(value, 0), default=0,
+        help="base PC used for validation (default: 0)",
+    )
+    args = parser.parse_args(argv)
 
-    for filename, builder in tests.items():
-        filepath = output_dir / filename
-        builder.save(filepath)
-        print(f"Generated: {filepath}")
+    # The source builder and exact encoder remain separate modules.  Running
+    # the generator validates their boundary without teaching this layer any
+    # binary encoding details.
+    import vsp_uword_asm as exact_asm
 
-    print(f"\nGenerated {len(tests)} test programs")
+    selected = args.program or list(PROGRAMS)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    for name in selected:
+        builder = PROGRAMS[name]()
+        source = builder.to_string() + "\n"
+        assembly = exact_asm.assemble_text(source, args.base_pc)
+        path = args.output_dir / f"{name}.uasm"
+        path.write_text(source, encoding="utf-8")
+        print(f"Generated {path} ({len(assembly.words)} words)")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

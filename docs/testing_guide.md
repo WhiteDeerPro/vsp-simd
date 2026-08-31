@@ -6,8 +6,27 @@ The repository has host-side tools for deterministic byte fixtures, software
 references, current-syntax uword generation, and assembly. They can validate
 file formats and instruction-source acceptance without third-party packages.
 
-They are not automatically consumed by the existing RTL tests. No command in
-this guide claims to run a generated image algorithm through the cluster.
+Most fixture-only assets are not automatically consumed by RTL tests. The
+48-byte brightness loop below is the first explicit program-level exception;
+other examples state their narrower evidence boundary.
+
+## Run a fetched algorithm through the cluster
+
+```bash
+make test-vsp-uword-cluster-program
+```
+
+The target assembles
+[`program_brightness_loop.uasm`](../examples/uword/program_brightness_loop.uasm),
+loads it into the behavioral control store, and starts it with all four SIMD4
+groups selected. Three loop iterations transform 48 bytes through
+`VLOAD → ADD_SAT_U → VSTORE`, advance the state-register address, branch back,
+and finally retire END.
+
+The test compares all 48 output bytes with an independent scalar saturating
+addition, checks memory request order/data/strobes and completion metadata,
+guards the surrounding memory bytes, and requires no pending D-side response
+after END. This is a program-wrapper result check, not only an assembly test.
 
 ## Run the simple algorithm smoke cases
 
@@ -107,15 +126,17 @@ python3 tools/vsp_uword_asm.py \
 The assembler validates while producing output; it does not implement a
 `--check` flag.
 
-Generate checkerboard, reduction, and sliding-window sources when needed:
+Generate brightness, checkerboard, reduction, and sliding-window sources under
+`build/generated/uword/` when needed:
 
 ```bash
 python3 tools/vsp_asm_generator.py
+make test-vsp-asm-generator
 
 for source in \
-  examples/uword/checkerboard_test.uasm \
-  examples/uword/reduction_test.uasm \
-  examples/uword/sliding_window_test.uasm
+  build/generated/uword/checkerboard.uasm \
+  build/generated/uword/reduction.uasm \
+  build/generated/uword/sliding_window.uasm
 do
   python3 tools/vsp_uword_asm.py "$source" -o "/tmp/$(basename "$source" .uasm).hex"
 done
@@ -187,6 +208,7 @@ files yet.
 See also:
 
 - [Host-side asset summary](TEST_FRAMEWORK_SUMMARY.md)
+- [Algorithm assembly layers](design/algorithm-assembly.md)
 - [Scatter sketches and limits](scatter_operations_guide.md)
 - [Current routing architecture](architecture/routing.md)
 - `python3 tools/vsp_uword_asm.py --help`

@@ -6,31 +6,39 @@ This directory contains input/reference-data generators, uword source
 generators, and optional visualization helpers. The current closed checks are:
 
 - pure-Python fixture generation and little-endian hex round-trip;
-- assembly of the generated checkerboard, reduction, and sliding examples;
+- assembly of the generated brightness, checkerboard, reduction, and sliding
+  examples;
 - assembly of the exact four-bin histogram predicate example;
+- a fetched 48-byte saturating-brightness program which loops across four
+  SIMD4 groups and checks final D-memory bytes against a scalar oracle;
 - software reference generation for a 3x3 mean filter.
 
-These assets are **not yet wired into an RTL regression harness or a Makefile
-target**. In particular, generating a filter reference does not mean that an
-equivalent VSP program has executed or matched it. The file named
-`create_end_to_end_test.py` creates the two ends of such a future test (input
-and expected output); it does not currently connect them through RTL.
+The brightness program is wired into the RTL program-wrapper regression. Other
+generated fixtures are not automatically end-to-end tests. In particular,
+generating a filter reference does not mean that an equivalent VSP program has
+executed or matched it. The file named `create_end_to_end_test.py` creates the
+two ends of such a future test (input and expected output); it does not
+currently connect them through RTL.
 
 ## Assets
 
 | Path | Purpose | Dependency / status |
 |---|---|---|
 | `tools/generate_test_data.py` | deterministic byte fixtures and word hex I/O | Python standard library |
-| `tools/vsp_asm_generator.py` | current-syntax uword examples | Python standard library |
+| `tools/vsp_asm_generator.py` | static algorithm schedules to validated current-syntax uword source | Python standard library |
 | `tools/create_end_to_end_test.py` | input/reference fixture generation | Python standard library; no RTL execution |
 | `tools/vsp_test_utils.py` | NumPy-based data helpers | optional NumPy |
 | `tools/vsp_visualizer.py` | image/result plots | optional NumPy + Matplotlib |
 | `examples/uword/histogram_4bin_test.uasm` | exact lane predicate + reduction example | accepted by current assembler |
+| `examples/uword/program_brightness_loop.uasm` | 48-byte saturating-brightness loop | RTL output checked by program-wrapper test |
 | `test_data/` | deterministic inputs and software references | host-side fixtures only |
 
-The generated checkerboard/reduction/sliding uword files are intentionally not
-required as checked-in artifacts: `tools/vsp_asm_generator.py` can materialize
-them, and validation can generate them into a temporary directory.
+The generated brightness/checkerboard/reduction/sliding uword files are
+intentionally not required as checked-in artifacts:
+`tools/vsp_asm_generator.py` materializes them under
+`build/generated/uword/` by default, and validation can use a temporary
+directory. The exact brightness source remains checked in because it is the
+reviewable input to the RTL regression.
 
 ## Hex contract
 
@@ -81,10 +89,18 @@ python3 tools/vsp_uword_asm.py \
   --listing /tmp/histogram_4bin.lst
 ```
 
-Materialize the three generated examples only when desired:
+Materialize generated examples only when desired and run their source-level
+checks:
 
 ```bash
 python3 tools/vsp_asm_generator.py
+make test-vsp-asm-generator
+```
+
+Run the closed program-level algorithm regression:
+
+```bash
+make test-vsp-uword-cluster-program
 ```
 
 NumPy and Matplotlib are optional and are not needed by the pure generator or
@@ -94,9 +110,10 @@ assembler checks:
 python3 -m pip install numpy matplotlib
 ```
 
-## Remaining integration work
+## Remaining generalization work
 
-An RTL end-to-end regression still needs an explicit harness that:
+The first brightness program now performs these steps. A reusable workload
+harness still needs a data-driven interface that:
 
 1. initializes the D-side model from the 32-bit fixture words;
 2. initializes/fetches an assembled uword program;
@@ -105,5 +122,5 @@ An RTL end-to-end regression still needs an explicit harness that:
 5. compares them with the software reference using a stated exact/tolerance
    policy.
 
-Until that exists, documents and generated verification snippets should be
-read as integration recipes, not passing hardware tests.
+Until that general harness exists, other generated verification snippets
+remain integration recipes unless they name a specific RTL result check.

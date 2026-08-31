@@ -1,0 +1,18 @@
+# Complete four-group byte algorithm.  Three 16-byte blocks are loaded from
+# LOCAL memory, brightened by 40 with unsigned saturation, and stored 256
+# bytes above the corresponding input block.  The unsigned end-pointer branch
+# keeps the static program within the 16-word behavioral control store used by
+# the wrapper regression.
+
+entry:
+    LI rd=1 imm=0x40
+    LI rd=2 imm=0x70
+
+loop:
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0
+    EXEC_ALU_RI op=add_sat_u mode=byte va=0 vd=1 imm=40
+    VSTORE space=local addr_context=0 sbase=1 vrf=1 span=16 offset=256
+    ADDI rd=1 rs1=1 imm=16
+    BLTU rs1=1 rs2=2 target=loop
+
+    END
