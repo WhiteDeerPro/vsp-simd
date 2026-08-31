@@ -1,6 +1,7 @@
 VERILATOR ?= verilator
 PYTHON ?= python3
 BUILD_DIR ?= build
+SIMPLE_ALGORITHM_IMAGE_DIR ?= $(BUILD_DIR)/simple_algorithm_images
 
 include rtl/files.mk
 
@@ -190,6 +191,9 @@ SAD_TB     := $(abspath sim/sad_kernel_tb.cpp)
 DATAPATH_TOP := simd_datapath
 DATAPATH_OBJ := $(BUILD_DIR)/datapath_obj_dir
 DATAPATH_TB  := $(abspath sim/simd_datapath_tb.cpp)
+SIMPLE_ALGORITHMS_TOP := simd_datapath
+SIMPLE_ALGORITHMS_OBJ := $(BUILD_DIR)/simple_algorithms_obj_dir
+SIMPLE_ALGORITHMS_TB  := $(abspath sim/simple_algorithms_tb.cpp)
 GROUP_WRAPPER_TOP := simd_group_wrapper
 GROUP_WRAPPER_OBJ := $(BUILD_DIR)/group_wrapper_obj_dir
 GROUP_WRAPPER_TB  := $(abspath sim/simd_group_wrapper_tb.cpp)
@@ -239,7 +243,8 @@ MUL32_MICRO_BIN := $(BUILD_DIR)/mul32_microcode_tb
 	test-cluster-memory-wrapper test-cluster-register-route \
 	test-vsp-word-first-gather-phase \
 	test-vsp-four-pass-gather-engine test-experimental-routing \
-	lint-experimental-routing clean
+	lint-experimental-routing test-simple-algorithms \
+	dump-simple-algorithm-images clean
 
 all: test
 
@@ -1025,6 +1030,23 @@ $(DATAPATH_OBJ)/V$(DATAPATH_TOP): $(DATAPATH_RTL) $(DATAPATH_TB) $(BUILD_META) |
 		--Mdir $(DATAPATH_OBJ) $(DATAPATH_RTL) $(DATAPATH_TB)
 	$(MAKE) -C $(DATAPATH_OBJ) -f V$(DATAPATH_TOP).mk
 
+$(SIMPLE_ALGORITHMS_OBJ)/V$(SIMPLE_ALGORITHMS_TOP): $(DATAPATH_RTL) \
+		$(SIMPLE_ALGORITHMS_TB) $(BUILD_META) | $(BUILD_DIR)
+	$(VERILATOR) -Wall -Wno-fatal --cc --exe \
+		--top-module $(SIMPLE_ALGORITHMS_TOP) \
+		--Mdir $(SIMPLE_ALGORITHMS_OBJ) $(DATAPATH_RTL) \
+		$(SIMPLE_ALGORITHMS_TB)
+	$(MAKE) -C $(SIMPLE_ALGORITHMS_OBJ) -f V$(SIMPLE_ALGORITHMS_TOP).mk
+
+test-simple-algorithms: \
+		$(SIMPLE_ALGORITHMS_OBJ)/V$(SIMPLE_ALGORITHMS_TOP)
+	$(SIMPLE_ALGORITHMS_OBJ)/V$(SIMPLE_ALGORITHMS_TOP)
+
+dump-simple-algorithm-images: \
+		$(SIMPLE_ALGORITHMS_OBJ)/V$(SIMPLE_ALGORITHMS_TOP)
+	$(SIMPLE_ALGORITHMS_OBJ)/V$(SIMPLE_ALGORITHMS_TOP) \
+		--dump "$(SIMPLE_ALGORITHM_IMAGE_DIR)"
+
 $(GROUP_WRAPPER_OBJ)/V$(GROUP_WRAPPER_TOP): $(GROUP_WRAPPER_RTL) \
 		$(GROUP_WRAPPER_TB) $(BUILD_META) | $(BUILD_DIR)
 	$(VERILATOR) -Wall -Wno-fatal --cc --exe \
@@ -1115,6 +1137,7 @@ test: $(OBJ_DIR)/V$(TOP) \
 		$(DYNAMIC_OBJ)/V$(DYNAMIC_TOP) \
 		$(REDUCE_OBJ)/V$(REDUCE_TOP) $(SAD_OBJ)/V$(SAD_TOP) \
 		$(DATAPATH_OBJ)/V$(DATAPATH_TOP) \
+		$(SIMPLE_ALGORITHMS_OBJ)/V$(SIMPLE_ALGORITHMS_TOP) \
 		$(GROUP_WRAPPER_OBJ)/V$(GROUP_WRAPPER_TOP) \
 		$(GAUSSIAN_OBJ)/V$(GAUSSIAN_TOP) \
 		$(SOBEL_OBJ)/V$(SOBEL_TOP) \
@@ -1163,6 +1186,7 @@ test: $(OBJ_DIR)/V$(TOP) \
 	$(REDUCE_OBJ)/V$(REDUCE_TOP)
 	$(SAD_OBJ)/V$(SAD_TOP)
 	$(DATAPATH_OBJ)/V$(DATAPATH_TOP)
+	$(SIMPLE_ALGORITHMS_OBJ)/V$(SIMPLE_ALGORITHMS_TOP)
 	$(GROUP_WRAPPER_OBJ)/V$(GROUP_WRAPPER_TOP)
 	$(GAUSSIAN_OBJ)/V$(GAUSSIAN_TOP)
 	$(SOBEL_OBJ)/V$(SOBEL_TOP)

@@ -163,6 +163,19 @@ make test-vsp-uword-asm test-vsp-memory-uword-decoder
 make test-cluster-memory-wrapper test-vsp-uword-cluster-program
 ```
 
+Run the small datapath algorithm examples on their own:
+
+```bash
+make test-simple-algorithms
+```
+
+Generate viewable PGM inputs and checked brightness/threshold outputs:
+
+```bash
+make dump-simple-algorithm-images
+# Files are written under build/simple_algorithm_images/ by default.
+```
+
 Generated artifacts default to `build/`.  To keep the workspace small, use an
 external build directory and remove it after verification:
 

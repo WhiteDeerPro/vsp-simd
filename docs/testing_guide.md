@@ -9,6 +9,40 @@ file formats and instruction-source acceptance without third-party packages.
 They are not automatically consumed by the existing RTL tests. No command in
 this guide claims to run a generated image algorithm through the cluster.
 
+## Run the simple algorithm smoke cases
+
+```bash
+make test-simple-algorithms
+```
+
+This focused Verilator test runs nine directed cases plus complete generated
+images for three small unsigned byte algorithms on one SIMD4 datapath:
+
+- saturating brightness adjustment;
+- strict binary thresholding (`pixel > threshold`);
+- masked intensity summation, including an empty mask.
+
+The cases intentionally use explicit input/output tables and scalar per-pixel
+references so failures remain easy to diagnose. Image widths include values
+that are not divisible by four, exercising the final SIMD group's tail mask.
+
+The test is coupled to the public `simd_datapath` ports, operation encodings,
+and the SIMD4/8-bit configuration. It is decoupled from uword fetch/decode,
+data memory, the cluster controller, and the image source: the host testbench
+supplies register state and tiling. It therefore proves the algorithm mapping
+at the datapath boundary, not an end-to-end soft-core program.
+
+To generate images for manual inspection:
+
+```bash
+make dump-simple-algorithm-images
+```
+
+This writes deterministic ramp, checkerboard, diagonal-step, zone-plate and
+noise inputs plus their verified brightness and threshold outputs under
+`build/simple_algorithm_images/`. Set `SIMPLE_ALGORITHM_IMAGE_DIR` to choose a
+different output directory.
+
 ## Generate data
 
 ```bash
