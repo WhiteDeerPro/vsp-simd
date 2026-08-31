@@ -240,6 +240,16 @@ module vsp_vector_memory_engine #(
     return count;
   endfunction
 
+  function automatic logic [SPAN_BYTES_W-1:0] count_byte_mask(
+      input logic [VRF_ROW_BYTES-1:0] mask);
+    int unsigned count;
+    count = 0;
+    for (int byte_lane = 0; byte_lane < VRF_ROW_BYTES; byte_lane++) begin
+      if (mask[byte_lane]) count++;
+    end
+    return SPAN_BYTES_W'(count);
+  endfunction
+
   function automatic logic [GROUP_ID_W-1:0] first_group(
       input logic [GROUP_COUNT-1:0] mask);
     logic found;
@@ -323,7 +333,7 @@ module vsp_vector_memory_engine #(
     current_is_last = !(|remaining_after_current);
     current_byte_mask = current_is_last ? final_byte_mask_q :
                                           {VRF_ROW_BYTES{1'b1}};
-    current_beat_bytes = SPAN_BYTES_W'($countones(current_byte_mask));
+    current_beat_bytes = count_byte_mask(current_byte_mask);
     bytes_after_current = bytes_committed_q + current_beat_bytes;
     next_group = first_group(remaining_after_current);
     current_lane_is_last = int'(current_lane_q) == (VRF_ROW_BYTES - 1);

@@ -506,7 +506,9 @@ int main(int argc, char** argv) {
             branch_loop.dmem_requests);
 
   // A forward J skips an otherwise legal EXEC record which was already in
-  // the same fetch bundle.  No younger action or result may become visible.
+  // the same fetch bundle.  This also checks that redirect clears a younger
+  // raw record held behind the registered decoded branch; no younger action
+  // or result may become visible.
   const std::vector<uint32_t> forward_jump = {
       0xc7000000U, 0x0000000cU, 0x17822210U, 0xc0000000U};
   program_store(dut, forward_jump);

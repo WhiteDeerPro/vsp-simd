@@ -29,8 +29,11 @@ register routing or multi-PC synchronization as prerequisites.
 - up-to-four-word fetch bundle and cross-bundle record framing;
 - mixed EXEC/MEMORY/CONTROL structural predecode;
 - EXEC expander, MEMORY/CONTROL semantic decode and action adapter;
+- one-entry raw-record and decoded-action holding boundaries, including
+  resolved MEMORY-base snapshot;
 - single-context sequencer address state (`SMOVI/SADD/SADDI`);
-- PC-relative `J/BEQ/BNE/BLT/BGE/BLTU/BGEU`, source redirect and framer younger-state flush;
+- PC-relative `J/BEQ/BNE/BLT/BGE/BLTU/BGEU`, source redirect and younger-state
+  flush across source, framer and raw-record holding;
 - strict one-active-action class controller and ordered completion;
 - `CONTROL.END` and `program_done` reference behavior.
 
@@ -147,7 +150,9 @@ Implemented structural baseline:
 - same-cycle masked RAW forwarding for VRF, ARF and MRF;
 - completion/result backpressure stalls the resident stage without replaying
   architectural writes;
-- state-transfer traffic remains serialized against a resident EXEC stage.
+- state-transfer traffic remains serialized against a resident EXEC stage;
+- registered semantic-decode output in the program wrapper; engines consume a
+  stable canonical descriptor rather than a live instruction record.
 
 Remaining work should be guided by workload traces and synthesis:
 
@@ -158,6 +163,11 @@ Remaining work should be guided by workload traces and synthesis:
 - add clock/power gating;
 - run synthesis/PPA and update frequency assumptions;
 - define software-visible driver/ABI boundaries if desired.
+
+The current synthesis smoke uses SystemVerilog-to-Verilog lowering because the
+installed Yosys 0.9 front end cannot parse this repository's packages and
+packed types.  Generic-cell checks are useful for structural errors, but no
+frequency claim is made without a target Liberty library and STA.
 
 ## Explicitly deferred
 

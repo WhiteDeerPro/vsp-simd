@@ -184,6 +184,91 @@ module vsp_uword_cluster_program_wrapper #(
   logic framer_protocol_error;
 
   logic adapter_record_ready;
+  logic decode_action_valid;
+  logic decode_action_ready;
+  logic [VSP_ACTION_CLASS_W-1:0] decode_action_class;
+  logic decode_action_legal;
+  logic [DECODE_ERROR_W-1:0] decode_action_decode_error;
+  logic [VSP_CONTROL_OP_W-1:0] decode_action_control_op;
+  logic [CONTEXT_W-1:0] decode_action_context;
+  logic [TAG_W-1:0] decode_action_tag;
+  logic [GROUP_COUNT-1:0] decode_action_group_mask;
+  logic [VSP_EXEC_UWORD_W-1:0] decode_exec_base_word;
+  logic decode_exec_extension_valid;
+  logic [VSP_EXEC_UWORD_W-1:0] decode_exec_extension_word;
+  logic decode_action_is_state;
+  logic [VSP_STATE_OP_W-1:0] decode_state_op;
+  logic [STATE_REG_INDEX_W-1:0] decode_state_rd;
+  logic [STATE_REG_INDEX_W-1:0] decode_state_rs1;
+  logic [STATE_REG_INDEX_W-1:0] decode_state_rs2;
+  logic [31:0] decode_state_imm;
+  logic decode_action_is_branch;
+  logic [VSP_BRANCH_COND_W-1:0] decode_branch_cond;
+  logic [STATE_REG_INDEX_W-1:0] decode_branch_rs1;
+  logic [STATE_REG_INDEX_W-1:0] decode_branch_rs2;
+  logic signed [31:0] decode_branch_offset;
+  logic [vsp_pkg::VSP_MEM_OP_W-1:0] decode_memory_op;
+  logic [vsp_pkg::VSP_MEM_ADDR_MODE_W-1:0] decode_memory_addr_mode;
+  logic [vsp_pkg::VSP_MEM_ADDR_SPACE_W-1:0] decode_memory_addr_space;
+  logic [VSP_MEMORY_UWORD_ADDR_CONTEXT_W-1:0]
+      decode_memory_addr_context;
+  logic [MEM_EADDR_W-1:0] decode_memory_base_eaddr;
+  logic signed [VSP_MEMORY_UWORD_OFFSET_W-1:0]
+      decode_memory_eaddr_offset;
+  logic [VSP_MEMORY_UWORD_VRF_ROW_W-1:0] decode_memory_vrf_row;
+  logic [VSP_MEMORY_UWORD_VRF_ROW_W-1:0]
+      decode_memory_index_vrf_row;
+  logic [VSP_MEMORY_UWORD_SPAN_BYTES_W-1:0]
+      decode_memory_span_bytes;
+  logic [PC_W-1:0] decode_action_start_pc;
+  logic decode_action_is_end;
+
+  // Semantic decode is captured before class routing.  This stage snapshots
+  // resolved MEMORY addresses as well as CONTROL/EXEC fields, so downstream
+  // engines never depend on a live instruction word and MEMORY never depends
+  // on a later scalar-state value.  Branch operands are intentionally read at
+  // ordered dispatch below.  The current strict program profile deliberately
+  // does not replace this entry in the cycle it is dispatched.
+  typedef struct packed {
+    logic [VSP_ACTION_CLASS_W-1:0] action_class;
+    logic action_legal;
+    logic [DECODE_ERROR_W-1:0] decode_error;
+    logic [VSP_CONTROL_OP_W-1:0] control_op;
+    logic [CONTEXT_W-1:0] action_context;
+    logic [TAG_W-1:0] tag;
+    logic [GROUP_COUNT-1:0] group_mask;
+    logic [VSP_EXEC_UWORD_W-1:0] exec_base_word;
+    logic exec_extension_valid;
+    logic [VSP_EXEC_UWORD_W-1:0] exec_extension_word;
+    logic is_state;
+    logic [VSP_STATE_OP_W-1:0] state_op;
+    logic [STATE_REG_INDEX_W-1:0] state_rd;
+    logic [STATE_REG_INDEX_W-1:0] state_rs1;
+    logic [STATE_REG_INDEX_W-1:0] state_rs2;
+    logic [31:0] state_imm;
+    logic is_branch;
+    logic [VSP_BRANCH_COND_W-1:0] branch_cond;
+    logic [STATE_REG_INDEX_W-1:0] branch_rs1;
+    logic [STATE_REG_INDEX_W-1:0] branch_rs2;
+    logic signed [31:0] branch_offset;
+    logic [vsp_pkg::VSP_MEM_OP_W-1:0] memory_op;
+    logic [vsp_pkg::VSP_MEM_ADDR_MODE_W-1:0] memory_addr_mode;
+    logic [vsp_pkg::VSP_MEM_ADDR_SPACE_W-1:0] memory_addr_space;
+    logic [VSP_MEMORY_UWORD_ADDR_CONTEXT_W-1:0] memory_addr_context;
+    logic [MEM_EADDR_W-1:0] memory_base_eaddr;
+    logic signed [VSP_MEMORY_UWORD_OFFSET_W-1:0] memory_eaddr_offset;
+    logic [VSP_MEMORY_UWORD_VRF_ROW_W-1:0] memory_vrf_row;
+    logic [VSP_MEMORY_UWORD_VRF_ROW_W-1:0] memory_index_vrf_row;
+    logic [VSP_MEMORY_UWORD_SPAN_BYTES_W-1:0] memory_span_bytes;
+    logic [PC_W-1:0] start_pc;
+    logic is_end;
+  } decoded_action_t;
+
+  logic decoded_action_valid_q;
+  decoded_action_t decoded_action_q;
+  logic decode_action_fire;
+  logic decoded_action_fire;
+
   logic adapter_action_valid;
   logic adapter_action_ready;
   logic [VSP_ACTION_CLASS_W-1:0] adapter_action_class;
@@ -340,10 +425,60 @@ module vsp_uword_cluster_program_wrapper #(
   logic signed [BRANCH_CALC_W-1:0] program_start_pc_ext;
   logic signed [BRANCH_CALC_W-1:0] program_end_pc_ext;
 
+  // Registered semantic-decode output.  Keeping these aliases separate from
+  // the decoder's combinational decode_* signals makes the class router and
+  // all engines consume only stall-stable state.
+  assign adapter_action_valid = decoded_action_valid_q && program_active_q;
+  assign adapter_action_class = decoded_action_q.action_class;
+  assign adapter_action_legal = decoded_action_q.action_legal;
+  assign adapter_action_decode_error = decoded_action_q.decode_error;
+  assign adapter_action_control_op = decoded_action_q.control_op;
+  assign adapter_action_context = decoded_action_q.action_context;
+  assign adapter_action_tag = decoded_action_q.tag;
+  assign adapter_action_group_mask = decoded_action_q.group_mask;
+  assign adapter_exec_base_word = decoded_action_q.exec_base_word;
+  assign adapter_exec_extension_valid =
+      decoded_action_q.exec_extension_valid;
+  assign adapter_exec_extension_word = decoded_action_q.exec_extension_word;
+  assign adapter_action_is_state = decoded_action_q.is_state;
+  assign adapter_state_op = decoded_action_q.state_op;
+  assign adapter_state_rd = decoded_action_q.state_rd;
+  assign adapter_state_rs1 = decoded_action_q.state_rs1;
+  assign adapter_state_rs2 = decoded_action_q.state_rs2;
+  assign adapter_state_imm = decoded_action_q.state_imm;
+  assign adapter_action_is_branch = decoded_action_q.is_branch;
+  assign adapter_branch_cond = decoded_action_q.branch_cond;
+  assign adapter_branch_rs1 = decoded_action_q.branch_rs1;
+  assign adapter_branch_rs2 = decoded_action_q.branch_rs2;
+  assign adapter_branch_offset = decoded_action_q.branch_offset;
+  assign adapter_memory_op = decoded_action_q.memory_op;
+  assign adapter_memory_addr_mode = decoded_action_q.memory_addr_mode;
+  assign adapter_memory_addr_space = decoded_action_q.memory_addr_space;
+  assign adapter_memory_addr_context = decoded_action_q.memory_addr_context;
+  assign adapter_memory_base_eaddr = decoded_action_q.memory_base_eaddr;
+  assign adapter_memory_eaddr_offset = decoded_action_q.memory_eaddr_offset;
+  assign adapter_memory_vrf_row = decoded_action_q.memory_vrf_row;
+  assign adapter_memory_index_vrf_row =
+      decoded_action_q.memory_index_vrf_row;
+  assign adapter_memory_span_bytes = decoded_action_q.memory_span_bytes;
+  assign adapter_action_start_pc = decoded_action_q.start_pc;
+  assign adapter_action_is_end = decoded_action_q.is_end;
+
+  // A decode entry is admitted only after every older sequencer/cluster parent
+  // action has completed.  This is intentionally conservative: in particular
+  // a MEMORY base is sampled only after an older state command has committed.
+  // The stage adds a clean timing boundary without creating speculative state
+  // or requiring a scoreboard.
+  assign decode_action_ready = rst_ni && program_active_q &&
+      !decoded_action_valid_q && !state_busy && !branch_cpl_valid_q &&
+      !cluster_controller_busy && !branch_redirect_fire;
+  assign decode_action_fire = decode_action_valid && adapter_record_ready;
+  assign decoded_action_fire = adapter_action_valid && adapter_action_ready;
+
   assign start_ready_o = rst_ni && !program_active_q && !state_busy &&
       !branch_cpl_valid_q &&
       !cluster_controller_busy && source_start_ready && framer_idle &&
-      !framer_clear_q && !action_record_valid_q;
+      !framer_clear_q && !action_record_valid_q && !decoded_action_valid_q;
   assign start_fire = start_valid_i && start_ready_o;
   assign source_start_valid = start_valid_i && start_ready_o;
   assign framer_terminal_clear = framer_clear_q;
@@ -373,7 +508,8 @@ module vsp_uword_cluster_program_wrapper #(
     // global record order and prevents a younger cluster action from passing
     // the sequencer-local engine.
     record_ready[0] = !action_record_valid_q && program_active_q &&
-                      !state_busy && !branch_cpl_valid_q;
+                      !state_busy && !branch_cpl_valid_q &&
+                      !branch_redirect_fire;
   end
 
   assign adapter_end_allowed =
@@ -400,11 +536,12 @@ module vsp_uword_cluster_program_wrapper #(
   assign program_finish_success = program_active_q && end_retired_q &&
       !terminal_boundary_error_q && !source_running && framer_halted &&
       !cluster_controller_busy && !state_busy && !branch_cpl_valid_q &&
-      !action_record_valid_q && !branch_redirect_fire;
+      !action_record_valid_q && !decoded_action_valid_q &&
+      !branch_redirect_fire;
   assign program_finish_failure = program_active_q &&
       !cluster_controller_busy && !state_busy && !branch_cpl_valid_q &&
       !source_running &&
-      !action_record_valid_q && !record_valid[0] &&
+      !action_record_valid_q && !decoded_action_valid_q && !record_valid[0] &&
       !branch_redirect_fire &&
       ((terminal_boundary_error_q && framer_halted) ||
        (eof_records_done_q && !end_retired_q) ||
@@ -701,44 +838,44 @@ module vsp_uword_cluster_program_wrapper #(
     .record_words_i(action_record_words_q),
     .record_truncated_i(action_record_truncated_q),
     .record_control_end_allowed_i(adapter_end_allowed),
-    .action_valid_o(adapter_action_valid),
-    .action_ready_i(adapter_action_ready),
-    .action_class_o(adapter_action_class),
-    .action_legal_o(adapter_action_legal),
-    .action_decode_error_o(adapter_action_decode_error),
-    .action_control_op_o(adapter_action_control_op),
-    .action_context_o(adapter_action_context),
-    .action_tag_o(adapter_action_tag),
-    .action_group_mask_o(adapter_action_group_mask),
-    .action_exec_base_word_o(adapter_exec_base_word),
-    .action_exec_extension_valid_o(adapter_exec_extension_valid),
-    .action_exec_extension_word_o(adapter_exec_extension_word),
-    .action_is_state_o(adapter_action_is_state),
-    .action_state_op_o(adapter_state_op),
-    .action_state_rd_o(adapter_state_rd),
-    .action_state_rs1_o(adapter_state_rs1),
-    .action_state_rs2_o(adapter_state_rs2),
-    .action_state_imm_o(adapter_state_imm),
-    .action_is_branch_o(adapter_action_is_branch),
-    .action_branch_cond_o(adapter_branch_cond),
-    .action_branch_rs1_o(adapter_branch_rs1),
-    .action_branch_rs2_o(adapter_branch_rs2),
-    .action_branch_offset_o(adapter_branch_offset),
+    .action_valid_o(decode_action_valid),
+    .action_ready_i(decode_action_ready),
+    .action_class_o(decode_action_class),
+    .action_legal_o(decode_action_legal),
+    .action_decode_error_o(decode_action_decode_error),
+    .action_control_op_o(decode_action_control_op),
+    .action_context_o(decode_action_context),
+    .action_tag_o(decode_action_tag),
+    .action_group_mask_o(decode_action_group_mask),
+    .action_exec_base_word_o(decode_exec_base_word),
+    .action_exec_extension_valid_o(decode_exec_extension_valid),
+    .action_exec_extension_word_o(decode_exec_extension_word),
+    .action_is_state_o(decode_action_is_state),
+    .action_state_op_o(decode_state_op),
+    .action_state_rd_o(decode_state_rd),
+    .action_state_rs1_o(decode_state_rs1),
+    .action_state_rs2_o(decode_state_rs2),
+    .action_state_imm_o(decode_state_imm),
+    .action_is_branch_o(decode_action_is_branch),
+    .action_branch_cond_o(decode_branch_cond),
+    .action_branch_rs1_o(decode_branch_rs1),
+    .action_branch_rs2_o(decode_branch_rs2),
+    .action_branch_offset_o(decode_branch_offset),
     .memory_base_read_valid_o(adapter_memory_base_read_valid),
     .memory_base_read_reg_o(adapter_memory_base_read_reg),
     .memory_base_read_data_i(adapter_memory_base_read_data),
     .memory_base_read_legal_i(adapter_memory_base_read_legal),
-    .action_memory_op_o(adapter_memory_op),
-    .action_memory_addr_mode_o(adapter_memory_addr_mode),
-    .action_memory_addr_space_o(adapter_memory_addr_space),
-    .action_memory_addr_context_o(adapter_memory_addr_context),
-    .action_memory_base_eaddr_o(adapter_memory_base_eaddr),
-    .action_memory_eaddr_offset_o(adapter_memory_eaddr_offset),
-    .action_memory_vrf_row_o(adapter_memory_vrf_row),
-    .action_memory_index_vrf_row_o(adapter_memory_index_vrf_row),
-    .action_memory_span_bytes_o(adapter_memory_span_bytes),
-    .action_start_pc_o(adapter_action_start_pc),
-    .action_is_control_end_o(adapter_action_is_end)
+    .action_memory_op_o(decode_memory_op),
+    .action_memory_addr_mode_o(decode_memory_addr_mode),
+    .action_memory_addr_space_o(decode_memory_addr_space),
+    .action_memory_addr_context_o(decode_memory_addr_context),
+    .action_memory_base_eaddr_o(decode_memory_base_eaddr),
+    .action_memory_eaddr_offset_o(decode_memory_eaddr_offset),
+    .action_memory_vrf_row_o(decode_memory_vrf_row),
+    .action_memory_index_vrf_row_o(decode_memory_index_vrf_row),
+    .action_memory_span_bytes_o(decode_memory_span_bytes),
+    .action_start_pc_o(decode_action_start_pc),
+    .action_is_control_end_o(decode_action_is_end)
   );
 
   vsp_sequencer_state_engine #(
@@ -761,7 +898,7 @@ module vsp_uword_cluster_program_wrapper #(
     .cmd_rs2_i(adapter_state_rs2),
     .cmd_imm_i(MEM_EADDR_W'(adapter_state_imm)),
     .base_read_valid_i(adapter_memory_base_read_valid),
-    .base_read_context_i(adapter_action_context),
+    .base_read_context_i(decode_action_context),
     .base_read_reg_i(STATE_REG_INDEX_W'(adapter_memory_base_read_reg)),
     .base_read_data_o(adapter_memory_base_read_data),
     .base_read_legal_o(adapter_memory_base_read_legal),
@@ -902,6 +1039,58 @@ module vsp_uword_cluster_program_wrapper #(
   );
   /* verilator lint_on PINCONNECTEMPTY */
 
+  // Semantic-decode pipeline stage.  MEMORY base_eaddr is captured here from
+  // the state-engine query response; branch register values are intentionally
+  // not captured, because the branch must compare the latest committed scalar
+  // state when it reaches the ordered dispatch point.
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      decoded_action_valid_q <= 1'b0;
+      decoded_action_q <= '0;
+    end else begin
+      if (decoded_action_fire)
+        decoded_action_valid_q <= 1'b0;
+
+      if (decode_action_fire) begin
+        decoded_action_valid_q <= 1'b1;
+        decoded_action_q.action_class <= decode_action_class;
+        decoded_action_q.action_legal <= decode_action_legal;
+        decoded_action_q.decode_error <= decode_action_decode_error;
+        decoded_action_q.control_op <= decode_action_control_op;
+        decoded_action_q.action_context <= decode_action_context;
+        decoded_action_q.tag <= decode_action_tag;
+        decoded_action_q.group_mask <= decode_action_group_mask;
+        decoded_action_q.exec_base_word <= decode_exec_base_word;
+        decoded_action_q.exec_extension_valid <=
+            decode_exec_extension_valid;
+        decoded_action_q.exec_extension_word <= decode_exec_extension_word;
+        decoded_action_q.is_state <= decode_action_is_state;
+        decoded_action_q.state_op <= decode_state_op;
+        decoded_action_q.state_rd <= decode_state_rd;
+        decoded_action_q.state_rs1 <= decode_state_rs1;
+        decoded_action_q.state_rs2 <= decode_state_rs2;
+        decoded_action_q.state_imm <= decode_state_imm;
+        decoded_action_q.is_branch <= decode_action_is_branch;
+        decoded_action_q.branch_cond <= decode_branch_cond;
+        decoded_action_q.branch_rs1 <= decode_branch_rs1;
+        decoded_action_q.branch_rs2 <= decode_branch_rs2;
+        decoded_action_q.branch_offset <= decode_branch_offset;
+        decoded_action_q.memory_op <= decode_memory_op;
+        decoded_action_q.memory_addr_mode <= decode_memory_addr_mode;
+        decoded_action_q.memory_addr_space <= decode_memory_addr_space;
+        decoded_action_q.memory_addr_context <= decode_memory_addr_context;
+        decoded_action_q.memory_base_eaddr <= decode_memory_base_eaddr;
+        decoded_action_q.memory_eaddr_offset <= decode_memory_eaddr_offset;
+        decoded_action_q.memory_vrf_row <= decode_memory_vrf_row;
+        decoded_action_q.memory_index_vrf_row <=
+            decode_memory_index_vrf_row;
+        decoded_action_q.memory_span_bytes <= decode_memory_span_bytes;
+        decoded_action_q.start_pc <= decode_action_start_pc;
+        decoded_action_q.is_end <= decode_action_is_end;
+      end
+    end
+  end
+
   // A branch completion is deliberately registered even though comparison
   // and target selection are combinational.  This makes CONTROL completion
   // obey the same valid/ready stability contract as EXEC, MEMORY and state
@@ -981,7 +1170,19 @@ module vsp_uword_cluster_program_wrapper #(
           !branch_redirect_fire)
         framer_stream_abort_q <= 1'b1;
 
-      if (record_accept[0]) begin
+      // A committed redirect invalidates the younger raw record that may have
+      // filled behind the decoded branch.  Source and framer flushes cannot
+      // reach this explicit boundary, so clear it here with highest priority.
+      if (branch_redirect_fire) begin
+        action_record_valid_q <= 1'b0;
+        action_record_class_q <= '0;
+        action_record_major_defined_q <= 1'b0;
+        action_record_start_pc_q <= '0;
+        action_record_word_count_q <= '0;
+        action_record_present_word_count_q <= '0;
+        action_record_words_q <= '0;
+        action_record_truncated_q <= 1'b0;
+      end else if (record_accept[0]) begin
         action_record_valid_q <= 1'b1;
         action_record_class_q <= record_class[0 +: VSP_ACTION_CLASS_W];
         action_record_major_defined_q <= record_major_defined[0];
@@ -993,7 +1194,7 @@ module vsp_uword_cluster_program_wrapper #(
         action_record_words_q <=
             record_words[0 +: VSP_UWORD_MAX_RECORD_WORDS*VSP_UWORD_W];
         action_record_truncated_q <= record_truncated[0];
-      end else if (adapter_action_valid && adapter_action_ready) begin
+      end else if (decode_action_fire) begin
         action_record_valid_q <= 1'b0;
         action_record_class_q <= '0;
         action_record_major_defined_q <= 1'b0;

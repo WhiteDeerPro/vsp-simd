@@ -15,7 +15,12 @@ program source
 multi-record framer + class predecode
         │ complete oldest record
         ▼
+raw record holding
+        ▼
 action adapter / class semantic decoder
+        │ resolved canonical fields
+        ▼
+decoded-action holding
         │ canonical action
         ▼
 strict single-active controller
@@ -80,11 +85,12 @@ the condition/registers and a signed byte displacement relative to the header
 PC.  Redirect is resolved only at the oldest-action boundary.  On every legal
 branch, the source discards/poisons younger fetch state and the framer clears
 its tail, EOF, continuity and prefetched-END state before refetching the chosen
-target or fall-through PC.
+target or fall-through PC.  The redirect also clears a younger record that may
+already have crossed the framer into the raw-record holding register.
 
 ## Two-stage decode
 
-Decode is intentionally split:
+Decode is intentionally split by responsibility:
 
 1. structural predecode/framing operates on fetched words;
 2. class semantic decode converts the selected complete record into a
@@ -95,6 +101,14 @@ EXEC uses `vsp_exec_uword_expander`; MEMORY uses
 action adapter combines the decoded payload with launch sideband such as group
 mask, context and tag.  Illegal records produce canonical no-side-effect
 actions and retire through the normal ordered completion path.
+
+Both sides of semantic decode now have explicit one-entry holding registers.
+The decoder therefore reads a stall-stable raw record, while the class router
+and engines read a stall-stable decoded action rather than a live instruction
+word.  The decoded entry is not replaced in the same cycle it is dispatched;
+this deliberately accepts a bubble in exchange for a small, unambiguous
+ready/valid boundary.  It is a timing/ownership boundary, not a second issue
+slot or an out-of-order window.
 
 This differs from a general CPU decoder in an important way: the output is not
 a scalar instruction for a self-fetching pipeline.  It is a command descriptor
@@ -116,8 +130,10 @@ Assembler pseudo-ops are `VLOAD`, `VSTORE`, `VGATHER` and `VSCATTER`.
 For `UNIT_STRIDE`, span code zero means all selected rows and is resolved to
 `4 * popcount(group_mask)` bytes; codes 1 through 31 are explicit spans.
 `INDEX_U8` decodes span zero with a separate address-mode bit, and the group
-mask fixes the number of active SIMD4 rows.  MEMORY admission snapshots the
-scalar base value before the command is sent to the vector memory engine.
+mask fixes the number of active SIMD4 rows.  The scalar base value and resolved
+MEMORY descriptor are snapshotted when the semantic result enters the decoded
+holding stage.  Conditional branches instead read the latest committed scalar
+state when the ordered decoded entry is dispatched.
 
 ## Queue representation
 
@@ -142,7 +158,9 @@ beats and boundary data belong to operand/staging channels.
 
 For the current profile, program order is simple:
 
-- accept one action;
+- frame and hold the oldest raw record;
+- admit one decoded action only after older state/branch/cluster activity is
+  quiescent;
 - wait for its child engine completion;
 - hold the unified completion stable under backpressure;
 - retire it before accepting the next action.
@@ -159,13 +177,15 @@ format.
 
 ## Next useful work
 
-1. Preserve the one-PC/one-slot executable baseline while adding directed
+1. Measure the cost of the conservative decode interlock and branch refetch
+   rule before adding same-cycle stage replacement or a not-taken fast path.
+2. Preserve the one-PC/one-slot executable baseline while adding directed
    indexed-memory and branch-loop programs.
-2. Measure the cost of the conservative branch refetch rule before adding a
-   not-taken sequential fast path.
-3. Measure whether one action slot starves the four-group EXEC cluster before
+3. Run synthesis with a modern SystemVerilog front end and a target Liberty
+   library before assigning an MHz claim to this pipeline.
+4. Measure whether one action slot starves the four-group EXEC cluster before
    adding a second slot.
-4. If overlap is justified, introduce a small dependency window for ordinary
+5. If overlap is justified, introduce a small dependency window for ordinary
    EXEC/MEMORY hazards; do not reinterpret slots as threads.
-5. Version any future software-visible ISA separately from the internal uword
+6. Version any future software-visible ISA separately from the internal uword
    profile.

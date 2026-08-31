@@ -17,7 +17,8 @@ launch(start_pc,end_pc,context,group_mask,tag_seed)
   -> one linear byte PC
   -> behavioral control store
   -> 4-word fetch bundle / multi-record framing
-  -> record slot 0 holding + semantic action adapter
+  -> raw record holding
+  -> semantic action adapter / decoded-action holding
   -> strict single-active EXEC / MEMORY / CONTROL controller
   -> one-issue-slot, four-SIMD4 execution/memory integration
 ```
@@ -32,7 +33,8 @@ uword 路径目前可执行：
 
 decoded MEMORY 入口则直接提交已经解析的 descriptor，便于单独验证 engine。encoded
 MEMORY 并没有复制一套内存实现：semantic decoder 在 admission 时读取 sequencer state
-base，形成稳定 descriptor，随后仍进入同一个 vector memory engine。
+base，并把 resolved descriptor 写入 decoded-action holding，随后仍进入同一个 vector
+memory engine。
 
 当前集成参数必须按下表理解：
 
@@ -67,10 +69,13 @@ next record header = record_start_pc + 4 * record_word_count
 branch 解析时，strict single-active 已保证更老 action 完成、没有年轻 action 进入执行
 engine。program source 会丢弃 held bundle，并对唯一的旧 outstanding response 做
 poison/drain；multi-record framer 同时清除年轻 word、continuity、EOF 和预取 END 状态。
-首版对 taken 与 not-taken 都执行这套 redirect/refetch，优先保证一种恢复合同。
+已经越过 framer、滞留在 raw-record holding 的年轻 record 也由 redirect 显式清除。首版
+对 taken 与 not-taken 都执行这套 redirect/refetch，优先保证一种恢复合同。
 
 multi-record framer 可以同时看见最多三条完整 record，但产品 wrapper 只把 record slot 0
-送入 single-action holding。execution wrapper 当前有一个 issue slot；它只是某拍把一项
+送入 raw-record holding；semantic decoder 后面另有一个 decoded-action holding。后者只
+保存 canonical fields 与 resolved MEMORY base，不是第二个 issue slot，当前也不支持
+dispatch/replace 同拍发生。execution wrapper 当前有一个 issue slot；它只是某拍把一项
 command 交给执行前端的瞬时端口，不保存 PC、不拥有程序，也不是 hardware thread。
 execution context 同样只是所有权、队列和 completion 身份，当前没有 context-local PC。
 
@@ -161,8 +166,9 @@ indexed lane access都要等待当前 response。request、response 和 parent c
 
 `vsp_sequencer_state_engine` 当前每 context 有 32 个 32-bit state register，register 0
 恒零；`SMOVI/SADD/SADDI` 按模 \(2^{32}\) 回绕。MEMORY decoder 只在完整合法 record
-可见时查询 base；action 接受后，后续 state 写不能改变在途 descriptor。state engine
-不持有 PC，也不直接访问 dmem。
+可见且更老 action 已静止时查询 base；resolved descriptor 进入 decoded-action holding
+后，后续 state 写不能改变它。branch 的 pair-read 则留在有序 dispatch 点，读取最新已
+提交 scalar state。state engine 不持有 PC，也不直接访问 dmem。
 
 `J` 与六种比较 branch 由 program wrapper 的 CONTROL-flow path 执行。比较 branch 使用
 state RF 的无副作用双源 query；`BLT/BGE` 按 signed 32-bit，`BLTU/BGEU` 按 unsigned

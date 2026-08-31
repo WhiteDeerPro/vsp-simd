@@ -51,7 +51,7 @@ digraph vsp_current_integration {
       label="multi-record framer\n4 input words / up to 3 record views\ncross-bundle tail + END cutoff"
     ];
     holding [
-      label="single-action holding\nconsumes record slot 0 only\n(record slot is not a thread)"
+      label="raw-record holding\nconsumes record slot 0 only\n(record slot is not a thread)"
     ];
     adapter [
       label="uword action adapter\nclass semantic decode + launch envelope\nmonotonic tag"
@@ -70,8 +70,8 @@ digraph vsp_current_integration {
     color="#75a986";
     style=rounded;
 
-    semantic_decode [
-      label="EXEC / CONTROL-state/branch / MEMORY decode\nLOAD or STORE + address mode\nbase-state snapshot",
+    decoded_stage [
+      label="decoded-action holding\nstall-stable canonical fields\nresolved MEMORY base snapshot",
       fillcolor="#ecf8ef",
       color="#4e8f62"
     ];
@@ -101,14 +101,14 @@ digraph vsp_current_integration {
       color="#4e8f62"
     ];
 
-    adapter -> semantic_decode [label="ordered record"];
-    semantic_decode -> strict_controller [label="canonical action"];
-    semantic_decode -> state_engine [label="state action"];
-    semantic_decode -> branch_control [label="branch"];
-    state_engine -> semantic_decode [
+    adapter -> decoded_stage [label="semantic result"];
+    decoded_stage -> strict_controller [label="canonical action"];
+    decoded_stage -> state_engine [label="state action"];
+    decoded_stage -> branch_control [label="branch"];
+    state_engine -> decoded_stage [
       color="#8056a6",
       fontcolor="#684686",
-      label="base query / completion"
+      label="base query before capture / completion"
     ];
     state_engine -> branch_control [
       color="#8056a6",
@@ -117,6 +117,7 @@ digraph vsp_current_integration {
     ];
     branch_control -> pc_source [label="redirect"];
     branch_control -> framer [label="younger-state flush"];
+    branch_control -> holding [label="younger raw-record flush"];
     strict_controller -> exec_cluster [label="decoded EXEC"];
     exec_cluster -> strict_controller [
       color="#8056a6",

@@ -41,7 +41,7 @@ The default `make lint` and `make test` cover the current one-PC/one-slot path:
 | lane/datapath arithmetic | `simd_exec_tb`, dynamic ALU, mask, reduction, compact, datapath and workload tests | checked fixed-width operation and RF/writeback semantics |
 | group/EXEC protocol | group wrapper, queue, dispatcher, tracker, result collector and cluster EXEC tests | elastic operand-stage ready/valid, VRF/ARF/MRF RAW forwarding, atomic group-mask issue, child/completion conservation and ordered reject |
 | uword framing/decode | predecoder, bundle assembler, multi-framer, EXEC expander and assembler tests | mixed record boundaries, `fmt=0xd` undefined behavior, extension rules and illegal no-side-effect decode |
-| program delivery | program source/frontend and uword cluster program test | byte PC `+4` per word, cross-bundle records, strict single action, state/MEMORY/EXEC/END ordering |
+| program delivery | program source/frontend and uword cluster program test | byte PC `+4` per word, cross-bundle records, raw/decoded holding stability, redirect flush, strict single action and state/MEMORY/EXEC/END ordering |
 | program dataflow closure | fetched 48-byte vector-memory loop in the uword cluster program test | four-group load/compute/store loop, scalar address update, backward branch, END and final D-memory bytes against an independent oracle |
 | MEMORY semantic decode | `vsp_memory_uword_decoder_tb` and assembler test | UNIT_STRIDE versus INDEX_U8 fields, index row, code-zero full-selected span, explicit 1..31 span and signed offset |
 | vector memory engine | four-group and sixteen-group `vsp_vector_memory_engine` tests | unit-stride transfers; 16/64-byte indexed gather/scatter; duplicate ordering; exact byte fault; partial progress; random channel stalls |
@@ -66,6 +66,18 @@ These tests do not prove a physical SRAM/cache/MMU/DMA exists, that the new
 pipeline meets a target-process frequency/PPA point, that the memory engine has
 more than one outstanding beat, or that the internal uword encoding is a final
 ISA.
+
+## Synthesis smoke
+
+The installed Yosys 0.9 parser cannot directly read the repository's
+SystemVerilog packages, enums and packed structs.  A temporary `sv2v` lowering
+was therefore used to smoke-check the fetch transport and semantic action
+adapter with `synth -noabc`; both completed with `check` reporting no structural
+problems.  A converted wrapper-shell check also sees the registered decoded
+action boundary.  The behavioral control store expands into registers, and old
+Yosys expands some parameterized arrays aggressively, so these generic-cell
+counts are neither physical area nor evidence of a 100--500 MHz implementation.
+A target Liberty library and timing analysis are required for that claim.
 
 ## Experimental routing regression
 
