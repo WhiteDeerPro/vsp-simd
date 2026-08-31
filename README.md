@@ -6,6 +6,12 @@ semantics.  The current implementation is a sequencer-driven execution
 cluster, not a standalone CPU: SIMD groups do not fetch, branch or handle
 exceptions by themselves.
 
+This repository is scoped to the soft-core architecture, RTL, and the
+regressions needed to verify its hardware contracts.  Standalone algorithm
+programs, host-side generators, image fixtures, and workbench reports are
+maintained separately.  Workload documents and tests remain here only when
+they serve as evidence for a hardware contract.
+
 The canonical vocabulary is in
 [terminology.md](docs/architecture/terminology.md).
 
@@ -161,19 +167,6 @@ Focused control/memory tests:
 ```bash
 make test-vsp-uword-asm test-vsp-memory-uword-decoder
 make test-cluster-memory-wrapper test-vsp-uword-cluster-program
-```
-
-Run the small datapath algorithm examples on their own:
-
-```bash
-make test-simple-algorithms
-```
-
-Generate viewable PGM inputs and checked brightness/threshold outputs:
-
-```bash
-make dump-simple-algorithm-images
-# Files are written under build/simple_algorithm_images/ by default.
 ```
 
 Generated artifacts default to `build/`.  To keep the workspace small, use an

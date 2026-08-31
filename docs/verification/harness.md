@@ -42,7 +42,7 @@ The default `make lint` and `make test` cover the current one-PC/one-slot path:
 | group/EXEC protocol | group wrapper, queue, dispatcher, tracker, result collector and cluster EXEC tests | stable ready/valid, atomic group-mask issue, child/completion conservation and ordered reject |
 | uword framing/decode | predecoder, bundle assembler, multi-framer, EXEC expander and assembler tests | mixed record boundaries, `fmt=0xd` undefined behavior, extension rules and illegal no-side-effect decode |
 | program delivery | program source/frontend and uword cluster program test | byte PC `+4` per word, cross-bundle records, strict single action, state/MEMORY/EXEC/END ordering |
-| algorithm program closure | fetched 48-byte brightness loop in the uword cluster program test | four-group load/compute/store loop, scalar address update, backward branch, END and final D-memory bytes against an independent oracle |
+| program dataflow closure | fetched 48-byte vector-memory loop in the uword cluster program test | four-group load/compute/store loop, scalar address update, backward branch, END and final D-memory bytes against an independent oracle |
 | MEMORY semantic decode | `vsp_memory_uword_decoder_tb` and assembler test | UNIT_STRIDE versus INDEX_U8 fields, index row, code-zero full-selected span, explicit 1..31 span and signed offset |
 | vector memory engine | four-group and sixteen-group `vsp_vector_memory_engine` tests | unit-stride transfers; 16/64-byte indexed gather/scatter; duplicate ordering; exact byte fault; partial progress; random channel stalls |
 | decoded memory integration | `vsp_cluster_memory_wrapper_tb` | linear LOAD→EXEC→STORE plus indexed gather/scatter through real VRF state endpoints |

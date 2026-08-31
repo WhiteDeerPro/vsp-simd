@@ -65,7 +65,6 @@ Graphviz 源与生成图和说明文档放在一起：
 | [Internal EXEC uword profile v0](design/exec-uword-profile-v0.md) | 内部实验编码 + RTL 映射 | 32-bit base、optional immediate extension、canonical EXEC 与非法 cause |
 | [数据准备与 DMA 边界](design/data-movement.md) | encoded unit-stride/indexed strict closure 已实现，物理 memory 集成待办 | VLOAD/VSTORE/VGATHER/VSCATTER、VRF arbiter、data-memory 逻辑口、local SRAM 与 DMA |
 | [Sequencer 标量/地址状态](design/sequencer-state.md) | 地址状态、比较 branch 与 loop/redirect 已接 strict closure | 最小 scalar/address state、寻址裁剪、MEMORY base 与后续调用/回写边界 |
-| [算法汇编层与验证边界](design/algorithm-assembly.md) | 静态 builder + 首条 program-level 结果闭环 | 算法语义、`.uasm`、精确编码、程序执行与 oracle 的职责分层 |
 | [集群实验路线](design/development-roadmap.md) | 单 PC/单 slot strict closure 已实现，memory/loop/测量待办 | wrapper、cluster、indexed memory、地址层、规模与物理化 |
 
 这里的 decoder 属于 sequencer 到执行 group 之间的内部控制层，不意味着 SIMD4
@@ -78,7 +77,6 @@ Graphviz 源与生成图和说明文档放在一起：
 | [架构问题集](explorations/architecture-qa.md) | 非约束 Q&A | 标量侧、ARF/VRF、内积、路由、调度、内存、拟浮点等 |
 | [数据生命周期](explorations/data-lifecycle.md) | 分析方法 | 产生、交付、读取、写入、退休与 burst 的计量 |
 | [32-bit byte 卷积](explorations/mul32-byte-convolution.md) | 参考模型 | low-32 乘法候选映射，不是现有 RTL 指令 |
-| [Ping-pong VRF 双缓冲](explorations/pingpong-blocking-strategy.md) | 顺序基线 + 并发候选 | 当前双 row-bank 生命周期、准确访存计量和未来 EXEC/MEMORY overlap 条件 |
 
 ## 4. 负载与验证方法
 
@@ -88,7 +86,6 @@ Graphviz 源与生成图和说明文档放在一起：
 | [单通道 3×3 Sobel](workloads/sobel3x3.md) | 工作负载证据 | WSUB 宽有符号累加、共享 align 系数、NCLIP_S 与幅值合成，附微操作计量对比 |
 | [可分离 Gaussian 与两次舍入代价](workloads/gaussian3x3-separable.md) | 工作负载证据 + 比较集合 | 两 pass 8-bit 映射、按内容分类的偏差统计、行缓冲前提与对 HALF 支持的判断 |
 | [单通道 3×3 Median](workloads/median3x3.md) | 工作负载证据 | 19-comparator selection network、单写口三指令 compare-exchange，以及 lane reduction 不适用该布局的原因 |
-| [8-bit Histogram](workloads/histogram.md) | 4-bin 负载证据 + 256-bin 开放问题 | predicate/reduction 基线、重复 index、private base、16-bit layout 与结果回写缺口 |
 | [验证 harness 与路径漂移](verification/harness.md) | 方法工作稿 | 测试分类、非声明范围、准入、替换与退役 |
 
 SAD、动态 ALU、local route、compact、MRF、reduction、

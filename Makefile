@@ -1,7 +1,6 @@
 VERILATOR ?= verilator
 PYTHON ?= python3
 BUILD_DIR ?= build
-SIMPLE_ALGORITHM_IMAGE_DIR ?= $(BUILD_DIR)/simple_algorithm_images
 
 include rtl/files.mk
 
@@ -101,7 +100,6 @@ CLUSTER_ROUTE_WAVE_PIPELINE_TB := \
 	$(abspath sim/vsp_cluster_route_wave_pipeline_tb.cpp)
 VSP_UWORD_ASM_TOOL := tools/vsp_uword_asm.py
 VSP_UWORD_ASM_TB := sim/vsp_uword_asm_tb.py
-VSP_ASM_GENERATOR_TB := sim/vsp_asm_generator_tb.py
 VSP_UWORD_PC_SOURCE := examples/uword/pc_smoke.uasm
 VSP_UWORD_PC_HEX := $(BUILD_DIR)/pc_smoke.hex
 VSP_UWORD_PC_LISTING := $(BUILD_DIR)/pc_smoke.lst
@@ -112,9 +110,10 @@ VSP_UWORD_MEMORY_STATE_SOURCE := examples/uword/program_memory_state.uasm
 VSP_UWORD_MEMORY_STATE_HEX := $(BUILD_DIR)/program_memory_state.hex
 VSP_UWORD_BRANCH_LOOP_SOURCE := examples/uword/program_branch_loop.uasm
 VSP_UWORD_BRANCH_LOOP_HEX := $(BUILD_DIR)/program_branch_loop.hex
-VSP_UWORD_BRIGHTNESS_LOOP_SOURCE := \
-	examples/uword/program_brightness_loop.uasm
-VSP_UWORD_BRIGHTNESS_LOOP_HEX := $(BUILD_DIR)/program_brightness_loop.hex
+VSP_UWORD_VECTOR_MEMORY_LOOP_SOURCE := \
+	examples/uword/program_vector_memory_loop.uasm
+VSP_UWORD_VECTOR_MEMORY_LOOP_HEX := \
+	$(BUILD_DIR)/program_vector_memory_loop.hex
 CLUSTER_RESULT_COLLECTOR_TOP := simd_cluster_result_collector
 CLUSTER_RESULT_COLLECTOR_OBJ := $(BUILD_DIR)/cluster_result_collector_obj_dir
 CLUSTER_RESULT_COLLECTOR_TB  := $(abspath sim/simd_cluster_result_collector_tb.cpp)
@@ -195,9 +194,6 @@ SAD_TB     := $(abspath sim/sad_kernel_tb.cpp)
 DATAPATH_TOP := simd_datapath
 DATAPATH_OBJ := $(BUILD_DIR)/datapath_obj_dir
 DATAPATH_TB  := $(abspath sim/simd_datapath_tb.cpp)
-SIMPLE_ALGORITHMS_TOP := simd_datapath
-SIMPLE_ALGORITHMS_OBJ := $(BUILD_DIR)/simple_algorithms_obj_dir
-SIMPLE_ALGORITHMS_TB  := $(abspath sim/simple_algorithms_tb.cpp)
 GROUP_WRAPPER_TOP := simd_group_wrapper
 GROUP_WRAPPER_OBJ := $(BUILD_DIR)/group_wrapper_obj_dir
 GROUP_WRAPPER_TB  := $(abspath sim/simd_group_wrapper_tb.cpp)
@@ -229,7 +225,6 @@ MUL32_MICRO_BIN := $(BUILD_DIR)/mul32_microcode_tb
 
 .PHONY: all lint test test-vsp-exec-uword-expander \
 	test-vsp-uword-predecoder test-vsp-uword-asm \
-	test-vsp-asm-generator \
 	test-vsp-uword-bundle-assembler \
 	test-vsp-uword-multi-framer \
 	test-vsp-uword-program-source \
@@ -248,8 +243,7 @@ MUL32_MICRO_BIN := $(BUILD_DIR)/mul32_microcode_tb
 	test-cluster-memory-wrapper test-cluster-register-route \
 	test-vsp-word-first-gather-phase \
 	test-vsp-four-pass-gather-engine test-experimental-routing \
-	lint-experimental-routing test-simple-algorithms \
-	dump-simple-algorithm-images clean
+	lint-experimental-routing clean
 
 all: test
 
@@ -618,9 +612,6 @@ test-vsp-uword-program-source: \
 test-vsp-uword-asm:
 	$(PYTHON) $(VSP_UWORD_ASM_TB)
 
-test-vsp-asm-generator:
-	$(PYTHON) $(VSP_ASM_GENERATOR_TB)
-
 $(VSP_UWORD_PC_HEX): $(VSP_UWORD_ASM_TOOL) $(VSP_UWORD_PC_SOURCE) \
 		$(BUILD_META) | $(BUILD_DIR)
 	$(PYTHON) $(VSP_UWORD_ASM_TOOL) $(VSP_UWORD_PC_SOURCE) \
@@ -659,9 +650,9 @@ $(VSP_UWORD_BRANCH_LOOP_HEX): $(VSP_UWORD_ASM_TOOL) \
 	$(PYTHON) $(VSP_UWORD_ASM_TOOL) $(VSP_UWORD_BRANCH_LOOP_SOURCE) \
 		-o $@ --base-pc 0x20
 
-$(VSP_UWORD_BRIGHTNESS_LOOP_HEX): $(VSP_UWORD_ASM_TOOL) \
-		$(VSP_UWORD_BRIGHTNESS_LOOP_SOURCE) $(BUILD_META) | $(BUILD_DIR)
-	$(PYTHON) $(VSP_UWORD_ASM_TOOL) $(VSP_UWORD_BRIGHTNESS_LOOP_SOURCE) \
+$(VSP_UWORD_VECTOR_MEMORY_LOOP_HEX): $(VSP_UWORD_ASM_TOOL) \
+		$(VSP_UWORD_VECTOR_MEMORY_LOOP_SOURCE) $(BUILD_META) | $(BUILD_DIR)
+	$(PYTHON) $(VSP_UWORD_ASM_TOOL) $(VSP_UWORD_VECTOR_MEMORY_LOOP_SOURCE) \
 		-o $@ --base-pc 0x20
 
 $(VSP_UWORD_CLUSTER_PROGRAM_OBJ)/V$(VSP_UWORD_CLUSTER_PROGRAM_TOP): \
@@ -678,11 +669,11 @@ $(VSP_UWORD_CLUSTER_PROGRAM_OBJ)/V$(VSP_UWORD_CLUSTER_PROGRAM_TOP): \
 
 test-vsp-uword-cluster-program: $(VSP_UWORD_EXEC_END_HEX) \
 		$(VSP_UWORD_MEMORY_STATE_HEX) $(VSP_UWORD_BRANCH_LOOP_HEX) \
-		$(VSP_UWORD_BRIGHTNESS_LOOP_HEX) \
+		$(VSP_UWORD_VECTOR_MEMORY_LOOP_HEX) \
 		$(VSP_UWORD_CLUSTER_PROGRAM_OBJ)/V$(VSP_UWORD_CLUSTER_PROGRAM_TOP)
 	$(VSP_UWORD_CLUSTER_PROGRAM_OBJ)/V$(VSP_UWORD_CLUSTER_PROGRAM_TOP) \
 		$(VSP_UWORD_EXEC_END_HEX) $(VSP_UWORD_MEMORY_STATE_HEX) \
-		$(VSP_UWORD_BRANCH_LOOP_HEX) $(VSP_UWORD_BRIGHTNESS_LOOP_HEX)
+		$(VSP_UWORD_BRANCH_LOOP_HEX) $(VSP_UWORD_VECTOR_MEMORY_LOOP_HEX)
 
 $(VSP_MEMORY_UWORD_DECODER_OBJ)/V$(VSP_MEMORY_UWORD_DECODER_TOP): \
 		$(VSP_MEMORY_UWORD_DECODER_RTL) $(VSP_MEMORY_UWORD_DECODER_TB) \
@@ -1044,23 +1035,6 @@ $(DATAPATH_OBJ)/V$(DATAPATH_TOP): $(DATAPATH_RTL) $(DATAPATH_TB) $(BUILD_META) |
 		--Mdir $(DATAPATH_OBJ) $(DATAPATH_RTL) $(DATAPATH_TB)
 	$(MAKE) -C $(DATAPATH_OBJ) -f V$(DATAPATH_TOP).mk
 
-$(SIMPLE_ALGORITHMS_OBJ)/V$(SIMPLE_ALGORITHMS_TOP): $(DATAPATH_RTL) \
-		$(SIMPLE_ALGORITHMS_TB) $(BUILD_META) | $(BUILD_DIR)
-	$(VERILATOR) -Wall -Wno-fatal --cc --exe \
-		--top-module $(SIMPLE_ALGORITHMS_TOP) \
-		--Mdir $(SIMPLE_ALGORITHMS_OBJ) $(DATAPATH_RTL) \
-		$(SIMPLE_ALGORITHMS_TB)
-	$(MAKE) -C $(SIMPLE_ALGORITHMS_OBJ) -f V$(SIMPLE_ALGORITHMS_TOP).mk
-
-test-simple-algorithms: \
-		$(SIMPLE_ALGORITHMS_OBJ)/V$(SIMPLE_ALGORITHMS_TOP)
-	$(SIMPLE_ALGORITHMS_OBJ)/V$(SIMPLE_ALGORITHMS_TOP)
-
-dump-simple-algorithm-images: \
-		$(SIMPLE_ALGORITHMS_OBJ)/V$(SIMPLE_ALGORITHMS_TOP)
-	$(SIMPLE_ALGORITHMS_OBJ)/V$(SIMPLE_ALGORITHMS_TOP) \
-		--dump "$(SIMPLE_ALGORITHM_IMAGE_DIR)"
-
 $(GROUP_WRAPPER_OBJ)/V$(GROUP_WRAPPER_TOP): $(GROUP_WRAPPER_RTL) \
 		$(GROUP_WRAPPER_TB) $(BUILD_META) | $(BUILD_DIR)
 	$(VERILATOR) -Wall -Wno-fatal --cc --exe \
@@ -1127,7 +1101,7 @@ test: $(OBJ_DIR)/V$(TOP) \
 		$(VSP_UWORD_EXEC_END_HEX) \
 		$(VSP_UWORD_MEMORY_STATE_HEX) \
 		$(VSP_UWORD_BRANCH_LOOP_HEX) \
-		$(VSP_UWORD_BRIGHTNESS_LOOP_HEX) \
+		$(VSP_UWORD_VECTOR_MEMORY_LOOP_HEX) \
 		$(VSP_UWORD_CLUSTER_PROGRAM_OBJ)/V$(VSP_UWORD_CLUSTER_PROGRAM_TOP) \
 		$(VSP_MEMORY_UWORD_DECODER_OBJ)/V$(VSP_MEMORY_UWORD_DECODER_TOP) \
 		$(VSP_CONTROL_UWORD_DECODER_OBJ)/V$(VSP_CONTROL_UWORD_DECODER_TOP) \
@@ -1152,7 +1126,6 @@ test: $(OBJ_DIR)/V$(TOP) \
 		$(DYNAMIC_OBJ)/V$(DYNAMIC_TOP) \
 		$(REDUCE_OBJ)/V$(REDUCE_TOP) $(SAD_OBJ)/V$(SAD_TOP) \
 		$(DATAPATH_OBJ)/V$(DATAPATH_TOP) \
-		$(SIMPLE_ALGORITHMS_OBJ)/V$(SIMPLE_ALGORITHMS_TOP) \
 		$(GROUP_WRAPPER_OBJ)/V$(GROUP_WRAPPER_TOP) \
 		$(GAUSSIAN_OBJ)/V$(GAUSSIAN_TOP) \
 		$(SOBEL_OBJ)/V$(SOBEL_TOP) \
@@ -1172,12 +1145,11 @@ test: $(OBJ_DIR)/V$(TOP) \
 	$(VSP_UWORD_MULTI_FRAMER_OBJ)/V$(VSP_UWORD_MULTI_FRAMER_TOP)
 	$(VSP_UWORD_PROGRAM_SOURCE_OBJ)/V$(VSP_UWORD_PROGRAM_SOURCE_TOP)
 	$(PYTHON) $(VSP_UWORD_ASM_TB)
-	$(PYTHON) $(VSP_ASM_GENERATOR_TB)
 	$(VSP_UWORD_PROGRAM_FRONTEND_OBJ)/V$(VSP_UWORD_PROGRAM_FRONTEND_TOP) \
 		$(VSP_UWORD_PC_HEX)
 	$(VSP_UWORD_CLUSTER_PROGRAM_OBJ)/V$(VSP_UWORD_CLUSTER_PROGRAM_TOP) \
 		$(VSP_UWORD_EXEC_END_HEX) $(VSP_UWORD_MEMORY_STATE_HEX) \
-		$(VSP_UWORD_BRANCH_LOOP_HEX) $(VSP_UWORD_BRIGHTNESS_LOOP_HEX)
+		$(VSP_UWORD_BRANCH_LOOP_HEX) $(VSP_UWORD_VECTOR_MEMORY_LOOP_HEX)
 	$(VSP_MEMORY_UWORD_DECODER_OBJ)/V$(VSP_MEMORY_UWORD_DECODER_TOP)
 	$(VSP_CONTROL_UWORD_DECODER_OBJ)/V$(VSP_CONTROL_UWORD_DECODER_TOP)
 	$(VSP_UWORD_ACTION_ADAPTER_OBJ)/V$(VSP_UWORD_ACTION_ADAPTER_TOP)
@@ -1202,7 +1174,6 @@ test: $(OBJ_DIR)/V$(TOP) \
 	$(REDUCE_OBJ)/V$(REDUCE_TOP)
 	$(SAD_OBJ)/V$(SAD_TOP)
 	$(DATAPATH_OBJ)/V$(DATAPATH_TOP)
-	$(SIMPLE_ALGORITHMS_OBJ)/V$(SIMPLE_ALGORITHMS_TOP)
 	$(GROUP_WRAPPER_OBJ)/V$(GROUP_WRAPPER_TOP)
 	$(GAUSSIAN_OBJ)/V$(GAUSSIAN_TOP)
 	$(SOBEL_OBJ)/V$(SOBEL_TOP)

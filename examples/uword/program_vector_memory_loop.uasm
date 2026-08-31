@@ -1,0 +1,18 @@
+# Four-group vector-memory/control-loop integration program.  Three 16-byte
+# blocks are loaded from LOCAL memory, transformed by unsigned saturating add,
+# and stored 256 bytes above the corresponding input block.  The unsigned
+# end-pointer branch keeps the program within the wrapper's 16-word control
+# store.  This fixture verifies the soft-core path, not an algorithm product.
+
+entry:
+    LI rd=1 imm=0x40
+    LI rd=2 imm=0x70
+
+loop:
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0
+    EXEC_ALU_RI op=add_sat_u mode=byte va=0 vd=1 imm=40
+    VSTORE space=local addr_context=0 sbase=1 vrf=1 span=16 offset=256
+    ADDI rd=1 rs1=1 imm=16
+    BLTU rs1=1 rs2=2 target=loop
+
+    END

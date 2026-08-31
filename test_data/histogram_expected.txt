@@ -1,9 +1,0 @@
-Expected 4-bin histogram for histogram_test image
-Bins: [0,64), [64,128), [128,192), [192,256)
-
-Bin 0 [  0- 63]:  1024 pixels
-Bin 1 [ 64-127]:  1024 pixels
-Bin 2 [128-191]:  1024 pixels
-Bin 3 [192-255]:  1024 pixels
-
-Total: 4096 pixels

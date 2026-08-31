@@ -26,10 +26,10 @@ constexpr uint8_t kLocal = 0;
 constexpr uint8_t kBadSubop = 2;
 constexpr uint8_t kBadExtension = 4;
 constexpr uint8_t kBadImmediate = 5;
-constexpr uint32_t kBrightnessInputBase = 0x40;
-constexpr uint32_t kBrightnessOutputBase = 0x140;
-constexpr unsigned kBrightnessBytes = 48;
-constexpr uint8_t kBrightnessIncrement = 40;
+constexpr uint32_t kVectorLoopInputBase = 0x40;
+constexpr uint32_t kVectorLoopOutputBase = 0x140;
+constexpr unsigned kVectorLoopBytes = 48;
+constexpr uint8_t kVectorLoopIncrement = 40;
 
 uint64_t checks = 0;
 
@@ -63,8 +63,8 @@ uint32_t pack_word(const std::array<uint8_t, N>& bytes,
   return value;
 }
 
-uint8_t brightness_reference(uint8_t input) {
-  const unsigned sum = unsigned{input} + kBrightnessIncrement;
+uint8_t vector_loop_reference(uint8_t input) {
+  const unsigned sum = unsigned{input} + kVectorLoopIncrement;
   return static_cast<uint8_t>(sum > 255 ? 255 : sum);
 }
 
@@ -416,7 +416,7 @@ int main(int argc, char** argv) {
   if (argc != 5) {
     std::cerr << "usage: " << argv[0]
               << " EXEC_PROGRAM.hex MEMORY_STATE_PROGRAM.hex"
-              << " BRANCH_LOOP_PROGRAM.hex BRIGHTNESS_LOOP_PROGRAM.hex\n";
+              << " BRANCH_LOOP_PROGRAM.hex VECTOR_MEMORY_LOOP_PROGRAM.hex\n";
     return 2;
   }
 
@@ -450,9 +450,9 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  const std::vector<uint32_t> brightness_loop_program = read_hex(argv[4]);
-  if (brightness_loop_program.size() != 15) {
-    std::cerr << "brightness-loop program must fit the 16-word test store\n";
+  const std::vector<uint32_t> vector_memory_loop_program = read_hex(argv[4]);
+  if (vector_memory_loop_program.size() != 15) {
+    std::cerr << "vector-memory loop must fit the 16-word test store\n";
     return 1;
   }
 
@@ -703,113 +703,113 @@ int main(int argc, char** argv) {
   expect_eq("no response remains after MEMORY/state END", 0,
             dmem.response_pending);
 
-  // Run a complete four-group byte algorithm from fetched uwords.  Three
+  // Run a complete four-group vector-memory loop from fetched uwords.  Three
   // blocks flow through state-addressed VLOAD, saturating EXEC, VSTORE and a
-  // backward BLTU.  The scalar oracle depends only on the stated add-saturate
-  // operation, not on the vector instruction sequence.
-  program_store(dut, brightness_loop_program);
+  // backward BLTU.  This is a soft-core integration regression: it closes the
+  // fetch-to-memory path without claiming an algorithm-level implementation.
+  program_store(dut, vector_memory_loop_program);
   launch(dut,
-         kBasePc + static_cast<uint32_t>(4 * brightness_loop_program.size()),
+         kBasePc + static_cast<uint32_t>(4 * vector_memory_loop_program.size()),
          0, 0xf, 0x10);
-  DmemModel brightness_dmem;
-  const std::array<uint8_t, 16> brightness_pattern = {
+  DmemModel vector_loop_dmem;
+  const std::array<uint8_t, 16> vector_loop_pattern = {
       0, 1, 39, 40, 64, 127, 128, 192,
       200, 214, 215, 216, 217, 240, 254, 255};
-  std::array<uint8_t, kBrightnessBytes> brightness_input{};
-  std::array<uint8_t, kBrightnessBytes> brightness_expected{};
-  unsigned saturated_pixels = 0;
-  for (unsigned index = 0; index < kBrightnessBytes; ++index) {
-    const uint8_t input = brightness_pattern[index % brightness_pattern.size()];
-    const uint8_t expected = brightness_reference(input);
-    brightness_input[index] = input;
-    brightness_expected[index] = expected;
-    brightness_dmem.bytes.at(kBrightnessInputBase + index) = input;
-    brightness_dmem.bytes.at(kBrightnessOutputBase + index) = 0x5a;
-    saturated_pixels += expected == 255;
+  std::array<uint8_t, kVectorLoopBytes> vector_loop_input{};
+  std::array<uint8_t, kVectorLoopBytes> vector_loop_expected{};
+  unsigned saturated_values = 0;
+  for (unsigned index = 0; index < kVectorLoopBytes; ++index) {
+    const uint8_t input = vector_loop_pattern[index % vector_loop_pattern.size()];
+    const uint8_t expected = vector_loop_reference(input);
+    vector_loop_input[index] = input;
+    vector_loop_expected[index] = expected;
+    vector_loop_dmem.bytes.at(kVectorLoopInputBase + index) = input;
+    vector_loop_dmem.bytes.at(kVectorLoopOutputBase + index) = 0x5a;
+    saturated_values += expected == 255;
   }
-  brightness_dmem.bytes.at(kBrightnessOutputBase - 1) = 0xa5;
-  brightness_dmem.bytes.at(kBrightnessOutputBase + kBrightnessBytes) = 0x5a;
+  vector_loop_dmem.bytes.at(kVectorLoopOutputBase - 1) = 0xa5;
+  vector_loop_dmem.bytes.at(kVectorLoopOutputBase + kVectorLoopBytes) = 0x5a;
 
-  Run brightness = run_until_terminal(dut, &brightness_dmem);
-  expect_eq("brightness program completed", 1, brightness.done);
-  expect_eq("brightness program did not fail", 0, brightness.failed);
-  expect_eq("brightness program has no accumulated error", 0,
-            brightness.error);
-  expect_eq("brightness oracle covers saturation", 1,
-            saturated_pixels != 0);
-  expect_eq("brightness completion count", 18,
-            brightness.completions.size());
+  Run vector_loop = run_until_terminal(dut, &vector_loop_dmem);
+  expect_eq("vector loop completed", 1, vector_loop.done);
+  expect_eq("vector loop did not fail", 0, vector_loop.failed);
+  expect_eq("vector loop has no accumulated error", 0,
+            vector_loop.error);
+  expect_eq("vector loop covers saturation", 1,
+            saturated_values != 0);
+  expect_eq("vector loop completion count", 18,
+            vector_loop.completions.size());
 
-  std::size_t brightness_completion = 0;
-  uint8_t brightness_tag = 0x10;
+  std::size_t vector_loop_completion = 0;
+  uint8_t vector_loop_tag = 0x10;
   for (unsigned setup = 0; setup < 2; ++setup) {
-    check_completion(brightness.completions[brightness_completion++],
-                     kControl, 0, brightness_tag++, 0,
+    check_completion(vector_loop.completions[vector_loop_completion++],
+                     kControl, 0, vector_loop_tag++, 0,
                      kStatusOk, 0, false,
-                     "brightness setup " + std::to_string(setup));
+                     "vector loop setup " + std::to_string(setup));
   }
   const std::array<uint8_t, 5> loop_classes = {
       kMemory, kExec, kMemory, kControl, kControl};
   const std::array<uint8_t, 5> loop_masks = {0xf, 0xf, 0xf, 0, 0};
   for (unsigned block = 0; block < 3; ++block) {
     for (unsigned action = 0; action < loop_classes.size(); ++action) {
-      check_completion(brightness.completions[brightness_completion++],
-                       loop_classes[action], 0, brightness_tag++,
+      check_completion(vector_loop.completions[vector_loop_completion++],
+                       loop_classes[action], 0, vector_loop_tag++,
                        loop_masks[action], kStatusOk, 0, false,
-                       "brightness block " + std::to_string(block) +
+                       "vector loop block " + std::to_string(block) +
                            " action " + std::to_string(action));
     }
   }
-  check_completion(brightness.completions[brightness_completion++],
-                   kControl, 0, brightness_tag++, 0,
-                   kStatusOk, 0, true, "brightness END");
-  expect_eq("brightness checked every completion",
-            brightness.completions.size(), brightness_completion);
-  expect_eq("brightness exports no EXEC result", 0,
-            brightness.results.size());
-  expect_eq("brightness request count", 24, brightness.dmem_requests);
-  expect_eq("brightness captured every request", 24,
-            brightness_dmem.requests.size());
+  check_completion(vector_loop.completions[vector_loop_completion++],
+                   kControl, 0, vector_loop_tag++, 0,
+                   kStatusOk, 0, true, "vector loop END");
+  expect_eq("vector loop checked every completion",
+            vector_loop.completions.size(), vector_loop_completion);
+  expect_eq("vector loop exports no EXEC result", 0,
+            vector_loop.results.size());
+  expect_eq("vector loop request count", 24, vector_loop.dmem_requests);
+  expect_eq("vector loop captured every request", 24,
+            vector_loop_dmem.requests.size());
 
-  std::size_t brightness_request = 0;
+  std::size_t vector_loop_request = 0;
   for (unsigned block = 0; block < 3; ++block) {
     for (unsigned group = 0; group < 4; ++group) {
       const uint32_t address =
-          kBrightnessInputBase + block * 16 + group * 4;
+          kVectorLoopInputBase + block * 16 + group * 4;
       check_dmem_request({kLoad, address, kLocal, 0, 0, 0},
-                         brightness_dmem.requests[brightness_request++],
-                         "brightness load block " + std::to_string(block) +
+                         vector_loop_dmem.requests[vector_loop_request++],
+                         "vector loop load block " + std::to_string(block) +
                              " group " + std::to_string(group));
     }
     for (unsigned group = 0; group < 4; ++group) {
       const std::size_t byte_offset = block * 16 + group * 4;
       const uint32_t address =
-          kBrightnessOutputBase + static_cast<uint32_t>(byte_offset);
+          kVectorLoopOutputBase + static_cast<uint32_t>(byte_offset);
       check_dmem_request(
           {kStore, address, kLocal, 0,
-           pack_word(brightness_expected, byte_offset), 0xf},
-          brightness_dmem.requests[brightness_request++],
-          "brightness store block " + std::to_string(block) +
+           pack_word(vector_loop_expected, byte_offset), 0xf},
+          vector_loop_dmem.requests[vector_loop_request++],
+          "vector loop store block " + std::to_string(block) +
               " group " + std::to_string(group));
     }
   }
-  expect_eq("brightness checked every request",
-            brightness_dmem.requests.size(), brightness_request);
-  for (unsigned index = 0; index < kBrightnessBytes; ++index) {
-    expect_eq("brightness preserves input byte " + std::to_string(index),
-              brightness_input[index],
-              brightness_dmem.bytes.at(kBrightnessInputBase + index));
-    expect_eq("brightness output byte " + std::to_string(index),
-              brightness_expected[index],
-              brightness_dmem.bytes.at(kBrightnessOutputBase + index));
+  expect_eq("vector loop checked every request",
+            vector_loop_dmem.requests.size(), vector_loop_request);
+  for (unsigned index = 0; index < kVectorLoopBytes; ++index) {
+    expect_eq("vector loop preserves input byte " + std::to_string(index),
+              vector_loop_input[index],
+              vector_loop_dmem.bytes.at(kVectorLoopInputBase + index));
+    expect_eq("vector loop output byte " + std::to_string(index),
+              vector_loop_expected[index],
+              vector_loop_dmem.bytes.at(kVectorLoopOutputBase + index));
   }
-  expect_eq("brightness lower output guard", 0xa5,
-            brightness_dmem.bytes.at(kBrightnessOutputBase - 1));
-  expect_eq("brightness upper output guard", 0x5a,
-            brightness_dmem.bytes.at(
-                kBrightnessOutputBase + kBrightnessBytes));
-  expect_eq("no response remains after brightness END", 0,
-            brightness_dmem.response_pending);
+  expect_eq("vector loop lower output guard", 0xa5,
+            vector_loop_dmem.bytes.at(kVectorLoopOutputBase - 1));
+  expect_eq("vector loop upper output guard", 0x5a,
+            vector_loop_dmem.bytes.at(
+                kVectorLoopOutputBase + kVectorLoopBytes));
+  expect_eq("no response remains after vector loop END", 0,
+            vector_loop_dmem.response_pending);
 
   // Indexed MEMORY records replace the former register-route instruction.
   // VLOAD seeds row 1 with byte offsets {3,0,7,4}; VGATHER reads those four

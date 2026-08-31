@@ -1,8 +1,0 @@
-// VSP Test Data - Hex Format
-// Size: 1x16 = 16 bytes
-// Format: 4 bytes per line (little-endian)
-
-ffffffff
-ffffffff
-ffffffff
-ffffffff
