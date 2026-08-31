@@ -29,7 +29,7 @@ MRF：   4 × LANES bit，2 个组合读端口，1 个 masked 写端口
 
 ## 周期边界
 
-读取、可选的局部路由、执行和 reduction 保持组合：
+裸 `simd_datapath` 仍保留组合读取/执行接口，便于单元验证和比较：
 
 ```text
 RF async read → optional source-A route → lane execute → optional reduction
@@ -37,11 +37,24 @@ RF async read → optional source-A route → lane execute → optional reductio
                                          └────────────→ clock-edge masked writeback
 ```
 
-寄存器写入是状态提交边界，不是执行单元内部流水。当前 group 内没有
-ready/valid、停顿和旁路；外层 `simd_group_wrapper` 已为 canonical EXEC/state-write
-增加事务握手和返回缓存，但不改变这条裸数据通路的组合执行。外部控制每周期对
-每个 SIMD4 最多发射一个满足当前组合时序的微操作。多个 group 的发射工作模型见
-[集群控制](../design/cluster-control.md)。
+产品侧 `simd_group_wrapper` 已在 RF 读后插入一项一深度 elastic operand stage：
+
+```text
+cycle N:   accept decoded EXEC -> async RF read -> capture operands + control
+cycle N+1: captured operands -> route/execute/reduce -> masked RF commit
+                                                    -> completion/result buffers
+```
+
+当 completion/result 有 credit 时，resident EXEC 可提交并在同一时钟沿捕获下一条
+EXEC，所以稳态仍可达到每个 SIMD4 每拍一条。VRF、ARF、MRF 都有同拍
+writeback-to-operand forwarding；新命令读取前一条的目的 row 时，按实际 write mask
+合并旁路数据，未写 lane 保留 RF 原值。返回背压会让 resident stage 停住且不会重复
+提交。state-read/write 与 resident EXEC 不重叠，避免给共享 RF 端口隐含定义另一套
+read-during-write 行为。
+
+这项切分把 RF lookup 与 route/ALU/reduction 分在两个周期，但尚未把乘法、动态移位
+或 reduction 再细分。实际 Fmax/PPA 尚未经过目标工艺综合。多个 group 的发射工作
+模型见[集群控制](../design/cluster-control.md)。
 
 ## 物理 lane 与逻辑元素
 
@@ -168,8 +181,8 @@ EXPAND:   VRF-A=[b,d,x,x], MRF=1010 -> result=[0,b,0,d], predicate=1010
 `cfg_*` 端口用于初始化、状态传输和测试。裸 `simd_datapath` 中，配置写与执行写
 同周期命中同一文件时由配置写优先。这只是叶模块仲裁行为；transaction wrapper
 现在把 cfg 侧提升成带 `context+tag` 的 state-write 子事务，并增加独立 VRF
-state-read 子事务；二者与 EXEC 完全串行接受，禁止已经 accepted 的执行写被静默
-覆盖。`vsp_vector_memory_engine` 已经由 shared VRF arbiter 和 cluster integration 接到这些
+state-read 子事务；二者等待 resident EXEC 退出后再占用共享 RF 端口，禁止已经
+accepted 的执行写被静默覆盖。`vsp_vector_memory_engine` 已经由 shared VRF arbiter 和 cluster integration 接到这些
 state-read/write endpoint：LOAD 写入 VRF，STORE 直接读取 VRF row。地址推进和
 program-level completion 仍不在 wrapper 内；`dmem_*` 外的物理 local SRAM、
 cache/MMU 或 DMA 也不属于裸 datapath。
@@ -177,8 +190,8 @@ cache/MMU 或 DMA 也不属于裸 datapath。
 ## Reduction
 
 窄执行结果可在同一组合路径上进入 reduction tree。裸 datapath 给出组合
-value/index/valid，不写入内部标量寄存器；当前 group 事务边界由 wrapper 在接受沿
-捕获进可背压 result buffer。现已能用一条外部微操作组合出
+value/index/valid，不写入内部标量寄存器；当前 group wrapper 在 operand stage 的
+提交沿捕获结果到可背压 result buffer。现已能用一条外部微操作组合出
 `ABSDIFF_U + REDUCE_SUM_U` 的 masked SAD。
 
 ## 尚未包含
@@ -188,8 +201,9 @@ value/index/valid，不写入内部标量寄存器；当前 group 事务边界�
 - 宽 ARF 输入的 reduction；
 - 裸 datapath 内的 load/store、DMA 与二维地址生成；独立 VRF vector memory engine 已经由
   wrapper/cluster reference path 接到 RF，但不把地址或 memory action 下沉到裸 datapath；
-- 裸 datapath 内部的 ready/valid 和多周期单元；外层 group wrapper 已有事务握手；
+- 裸 datapath 内部的 ready/valid 和多周期单元；外层 group wrapper 已有一项
+  elastic operand stage、事务握手和 RAW forwarding；
 - compact-uword admission metadata、queue-head canonical expansion 与 decoded group
   holding/path 的集成；bundle framing/class predecode、canonical expander 以及 cluster
   queue、RR live-head 和 opaque locked shadow 已分别有参考 RTL；
-- bank conflict、旁路及物理 SRAM 映射。
+- bank conflict、跨多周期执行级的完整 scoreboard 及物理 SRAM 映射。

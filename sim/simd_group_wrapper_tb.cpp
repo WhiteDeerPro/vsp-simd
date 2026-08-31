@@ -11,6 +11,7 @@ namespace {
 
 constexpr uint8_t kAdd = 0x00;
 constexpr uint8_t kAbsdiffU = 0x0a;
+constexpr uint8_t kCmpeq = 0x12;
 constexpr uint8_t kPassA = 0x1a;
 constexpr uint8_t kWidenU = 0x1c;
 constexpr uint8_t kNslice = 0x26;
@@ -37,7 +38,10 @@ uint32_t checks = 0;
 
 void expect_eq(const char* field, uint64_t expected, uint64_t actual) {
   ++checks;
-  if (expected != actual) fail(field, expected, actual);
+  if (expected != actual) {
+    std::cerr << "check=" << checks << ' ';
+    fail(field, expected, actual);
+  }
 }
 
 void tick(Vsimd_group_wrapper& dut) {
@@ -161,11 +165,20 @@ void accept_state_write(Vsimd_group_wrapper& dut) {
   clear_state_write(dut);
 }
 
-void accept_exec(Vsimd_group_wrapper& dut) {
+void capture_exec(Vsimd_group_wrapper& dut) {
   dut.eval();
   expect_eq("exec ready", 1, dut.exec_ready_o);
   tick(dut);
   clear_exec(dut);
+}
+
+void accept_exec(Vsimd_group_wrapper& dut) {
+  // First edge captures RF operands/control into the elastic execute stage.
+  capture_exec(dut);
+  // Second edge executes and commits the resident stage.  Tests that exercise
+  // one-command-per-cycle replacement use the cycle-accurate driver below
+  // instead of this convenience helper.
+  tick(dut);
 }
 
 void accept_state_read(Vsimd_group_wrapper& dut) {
@@ -178,6 +191,10 @@ void accept_state_read(Vsimd_group_wrapper& dut) {
 void expect_completion(Vsimd_group_wrapper& dut, uint8_t context, uint8_t tag,
                        uint8_t req_kind, bool illegal, bool has_result) {
   dut.eval();
+  if (!dut.cpl_valid_o) {
+    std::cerr << "missing completion for tag=0x" << std::hex
+              << static_cast<unsigned>(tag) << std::dec << ' ';
+  }
   expect_eq("completion valid", 1, dut.cpl_valid_o);
   expect_eq("completion context", context, dut.cpl_context_o);
   expect_eq("completion tag", tag, dut.cpl_tag_o);
@@ -284,6 +301,12 @@ struct ExpectedResponse {
   uint32_t data;
 };
 
+struct PendingExec {
+  uint8_t context;
+  uint8_t tag;
+  uint32_t data;
+};
+
 void randomized_backpressure(Vsimd_group_wrapper& dut) {
   constexpr unsigned kTransactions = 96;
   constexpr uint8_t kRow = 8;
@@ -296,12 +319,15 @@ void randomized_backpressure(Vsimd_group_wrapper& dut) {
   unsigned completion_replacements = 0;
   unsigned response_replacements = 0;
   unsigned result_interleaves = 0;
+  bool pending_exec_valid = false;
+  PendingExec pending_exec{};
 
   clear_exec(dut);
   clear_state_write(dut);
 
-  while (next < kTransactions || !completions.empty() ||
-         !responses.empty() || dut.cpl_valid_o || dut.rsp_valid_o) {
+  while (next < kTransactions || pending_exec_valid ||
+         !completions.empty() || !responses.empty() || dut.cpl_valid_o ||
+         dut.rsp_valid_o) {
     if (++cycles > 10000) fail("randomized timeout", 0, cycles);
 
     dut.cpl_ready_i = xorshift32(rng) & 1u;
@@ -354,6 +380,9 @@ void randomized_backpressure(Vsimd_group_wrapper& dut) {
 
     const bool pop_cpl = dut.cpl_valid_o && dut.cpl_ready_i;
     const bool pop_rsp = dut.rsp_valid_o && dut.rsp_ready_i;
+    const bool exec_stage_can_commit =
+        pending_exec_valid && (!dut.cpl_valid_o || dut.cpl_ready_i) &&
+        (!dut.rsp_valid_o || dut.rsp_ready_i);
     const bool fire_state_write =
         dut.state_write_valid_i && dut.state_write_ready_o;
     const bool fire_exec = dut.exec_valid_i && dut.exec_ready_o;
@@ -362,19 +391,27 @@ void randomized_backpressure(Vsimd_group_wrapper& dut) {
     if (pop_cpl) completions.pop_front();
     if (pop_rsp) responses.pop_front();
 
-    if (pop_cpl && (fire_state_write || fire_exec)) {
+    if (pop_cpl && (fire_state_write || exec_stage_can_commit)) {
       ++completion_replacements;
     }
-    if (pop_rsp && fire_exec) ++response_replacements;
+    if (pop_rsp && exec_stage_can_commit) ++response_replacements;
     if (!responses.empty() && fire_state_write) ++result_interleaves;
+
+    if (exec_stage_can_commit) {
+      completions.push_back({pending_exec.context, pending_exec.tag, kReqExec,
+                             true});
+      responses.push_back(
+          {pending_exec.context, pending_exec.tag, pending_exec.data});
+      pending_exec_valid = false;
+    }
 
     if (fire_state_write) {
       completions.push_back({context, tag, kReqStateWrite, false});
       model_row = state_write_value;
       ++next;
     } else if (fire_exec) {
-      completions.push_back({context, tag, kReqExec, true});
-      responses.push_back({context, tag, model_row});
+      pending_exec = {context, tag, model_row};
+      pending_exec_valid = true;
       ++next;
     }
 
@@ -456,6 +493,32 @@ int main(int argc, char** argv) {
   drive_pass_export(dut, 0, 0x15, 0);
   accept_exec(dut);
   expect_narrow_response(dut, 0, 0x15, 0x04030201u, 0xf);
+  pop_both(dut);
+
+  // Resetting a resident operand stage discards it before architectural
+  // commit. This is distinct from clearing an already-produced response.
+  drive_state_write32(dut, 0, 0x16, kVrf, 13, 0xf, 0x88776655u);
+  accept_state_write(dut);
+  pop_completion(dut);
+  clear_exec(dut);
+  dut.exec_valid_i = 1;
+  dut.exec_tag_i = 0x17;
+  dut.exec_op_i = kAdd;
+  dut.exec_src_a_addr_i = 0;
+  dut.exec_use_imm_i = 1;
+  dut.exec_imm_i = 1;
+  dut.exec_dst_vrf_addr_i = 13;
+  dut.exec_write_vrf_i = 1;
+  capture_exec(dut);
+  dut.rst_ni = 0;
+  dut.eval();
+  expect_eq("reset discards resident execute stage", 0, dut.cpl_valid_o);
+  tick(dut);
+  dut.rst_ni = 1;
+  clear_inputs(dut);
+  drive_pass_export(dut, 0, 0x18, 13);
+  accept_exec(dut);
+  expect_narrow_response(dut, 0, 0x18, 0x88776655u, 0xf);
   pop_both(dut);
 
   // Export a VRF row and hold the result under backpressure.  A later EXEC
@@ -546,6 +609,7 @@ int main(int argc, char** argv) {
   tick(dut);
   clear_exec(dut);
   clear_state_read(dut);
+  tick(dut);
   expect_completion(dut, 0, 0x28, kReqExec, false, false);
   pop_completion(dut);
   dut.state_read_cpl_ready_i = 1;
@@ -789,6 +853,89 @@ int main(int argc, char** argv) {
   expect_narrow_response(dut, 0, 0x46, 0x00cc8844u, 0xf);
   pop_both(dut);
 
+  // The operand stage accepts one EXEC every cycle when the return buffers
+  // have credit. Same-edge forwarding must make a retiring VRF write visible
+  // to the replacement command even though the asynchronous RF array itself
+  // still presents the pre-edge value.
+  clear_exec(dut);
+  dut.exec_valid_i = 1;
+  dut.exec_tag_i = 0x47;
+  dut.exec_op_i = kAdd;
+  dut.exec_src_a_addr_i = 0;
+  dut.exec_use_imm_i = 1;
+  dut.exec_imm_i = 1;
+  dut.exec_dst_vrf_addr_i = 11;
+  dut.exec_write_vrf_i = 1;
+  capture_exec(dut);
+  expect_eq("operand stage has not committed on capture", 0,
+            dut.cpl_valid_o);
+
+  drive_pass_export(dut, 0, 0x48, 11);
+  capture_exec(dut);
+  expect_completion(dut, 0, 0x47, kReqExec, false, false);
+  dut.cpl_ready_i = 1;
+  tick(dut);
+  dut.cpl_ready_i = 0;
+  expect_completion(dut, 0, 0x48, kReqExec, false, true);
+  expect_narrow_response(dut, 0, 0x48, 0x051f030bu, 0xf);
+  pop_both(dut);
+
+  // ARF uses the same replacement-cycle rule. WIDEN commits while NSLICE
+  // captures the just-produced wide row through the ARF bypass.
+  clear_exec(dut);
+  dut.exec_valid_i = 1;
+  dut.exec_tag_i = 0x49;
+  dut.exec_op_i = kWidenU;
+  dut.exec_src_a_addr_i = 0;
+  dut.exec_use_imm_i = 1;
+  dut.exec_imm_i = 0;
+  dut.exec_dst_arf_addr_i = 3;
+  dut.exec_write_arf_i = 1;
+  capture_exec(dut);
+
+  clear_exec(dut);
+  dut.exec_valid_i = 1;
+  dut.exec_tag_i = 0x4a;
+  dut.exec_export_narrow_i = 1;
+  dut.exec_op_i = kNslice;
+  dut.exec_src_arf_addr_i = 3;
+  dut.exec_use_imm_i = 1;
+  dut.exec_imm_i = 0;
+  capture_exec(dut);
+  expect_completion(dut, 0, 0x49, kReqExec, false, false);
+  dut.cpl_ready_i = 1;
+  tick(dut);
+  dut.cpl_ready_i = 0;
+  expect_narrow_response(dut, 0, 0x4a, 0x041e020au, 0xf);
+  pop_both(dut);
+
+  // MRF forwarding covers a freshly generated predicate consumed as the next
+  // command's execution mask. Initialize the destination to zero so a missing
+  // bypass fails deterministically.
+  drive_state_write32(dut, 0, 0x4b, kMrf, 2, 0xf, 0x0);
+  accept_state_write(dut);
+  pop_completion(dut);
+  clear_exec(dut);
+  dut.exec_valid_i = 1;
+  dut.exec_tag_i = 0x4c;
+  dut.exec_op_i = kCmpeq;
+  dut.exec_src_a_addr_i = 0;
+  dut.exec_src_b_addr_i = 0;
+  dut.exec_dst_mrf_addr_i = 2;
+  dut.exec_write_mrf_i = 1;
+  capture_exec(dut);
+
+  drive_pass_export(dut, 0, 0x4d, 0);
+  dut.exec_mask_enable_i = 1;
+  dut.exec_mask_addr_i = 2;
+  capture_exec(dut);
+  expect_completion(dut, 0, 0x4c, kReqExec, false, false);
+  dut.cpl_ready_i = 1;
+  tick(dut);
+  dut.cpl_ready_i = 0;
+  expect_narrow_response(dut, 0, 0x4d, 0x041e020au, 0xf);
+  pop_both(dut);
+
   // Simultaneous EXEC/state-write requests are accepted one at a time; the
   // second replaces the first completion only when the sink returns credit.
   drive_pass_export(dut, 0, 0x50, 0);
@@ -803,20 +950,30 @@ int main(int argc, char** argv) {
   if (exec_first) clear_exec(dut);
   else clear_state_write(dut);
   dut.cpl_ready_i = 1;
-  dut.eval();
-  expect_eq("loser proceeds on pop", 1,
-            exec_first ? dut.state_write_ready_o : dut.exec_ready_o);
-  tick(dut);
+  bool loser_accepted = false;
+  for (unsigned wait = 0; wait < 3 && !loser_accepted; ++wait) {
+    dut.eval();
+    const bool loser_ready =
+        exec_first ? dut.state_write_ready_o : dut.exec_ready_o;
+    if (loser_ready) {
+      loser_accepted = true;
+      tick(dut);
+    } else {
+      tick(dut);
+    }
+  }
+  expect_eq("loser eventually proceeds", 1, loser_accepted);
   clear_exec(dut);
   clear_state_write(dut);
+  if (!exec_first) tick(dut);
   dut.cpl_ready_i = 0;
   expect_completion(dut, exec_first ? 1 : 0, exec_first ? 0x51 : 0x50,
                     exec_first ? kReqStateWrite : kReqExec, false, false);
   pop_completion(dut);
 
-  // Reset the protocol arbiter and keep all three request classes asserted.
-  // The next-preference pointer must grant EXEC, write, then read without a
-  // dual fire; this preserves old EXEC/write fairness while adding read.
+  // Reset the protocol arbiter and present all three request classes. Accepted
+  // producers withdraw their item. The EXEC operand stage owns the shared RF
+  // ports for one additional cycle, after which RR grants write then read.
   dut.rst_ni = 0;
   tick(dut);
   dut.rst_ni = 1;
@@ -837,6 +994,14 @@ int main(int argc, char** argv) {
                 unsigned(dut.state_write_ready_o) +
                 unsigned(dut.state_read_ready_o));
   tick(dut);
+  clear_exec(dut);
+
+  dut.eval();
+  expect_eq("three-way execute-stage RF ownership", 0,
+            unsigned(dut.exec_ready_o) +
+                unsigned(dut.state_write_ready_o) +
+                unsigned(dut.state_read_ready_o));
+  tick(dut);
 
   dut.eval();
   expect_eq("three-way second write", 1, dut.state_write_ready_o);
@@ -845,6 +1010,7 @@ int main(int argc, char** argv) {
                 unsigned(dut.state_write_ready_o) +
                 unsigned(dut.state_read_ready_o));
   tick(dut);
+  clear_state_write(dut);
 
   dut.eval();
   expect_eq("three-way third read", 1, dut.state_read_ready_o);
@@ -853,8 +1019,6 @@ int main(int argc, char** argv) {
                 unsigned(dut.state_write_ready_o) +
                 unsigned(dut.state_read_ready_o));
   tick(dut);
-  clear_exec(dut);
-  clear_state_write(dut);
   clear_state_read(dut);
   dut.cpl_ready_i = 0;
   expect_state_read_completion(dut, 0, 0x62, false);

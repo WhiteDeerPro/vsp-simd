@@ -39,7 +39,7 @@ The default `make lint` and `make test` cover the current one-PC/one-slot path:
 | Area | Main evidence | Supported claim |
 |---|---|---|
 | lane/datapath arithmetic | `simd_exec_tb`, dynamic ALU, mask, reduction, compact, datapath and workload tests | checked fixed-width operation and RF/writeback semantics |
-| group/EXEC protocol | group wrapper, queue, dispatcher, tracker, result collector and cluster EXEC tests | stable ready/valid, atomic group-mask issue, child/completion conservation and ordered reject |
+| group/EXEC protocol | group wrapper, queue, dispatcher, tracker, result collector and cluster EXEC tests | elastic operand-stage ready/valid, VRF/ARF/MRF RAW forwarding, atomic group-mask issue, child/completion conservation and ordered reject |
 | uword framing/decode | predecoder, bundle assembler, multi-framer, EXEC expander and assembler tests | mixed record boundaries, `fmt=0xd` undefined behavior, extension rules and illegal no-side-effect decode |
 | program delivery | program source/frontend and uword cluster program test | byte PC `+4` per word, cross-bundle records, strict single action, state/MEMORY/EXEC/END ordering |
 | program dataflow closure | fetched 48-byte vector-memory loop in the uword cluster program test | four-group load/compute/store loop, scalar address update, backward branch, END and final D-memory bytes against an independent oracle |
@@ -62,9 +62,10 @@ Recent indexed-memory directed regressions specifically cover:
 - a full sixteen-group gather and scatter with 64 byte-lane requests, including
   an index reaching offset 255 and duplicate-scatter last-writer behavior.
 
-These tests do not prove a physical SRAM/cache/MMU/DMA exists, that latency is
-fixed, that the engine has more than one outstanding beat, or that the internal
-uword encoding is a final ISA.
+These tests do not prove a physical SRAM/cache/MMU/DMA exists, that the new
+pipeline meets a target-process frequency/PPA point, that the memory engine has
+more than one outstanding beat, or that the internal uword encoding is a final
+ISA.
 
 ## Experimental routing regression
 

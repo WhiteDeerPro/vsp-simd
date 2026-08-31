@@ -112,15 +112,20 @@ Q(t+1) = Q(t) + produced(t) - consumed(t)
 
 ## 7. 当前数据通路的基线
 
-当前 `simd_datapath` 是单发射、无内部流水的行为模型：
+裸 `simd_datapath` 保留单发射组合行为；产品 `simd_group_wrapper` 已在 RF 读后加入
+一项 elastic operand stage：
 
 - 每周期对 VRF 最多提交一个 row；
 - 每周期对 ARF 最多提交一个 row；
 - 每周期对 MRF 最多提交一个 row；
 - 三个文件相互独立，因此外部控制可以让不同文件同周期写入；
 - reduction 结果通过独立标量出口返回；
+- 输出有 credit 时可同拍提交 resident EXEC 并捕获下一条，VRF/ARF/MRF RAW 由
+  masked forwarding 处理；
+- completion/result 背压冻结 resident stage，不重复提交；
 - 裸 datapath 中配置写与同一文件的执行写共用写口，配置写优先；已实现的
-  `simd_group_wrapper` 把它提升成 state-write 子事务，并与 EXEC 完全串行接受；
+  `simd_group_wrapper` 把它提升成 state-write 子事务；state transfer 等待 resident
+  EXEC 退出后再占用共享 RF 端口；
 - route 的 lane broadcast 可以产生多个 delivery，但仍只形成一个本地窄结果 row；
 - 多个 SIMD group 同时工作时，VSP 聚合写入和交付率按活跃 group 数增长。
 

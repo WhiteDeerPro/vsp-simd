@@ -134,6 +134,58 @@ module simd_group_wrapper #(
 
   assign simd4_id_o = SIMD4_ID;
 
+  // The wrapper owns a one-entry elastic operand stage.  Source addresses are
+  // presented to the asynchronous RF ports while an EXEC request is being
+  // admitted; the returned operands and all execute-side control are captured
+  // here.  The following cycle performs route/execute/reduction and commits the
+  // RF write plus completion/result records.  This is the first real internal
+  // SIMD4 pipeline cut: it separates RF lookup from arithmetic rather than
+  // merely delaying an already-decoded command.
+  typedef struct packed {
+    logic                              export_narrow;
+    logic [SIMD_OP_W-1:0]             op;
+    logic [ELEM_MODE_W-1:0]            elem_mode;
+    logic                              use_imm;
+    logic [(4*ELEM_W)-1:0]             imm;
+    logic [VRF_ADDR_W-1:0]             dst_vrf_addr;
+    logic [ARF_ADDR_W-1:0]             dst_arf_addr;
+    logic                              mask_enable;
+    logic [MRF_ADDR_W-1:0]             dst_mrf_addr;
+    logic                              write_vrf;
+    logic                              write_arf;
+    logic                              write_mrf;
+    logic                              reduce_enable;
+    logic [REDUCE_OP_W-1:0]            reduce_op;
+    logic                              route_enable;
+    logic [ROUTE_OP_W-1:0]             route_op;
+    logic [(LANES*INDEX_W)-1:0]        route_index;
+    logic [INDEX_W-1:0]                route_broadcast_index;
+    logic [OFFSET_W-1:0]               route_slide_amount;
+    logic [(LANES*ELEM_W)-1:0]         route_lower;
+    logic [(LANES*ELEM_W)-1:0]         route_upper;
+  } exec_pipe_ctrl_t;
+
+  logic exec_pipe_valid_q;
+  exec_pipe_ctrl_t exec_pipe_ctrl_q;
+  logic [CONTEXT_W-1:0] exec_pipe_context_q;
+  logic [TAG_W-1:0] exec_pipe_tag_q;
+  logic exec_pipe_endpoint_illegal_q;
+  logic exec_pipe_rsp_required_q;
+  logic [(LANES*ELEM_W)-1:0] exec_pipe_src_a_q;
+  logic [(LANES*ELEM_W)-1:0] exec_pipe_src_b_q;
+  logic [(LANES*ACC_W)-1:0] exec_pipe_acc_q;
+  logic [LANES-1:0] exec_pipe_mask_q;
+  logic [LANES-1:0] exec_pipe_select_mask_q;
+
+  logic exec_pipe_can_commit;
+  logic exec_pipe_ready;
+  logic exec_commit;
+  logic [(LANES*ELEM_W)-1:0] capture_src_a;
+  logic [(LANES*ELEM_W)-1:0] capture_src_b;
+  logic [(LANES*ACC_W)-1:0] capture_acc;
+  logic [LANES-1:0] capture_exec_mask;
+  logic [LANES-1:0] capture_select_mask;
+
   // Round-robin next preference: 0=EXEC, 1=state-write, 2=state-read.
   logic [1:0] request_rr_q;
 
@@ -172,7 +224,7 @@ module simd_group_wrapper #(
   logic rsp_can_push;
   logic state_read_cpl_can_push;
   logic state_read_rsp_can_push;
-  logic exec_rsp_required;
+  logic exec_rsp_required_in;
   logic exec_eligible;
   logic state_write_eligible;
   logic state_read_eligible;
@@ -193,13 +245,13 @@ module simd_group_wrapper #(
   logic cfg_mrf_write;
   logic datapath_illegal;
   logic [(LANES*ELEM_W)-1:0] datapath_narrow;
-  // F1 exports narrow/scalar results only.  Keep the existing datapath outputs
-  // connected so later wide-state and boundary endpoints can be added without
-  // changing the leaf module contract.
+  // Wide results feed the ARF forwarding path even though F1 exports only
+  // narrow/scalar results. The boundary mask remains reserved for a future
+  // external route endpoint.
   /* verilator lint_off UNUSED */
-  logic [(LANES*ACC_W)-1:0] datapath_wide_unused;
   logic [LANES-1:0] datapath_boundary_mask_unused;
   /* verilator lint_on UNUSED */
+  logic [(LANES*ACC_W)-1:0] datapath_wide;
   logic [LANES-1:0] datapath_predicate;
   logic [LANES-1:0] datapath_exec_mask;
   logic [ACC_W-1:0] datapath_reduce_value;
@@ -209,9 +261,15 @@ module simd_group_wrapper #(
   logic datapath_compact_valid;
   logic compact_op;
   logic mask_logic_op;
+  logic group_op;
+  logic [LANES-1:0] exec_write_mask;
   logic [LANES-1:0] exec_narrow_mask;
   logic [VRF_ADDR_W-1:0] datapath_src_a_addr;
   logic [(LANES*ELEM_W)-1:0] datapath_vrf_src_a;
+  logic [(LANES*ELEM_W)-1:0] datapath_vrf_src_b;
+  logic [(LANES*ACC_W)-1:0] datapath_arf_src;
+  logic [LANES-1:0] datapath_mrf_exec;
+  logic [LANES-1:0] datapath_mrf_select;
 
   assign cpl_can_push = !cpl_valid_q || cpl_ready_i;
   assign rsp_can_push = !rsp_valid_q || rsp_ready_i;
@@ -219,13 +277,16 @@ module simd_group_wrapper #(
                                    state_read_cpl_ready_i;
   assign state_read_rsp_can_push = !state_read_rsp_valid_q ||
                                    state_read_rsp_ready_i;
-  assign compact_op = (exec_op_i == SIMD_OP_COMPRESS) ||
-                      (exec_op_i == SIMD_OP_EXPAND);
-  assign mask_logic_op = (exec_op_i == SIMD_OP_MAND) ||
-                         (exec_op_i == SIMD_OP_MOR) ||
-                         (exec_op_i == SIMD_OP_MXOR) ||
-                         (exec_op_i == SIMD_OP_MNOT);
-  assign exec_rsp_required = simd_exec_requires_result(
+  assign compact_op = (exec_pipe_ctrl_q.op == SIMD_OP_COMPRESS) ||
+                      (exec_pipe_ctrl_q.op == SIMD_OP_EXPAND);
+  assign mask_logic_op = (exec_pipe_ctrl_q.op == SIMD_OP_MAND) ||
+                         (exec_pipe_ctrl_q.op == SIMD_OP_MOR) ||
+                         (exec_pipe_ctrl_q.op == SIMD_OP_MXOR) ||
+                         (exec_pipe_ctrl_q.op == SIMD_OP_MNOT);
+  assign group_op = compact_op || mask_logic_op;
+  assign exec_write_mask = group_op ? {LANES{1'b1}} :
+                                      datapath_exec_mask;
+  assign exec_rsp_required_in = simd_exec_requires_result(
       exec_op_i, exec_export_narrow_i, exec_reduce_enable_i);
   // Export is a narrow-result consumer, so it follows the same operation
   // capability as VRF writeback.  Rejecting it at the endpoint also prevents
@@ -235,10 +296,17 @@ module simd_group_wrapper #(
   assign exec_endpoint_illegal =
       (int'(exec_context_i) >= CONTEXT_COUNT) ||
       (exec_export_narrow_i && !simd_op_can_write_vrf(exec_op_i));
-  assign exec_eligible = rst_ni && cpl_can_push &&
-                         (!exec_rsp_required || rsp_can_push);
-  assign state_write_eligible = rst_ni && cpl_can_push;
-  assign state_read_eligible = rst_ni && state_read_cpl_can_push &&
+  assign exec_pipe_can_commit = rst_ni && exec_pipe_valid_q && cpl_can_push &&
+                                (!exec_pipe_rsp_required_q || rsp_can_push);
+  assign exec_pipe_ready = !exec_pipe_valid_q || exec_pipe_can_commit;
+  assign exec_commit = exec_pipe_can_commit;
+  assign exec_eligible = rst_ni && exec_pipe_ready;
+  // State-transfer traffic shares the physical RF ports.  Do not admit it in
+  // the same cycle that a resident EXEC stage is committing; this keeps the
+  // state endpoint atomic and avoids an implicit read-during-write policy.
+  assign state_write_eligible = rst_ni && !exec_pipe_valid_q && cpl_can_push;
+  assign state_read_eligible = rst_ni && !exec_pipe_valid_q &&
+                               state_read_cpl_can_push &&
                                state_read_rsp_can_push;
 
   always_comb begin
@@ -282,7 +350,7 @@ module simd_group_wrapper #(
   end
 
   assign exec_fire = exec_valid_i && exec_ready_o;
-  assign exec_issue = exec_fire && !exec_endpoint_illegal;
+  assign exec_issue = exec_commit && !exec_pipe_endpoint_illegal_q;
   assign state_write_fire = state_write_valid_i && state_write_ready_o;
   assign state_read_fire = state_read_valid_i && state_read_ready_o;
 
@@ -306,7 +374,8 @@ module simd_group_wrapper #(
   assign state_read_illegal =
       (int'(state_read_context_i) >= CONTEXT_COUNT) ||
       !state_read_addr_valid;
-  assign exec_request_illegal = exec_endpoint_illegal || datapath_illegal;
+  assign exec_request_illegal = exec_pipe_endpoint_illegal_q ||
+                                datapath_illegal;
 
   // The asynchronous VRF A port observes the state-read row only on the
   // granted request. An illegal address is replaced with row zero so even a
@@ -329,6 +398,55 @@ module simd_group_wrapper #(
     else exec_narrow_mask = datapath_exec_mask;
   end
 
+  // Same-edge forwarding closes the only RAW hole introduced by the operand
+  // stage.  RF arrays write on the commit edge, while a replacement command
+  // captures its asynchronous reads on that same edge.  Merge only lanes that
+  // the retiring command actually writes; untouched lanes keep the raw RF
+  // value.  State transfers cannot overlap a resident EXEC stage and therefore
+  // need no corresponding bypass case.
+  always_comb begin
+    capture_src_a = datapath_vrf_src_a;
+    capture_src_b = datapath_vrf_src_b;
+    capture_acc = datapath_arf_src;
+    capture_exec_mask = datapath_mrf_exec;
+    capture_select_mask = datapath_mrf_select;
+
+    if (exec_commit && !exec_request_illegal) begin
+      if (exec_pipe_ctrl_q.write_vrf) begin
+        for (int lane = 0; lane < LANES; lane++) begin
+          if (exec_write_mask[lane]) begin
+            if (exec_src_a_addr_i == exec_pipe_ctrl_q.dst_vrf_addr)
+              capture_src_a[(lane*ELEM_W) +: ELEM_W] =
+                  datapath_narrow[(lane*ELEM_W) +: ELEM_W];
+            if (exec_src_b_addr_i == exec_pipe_ctrl_q.dst_vrf_addr)
+              capture_src_b[(lane*ELEM_W) +: ELEM_W] =
+                  datapath_narrow[(lane*ELEM_W) +: ELEM_W];
+          end
+        end
+      end
+
+      if (exec_pipe_ctrl_q.write_arf &&
+          (exec_src_arf_addr_i == exec_pipe_ctrl_q.dst_arf_addr)) begin
+        for (int lane = 0; lane < LANES; lane++) begin
+          if (datapath_exec_mask[lane])
+            capture_acc[(lane*ACC_W) +: ACC_W] =
+                datapath_wide[(lane*ACC_W) +: ACC_W];
+        end
+      end
+
+      if (exec_pipe_ctrl_q.write_mrf) begin
+        for (int lane = 0; lane < LANES; lane++) begin
+          if (exec_write_mask[lane]) begin
+            if (exec_mask_addr_i == exec_pipe_ctrl_q.dst_mrf_addr)
+              capture_exec_mask[lane] = datapath_predicate[lane];
+            if (exec_select_mask_addr_i == exec_pipe_ctrl_q.dst_mrf_addr)
+              capture_select_mask[lane] = datapath_predicate[lane];
+          end
+        end
+      end
+    end
+  end
+
   simd_datapath #(
     .LANES(LANES),
     .ELEM_W(ELEM_W),
@@ -344,31 +462,31 @@ module simd_group_wrapper #(
   ) u_datapath (
     .clk_i(clk_i),
     .issue_i(exec_issue),
-    .op_i(exec_op_i),
-    .elem_mode_i(exec_elem_mode_i),
+    .op_i(exec_pipe_ctrl_q.op),
+    .elem_mode_i(exec_pipe_ctrl_q.elem_mode),
     .src_a_addr_i(datapath_src_a_addr),
     .src_b_addr_i(exec_src_b_addr_i),
-    .use_imm_i(exec_use_imm_i),
-    .imm_i(exec_imm_i),
-    .dst_vrf_addr_i(exec_dst_vrf_addr_i),
+    .use_imm_i(exec_pipe_ctrl_q.use_imm),
+    .imm_i(exec_pipe_ctrl_q.imm),
+    .dst_vrf_addr_i(exec_pipe_ctrl_q.dst_vrf_addr),
     .src_arf_addr_i(exec_src_arf_addr_i),
-    .dst_arf_addr_i(exec_dst_arf_addr_i),
-    .mask_enable_i(exec_mask_enable_i),
+    .dst_arf_addr_i(exec_pipe_ctrl_q.dst_arf_addr),
+    .mask_enable_i(exec_pipe_ctrl_q.mask_enable),
     .exec_mask_addr_i(exec_mask_addr_i),
     .select_mask_addr_i(exec_select_mask_addr_i),
-    .dst_mrf_addr_i(exec_dst_mrf_addr_i),
-    .write_vrf_i(exec_write_vrf_i),
-    .write_arf_i(exec_write_arf_i),
-    .write_mrf_i(exec_write_mrf_i),
-    .reduce_enable_i(exec_reduce_enable_i),
-    .reduce_op_i(exec_reduce_op_i),
-    .route_enable_i(exec_route_enable_i),
-    .route_op_i(exec_route_op_i),
-    .route_index_i(exec_route_index_i),
-    .route_broadcast_index_i(exec_route_broadcast_index_i),
-    .route_slide_amount_i(exec_route_slide_amount_i),
-    .route_lower_i(exec_route_lower_i),
-    .route_upper_i(exec_route_upper_i),
+    .dst_mrf_addr_i(exec_pipe_ctrl_q.dst_mrf_addr),
+    .write_vrf_i(exec_pipe_ctrl_q.write_vrf),
+    .write_arf_i(exec_pipe_ctrl_q.write_arf),
+    .write_mrf_i(exec_pipe_ctrl_q.write_mrf),
+    .reduce_enable_i(exec_pipe_ctrl_q.reduce_enable),
+    .reduce_op_i(exec_pipe_ctrl_q.reduce_op),
+    .route_enable_i(exec_pipe_ctrl_q.route_enable),
+    .route_op_i(exec_pipe_ctrl_q.route_op),
+    .route_index_i(exec_pipe_ctrl_q.route_index),
+    .route_broadcast_index_i(exec_pipe_ctrl_q.route_broadcast_index),
+    .route_slide_amount_i(exec_pipe_ctrl_q.route_slide_amount),
+    .route_lower_i(exec_pipe_ctrl_q.route_lower),
+    .route_upper_i(exec_pipe_ctrl_q.route_upper),
     .cfg_vrf_write_i(cfg_vrf_write),
     .cfg_vrf_addr_i(state_write_addr_i[VRF_ADDR_W-1:0]),
     .cfg_vrf_mask_i(state_write_mask_i),
@@ -381,9 +499,19 @@ module simd_group_wrapper #(
     .cfg_mrf_addr_i(state_write_addr_i[MRF_ADDR_W-1:0]),
     .cfg_mrf_mask_i(state_write_mask_i),
     .cfg_mrf_data_i(state_write_data_i[0 +: LANES]),
+    .operand_override_i(1'b1),
+    .operand_src_a_i(exec_pipe_src_a_q),
+    .operand_src_b_i(exec_pipe_src_b_q),
+    .operand_acc_i(exec_pipe_acc_q),
+    .operand_exec_mask_i(exec_pipe_mask_q),
+    .operand_select_mask_i(exec_pipe_select_mask_q),
     .vrf_src_a_data_o(datapath_vrf_src_a),
+    .vrf_src_b_data_o(datapath_vrf_src_b),
+    .arf_src_data_o(datapath_arf_src),
+    .mrf_exec_data_o(datapath_mrf_exec),
+    .mrf_select_data_o(datapath_mrf_select),
     .narrow_result_o(datapath_narrow),
-    .wide_result_o(datapath_wide_unused),
+    .wide_result_o(datapath_wide),
     .predicate_result_o(datapath_predicate),
     .exec_mask_o(datapath_exec_mask),
     .reduce_value_o(datapath_reduce_value),
@@ -398,6 +526,17 @@ module simd_group_wrapper #(
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       request_rr_q <= 2'd0;
+      exec_pipe_valid_q <= 1'b0;
+      exec_pipe_ctrl_q <= '0;
+      exec_pipe_context_q <= '0;
+      exec_pipe_tag_q <= '0;
+      exec_pipe_endpoint_illegal_q <= 1'b0;
+      exec_pipe_rsp_required_q <= 1'b0;
+      exec_pipe_src_a_q <= '0;
+      exec_pipe_src_b_q <= '0;
+      exec_pipe_acc_q <= '0;
+      exec_pipe_mask_q <= '0;
+      exec_pipe_select_mask_q <= '0;
       cpl_valid_q <= 1'b0;
       cpl_context_q <= '0;
       cpl_tag_q <= '0;
@@ -432,35 +571,76 @@ module simd_group_wrapper #(
       if (state_read_cpl_ready_i) state_read_cpl_valid_q <= 1'b0;
       if (state_read_rsp_ready_i) state_read_rsp_valid_q <= 1'b0;
 
+      if (exec_commit) exec_pipe_valid_q <= 1'b0;
       if (exec_fire) begin
+        exec_pipe_valid_q <= 1'b1;
+        exec_pipe_ctrl_q.export_narrow <= exec_export_narrow_i;
+        exec_pipe_ctrl_q.op <= exec_op_i;
+        exec_pipe_ctrl_q.elem_mode <= exec_elem_mode_i;
+        exec_pipe_ctrl_q.use_imm <= exec_use_imm_i;
+        exec_pipe_ctrl_q.imm <= exec_imm_i;
+        exec_pipe_ctrl_q.dst_vrf_addr <= exec_dst_vrf_addr_i;
+        exec_pipe_ctrl_q.dst_arf_addr <= exec_dst_arf_addr_i;
+        exec_pipe_ctrl_q.mask_enable <= exec_mask_enable_i;
+        exec_pipe_ctrl_q.dst_mrf_addr <= exec_dst_mrf_addr_i;
+        exec_pipe_ctrl_q.write_vrf <= exec_write_vrf_i;
+        exec_pipe_ctrl_q.write_arf <= exec_write_arf_i;
+        exec_pipe_ctrl_q.write_mrf <= exec_write_mrf_i;
+        exec_pipe_ctrl_q.reduce_enable <= exec_reduce_enable_i;
+        exec_pipe_ctrl_q.reduce_op <= exec_reduce_op_i;
+        exec_pipe_ctrl_q.route_enable <= exec_route_enable_i;
+        exec_pipe_ctrl_q.route_op <= exec_route_op_i;
+        exec_pipe_ctrl_q.route_index <= exec_route_index_i;
+        exec_pipe_ctrl_q.route_broadcast_index <=
+            exec_route_broadcast_index_i;
+        exec_pipe_ctrl_q.route_slide_amount <= exec_route_slide_amount_i;
+        exec_pipe_ctrl_q.route_lower <= exec_route_lower_i;
+        exec_pipe_ctrl_q.route_upper <= exec_route_upper_i;
+        exec_pipe_context_q <= exec_context_i;
+        exec_pipe_tag_q <= exec_tag_i;
+        exec_pipe_endpoint_illegal_q <= exec_endpoint_illegal;
+        exec_pipe_rsp_required_q <= exec_rsp_required_in;
+        exec_pipe_src_a_q <= capture_src_a;
+        exec_pipe_src_b_q <= capture_src_b;
+        exec_pipe_acc_q <= capture_acc;
+        exec_pipe_mask_q <= capture_exec_mask;
+        exec_pipe_select_mask_q <= capture_select_mask;
         request_rr_q <= 2'd1;
+      end else if (state_write_fire) begin
+        request_rr_q <= 2'd2;
+      end else if (state_read_fire) begin
+        request_rr_q <= 2'd0;
+      end
+
+      if (exec_commit) begin
         cpl_valid_q <= 1'b1;
-        cpl_context_q <= exec_context_i;
-        cpl_tag_q <= exec_tag_i;
+        cpl_context_q <= exec_pipe_context_q;
+        cpl_tag_q <= exec_pipe_tag_q;
         cpl_kind_q <= SIMD_GROUP_REQ_EXEC;
         cpl_illegal_q <= exec_request_illegal;
-        cpl_has_result_q <= exec_rsp_required;
+        cpl_has_result_q <= exec_pipe_rsp_required_q;
 
-        if (exec_rsp_required) begin
+        if (exec_pipe_rsp_required_q) begin
           rsp_valid_q <= 1'b1;
-          rsp_context_q <= exec_context_i;
-          rsp_tag_q <= exec_tag_i;
+          rsp_context_q <= exec_pipe_context_q;
+          rsp_tag_q <= exec_pipe_tag_q;
           rsp_illegal_q <= exec_request_illegal;
-          rsp_has_narrow_q <= exec_export_narrow_i &&
+          rsp_has_narrow_q <= exec_pipe_ctrl_q.export_narrow &&
                               !exec_request_illegal;
-          rsp_narrow_q <= (exec_export_narrow_i && !exec_request_illegal)
+          rsp_narrow_q <= (exec_pipe_ctrl_q.export_narrow &&
+                           !exec_request_illegal)
                               ? datapath_narrow : '0;
-          rsp_narrow_mask_q <= (exec_export_narrow_i &&
+          rsp_narrow_mask_q <= (exec_pipe_ctrl_q.export_narrow &&
                                 !exec_request_illegal)
                                    ? exec_narrow_mask : '0;
-          rsp_has_reduce_q <= exec_reduce_enable_i &&
+          rsp_has_reduce_q <= exec_pipe_ctrl_q.reduce_enable &&
                               datapath_reduce_valid &&
                               !exec_request_illegal;
-          rsp_reduce_value_q <= (exec_reduce_enable_i &&
+          rsp_reduce_value_q <= (exec_pipe_ctrl_q.reduce_enable &&
                                  datapath_reduce_valid &&
                                  !exec_request_illegal)
                                     ? datapath_reduce_value : '0;
-          rsp_reduce_index_q <= (exec_reduce_enable_i &&
+          rsp_reduce_index_q <= (exec_pipe_ctrl_q.reduce_enable &&
                                  datapath_reduce_valid &&
                                  !exec_request_illegal)
                                     ? datapath_reduce_index : '0;
@@ -470,7 +650,6 @@ module simd_group_wrapper #(
                              ? datapath_compact_count : '0;
         end
       end else if (state_write_fire) begin
-        request_rr_q <= 2'd2;
         cpl_valid_q <= 1'b1;
         cpl_context_q <= state_write_context_i;
         cpl_tag_q <= state_write_tag_i;
@@ -478,7 +657,6 @@ module simd_group_wrapper #(
         cpl_illegal_q <= state_write_illegal;
         cpl_has_result_q <= 1'b0;
       end else if (state_read_fire) begin
-        request_rr_q <= 2'd0;
         state_read_cpl_valid_q <= 1'b1;
         state_read_cpl_context_q <= state_read_context_i;
         state_read_cpl_tag_q <= state_read_tag_i;

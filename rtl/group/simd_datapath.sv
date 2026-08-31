@@ -62,10 +62,26 @@ module simd_datapath #(
   input  logic [LANES-1:0]                cfg_mrf_mask_i,
   input  logic [LANES-1:0]                cfg_mrf_data_i,
 
-  // Raw VRF source-A observation for the enclosing state-transfer endpoint.
-  // The wrapper multiplexes src_a_addr_i only when it grants a state read, so
-  // this does not add another physical RF read port or alter EXEC semantics.
+  // Optional operand-stage inputs.  The bare datapath keeps the historical
+  // combinational-RF behavior when operand_override_i is low.  A transaction
+  // wrapper can instead capture the four logical RF read results, assert the
+  // override, and thereby place a real register boundary between RF lookup and
+  // route/execute/reduction without adding physical read ports.
+  input  logic                            operand_override_i,
+  input  logic [(LANES*ELEM_W)-1:0]       operand_src_a_i,
+  input  logic [(LANES*ELEM_W)-1:0]       operand_src_b_i,
+  input  logic [(LANES*ACC_W)-1:0]        operand_acc_i,
+  input  logic [LANES-1:0]                operand_exec_mask_i,
+  input  logic [LANES-1:0]                operand_select_mask_i,
+
+  // Raw RF observations for the enclosing operand/state-transfer stage.  The
+  // wrapper multiplexes src_a_addr_i only when it grants a state read.  These
+  // taps expose existing asynchronous read ports; they do not create new ones.
   output logic [(LANES*ELEM_W)-1:0]       vrf_src_a_data_o,
+  output logic [(LANES*ELEM_W)-1:0]       vrf_src_b_data_o,
+  output logic [(LANES*ACC_W)-1:0]        arf_src_data_o,
+  output logic [LANES-1:0]                mrf_exec_data_o,
+  output logic [LANES-1:0]                mrf_select_data_o,
 
   output logic [(LANES*ELEM_W)-1:0]       narrow_result_o,
   output logic [(LANES*ACC_W)-1:0]        wide_result_o,
@@ -89,6 +105,8 @@ module simd_datapath #(
   logic [(2*LANES)-1:0] mrf_read_data;
   logic [(LANES*ELEM_W)-1:0] src_a;
   logic [(LANES*ELEM_W)-1:0] src_b;
+  logic [(LANES*ELEM_W)-1:0] raw_src_a;
+  logic [(LANES*ELEM_W)-1:0] raw_src_b;
   logic [(LANES*ELEM_W)-1:0] routed_src_a;
   logic [(LANES*ELEM_W)-1:0] exec_src_a;
   logic [(LANES*ELEM_W)-1:0] exec_src_b;
@@ -146,12 +164,20 @@ module simd_datapath #(
   logic [LANES-1:0] mrf_write_mask;
   logic [LANES-1:0] mrf_write_data;
 
-  assign src_a = vrf_read_data[0 +: (LANES*ELEM_W)];
-  assign src_b = vrf_read_data[(LANES*ELEM_W) +: (LANES*ELEM_W)];
-  assign vrf_src_a_data_o = src_a;
-  assign acc_src = arf_read_data;
-  assign stored_exec_mask = mrf_read_data[0 +: LANES];
-  assign select_mask = mrf_read_data[LANES +: LANES];
+  assign raw_src_a = vrf_read_data[0 +: (LANES*ELEM_W)];
+  assign raw_src_b = vrf_read_data[(LANES*ELEM_W) +: (LANES*ELEM_W)];
+  assign src_a = operand_override_i ? operand_src_a_i : raw_src_a;
+  assign src_b = operand_override_i ? operand_src_b_i : raw_src_b;
+  assign acc_src = operand_override_i ? operand_acc_i : arf_read_data;
+  assign stored_exec_mask = operand_override_i ? operand_exec_mask_i :
+                                                   mrf_read_data[0 +: LANES];
+  assign select_mask = operand_override_i ? operand_select_mask_i :
+                                             mrf_read_data[LANES +: LANES];
+  assign vrf_src_a_data_o = raw_src_a;
+  assign vrf_src_b_data_o = raw_src_b;
+  assign arf_src_data_o = arf_read_data;
+  assign mrf_exec_data_o = mrf_read_data[0 +: LANES];
+  assign mrf_select_data_o = mrf_read_data[LANES +: LANES];
   assign raw_exec_mask = mask_enable_i ? stored_exec_mask : {LANES{1'b1}};
   assign exec_src_a = route_enable_i ? routed_src_a : src_a;
   assign compact_op = op_i == SIMD_OP_COMPRESS;

@@ -50,13 +50,12 @@ digraph vsp_simd_microarchitecture {
       color="#bd8b13"
     ];
     state_transfer [
-      label="cfg_* state-transfer ports\npriority over execute writeback\n(future DMA / LSU attachment)",
+      label="cfg_* state-transfer ports\nserialized against resident EXEC\n(future DMA / LSU attachment)",
       fillcolor="#f4f0ff",
       color="#7357a5"
     ];
 
     sequencer -> issue_bundle [style=dashed, color="#8a6d1d"];
-    issue_bundle -> uop_legal [style=dashed, color="#8a6d1d"];
   }
 
   subgraph cluster_state {
@@ -79,10 +78,15 @@ digraph vsp_simd_microarchitecture {
   }
 
   subgraph cluster_operand {
-    label="Operand preparation";
+    label="RF-read pipeline boundary and operand preparation";
     color="#77a882";
     style=rounded;
 
+    operand_stage [
+      label="1-entry elastic operand stage\ncaptured decoded control + VRF A/B + ARF + MRF\nsame-edge masked VRF/ARF/MRF RAW forwarding",
+      fillcolor="#e7f6ea",
+      color="#4f8b5d"
+    ];
     route_a [
       label="Optional source-A route\ngather / broadcast / permutation\nslide up/down",
       fillcolor="#edf9ef"
@@ -154,27 +158,31 @@ digraph vsp_simd_microarchitecture {
     ];
   }
 
-  issue_bundle -> route_a [style=dashed, color="#7a7a7a", label="route control"];
-  issue_bundle -> b_mux [style=dashed, color="#7a7a7a", label="use_imm"];
-  issue_bundle -> lanes [style=dashed, color="#7a7a7a", label="op"];
-  issue_bundle -> compact [style=dashed, color="#7a7a7a", label="op"];
-  issue_bundle -> mask_alu [style=dashed, color="#7a7a7a", label="op"];
-  issue_bundle -> exec_mask [style=dashed, color="#7a7a7a"];
-  issue_bundle -> reduce [style=dashed, color="#7a7a7a"];
+  issue_bundle -> operand_stage [style=dashed, color="#7a7a7a", label="admit + capture"];
+  operand_stage -> uop_legal [style=dashed, color="#8a6d1d", label="captured contract"];
+  operand_stage -> route_a [style=dashed, color="#7a7a7a", label="route control"];
+  operand_stage -> b_mux [style=dashed, color="#7a7a7a", label="use_imm"];
+  operand_stage -> lanes [style=dashed, color="#7a7a7a", label="op / mode"];
+  operand_stage -> compact [style=dashed, color="#7a7a7a", label="op"];
+  operand_stage -> mask_alu [style=dashed, color="#7a7a7a", label="op"];
+  operand_stage -> exec_mask [style=dashed, color="#7a7a7a"];
+  operand_stage -> reduce [style=dashed, color="#7a7a7a"];
 
-  vrf -> route_a [label="source A"];
-  vrf -> b_mux [label="source B\nper-lane values"];
-  issue_bundle -> imm_broadcast [style=dashed, color="#7a7a7a", label="scalar imm"];
+  vrf -> operand_stage [label="async source A/B reads"];
+  arf -> operand_stage [label="async acc / wide read"];
+  mrf -> operand_stage [label="async mask A/B reads"];
+  operand_stage -> route_a [label="captured source A"];
+  operand_stage -> b_mux [label="captured source B"];
+  operand_stage -> imm_broadcast [label="captured scalar imm"];
   imm_broadcast -> b_mux [label="same value / lane"];
   imm_broadcast -> lanes [label="WADD/WSUB align"];
-  adjacent -> route_a [label="slide boundary"];
+  adjacent -> operand_stage [label="captured slide boundary"];
   route_a -> lanes [label="A"];
   route_a -> compact [label="A"];
   b_mux -> lanes [label="B"];
-  arf -> lanes [label="acc / wide source"];
-  mrf -> exec_mask [label="exec mask"];
-  mrf -> lanes [label="select bits"];
-  mrf -> mask_alu [label="A / B mask data"];
+  operand_stage -> lanes [label="captured ARF / select bits"];
+  operand_stage -> exec_mask [label="captured exec mask"];
+  operand_stage -> mask_alu [label="captured MRF A / B"];
   exec_mask -> lanes [label="lane enable"];
   exec_mask -> compact [label="selection mask"];
 
@@ -190,6 +198,15 @@ digraph vsp_simd_microarchitecture {
   narrow_result -> vrf_commit;
   wide_result -> arf_commit;
   predicate -> mrf_commit;
+  narrow_result -> operand_stage [
+    style=dashed, color="#2f6f9f", label="VRF RAW bypass", constraint=false
+  ];
+  wide_result -> operand_stage [
+    style=dashed, color="#2f6f9f", label="ARF RAW bypass", constraint=false
+  ];
+  predicate -> operand_stage [
+    style=dashed, color="#2f6f9f", label="MRF RAW bypass", constraint=false
+  ];
   reduce -> scalar_out;
   uop_legal -> side_effect_gate [style=dashed, color="#8a6d1d", label="contract legal"];
   reduce -> side_effect_gate [style=dashed, color="#8a6d1d", label="reduce legal"];
@@ -200,7 +217,7 @@ digraph vsp_simd_microarchitecture {
 
   legend [
     shape=note,
-    label="Legend\nblue solid: data path\ngray dashed: issued control\npurple boxes: cfg state transfer / commit\nAll execute/route/reduce logic is combinational\nRF masked writes commit on the clock edge",
+    label="Legend\nblue solid: data path\ngray dashed: captured control\nblue dashed: same-edge RAW forwarding\npurple boxes: cfg state transfer / commit\nRF reads are captured before combinational execute/route/reduce\nRF masked writes and return records commit on the following edge",
     fillcolor="#ffffff",
     color="#9aa7b3"
   ];

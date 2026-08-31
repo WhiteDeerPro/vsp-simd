@@ -108,7 +108,10 @@ SLIDE_DOWN(1)   = [p[x+1], p[x+2], p[x+3], p[x+4]]
 
 后八条 MAC 还要求同周期读取旧的 `a0`。若 ARF 映射成不支持同周期读写的单端口 SRAM，就不能维持每周期一条 MAC；可以选择 1R1W、读写分级、累加器旁路或降低发射率。
 
-`a0` 形成连续的 read-after-write 依赖链。当前组合读、时钟沿写模型允许下一周期看到刚提交的值；插入 MAC 流水线后必须传递目的地址和 mask，并定义 forwarding 或由 sequencer 插入依赖间隔。
+`a0` 形成连续的 read-after-write 依赖链。当前 group wrapper 的 RF-read operand stage
+已携带控制、目的地址和 mask，并对 ARF 实现同拍 masked forwarding，因此连续 MAC
+不需要 sequencer 插入依赖空拍。若以后把乘法/加法继续拆成多周期级，仍需把这项
+旁路扩展到新增级或引入 scoreboard。
 
 使用立即数后，Gaussian 的 pixel/coefficient VRF bank conflict 不再存在；每条
 乘法类微操作在语义上只读取一条 pixel row。其他真正使用两个 VRF 源的操作仍

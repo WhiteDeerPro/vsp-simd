@@ -5,11 +5,14 @@
 当前 RTL 定义了寄存器文件的可观察行为；bank、SRAM 类型、端口复制和流水仍是
 物理实现变量。
 
-寄存器文件本身不必然是一级流水。若采用触发器阵列、组合读、时钟沿写，它是执行路径前的组合存储和周期状态边界；若采用同步读 SRAM，读地址与读数据之间会自然引入一个周期，此时才形成明确的流水级。
+寄存器文件本身不必然是一级流水。当前数组仍采用组合读、时钟沿写；明确的执行
+流水边界由 `simd_group_wrapper` 在读数据之后提供。若未来改用同步读 SRAM，可以把
+宏的读出寄存边界与现有 operand stage 合并，而不是无条件再增加一拍。
 
-当前执行单元保持无内部流水。VRF、ARF 和 MRF 的组合读、时钟沿 masked-write
-行为模型已经接入 `simd_datapath`；尚待选择的是 bank、SRAM 类型、端口复制和
-流水等物理实现。
+VRF、ARF 和 MRF 的组合读、时钟沿 masked-write 行为模型已经接入
+`simd_datapath`。group wrapper 捕获其读数据与 decoded control，下一周期执行并
+提交；连续 EXEC 由 VRF/ARF/MRF masked RAW forwarding 保持每拍 admission。尚待
+选择的是 bank、SRAM 类型、端口复制和 execute/reduction 的进一步流水。
 
 ## 当前逻辑组织 `[RTL事实]`
 
@@ -71,6 +74,8 @@ MRF 的两个读口在普通操作中分别提供 execution mask 和 `SELECT` �
 - 4 个 mask 寄存器；
 - 组合读、时钟沿 masked write；
 - 每个 SIMD4 单发射、顺序提交；
+- wrapper 内一项 RF-read operand stage，可在提交旧 EXEC 时捕获下一条；
+- VRF、ARF、MRF 各有一层 masked writeback-to-operand forwarding；
 - 每个文件同周期最多提交一个 row；VRF、ARF、MRF 的独立写口可以并行提交。
 
 当前行为模型等价于小型触发器阵列。寄存器容量或 SIMD4 group 数增长后，再比较

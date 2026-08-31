@@ -139,11 +139,20 @@ Tasks:
 The scale limit is 64 bytes per vector action.  Larger reshaping belongs to
 software tiling/memory, not a 256-byte register network.
 
-## M6 — Physicalization
+## M6 — Physicalization (started)
 
-Only after workload traces stabilize:
+Implemented structural baseline:
 
-- pipeline long arithmetic/control paths;
+- one-entry elastic RF-read operand stage in each SIMD4 group wrapper;
+- same-cycle masked RAW forwarding for VRF, ARF and MRF;
+- completion/result backpressure stalls the resident stage without replaying
+  architectural writes;
+- state-transfer traffic remains serialized against a resident EXEC stage.
+
+Remaining work should be guided by workload traces and synthesis:
+
+- measure the operand/execute split and pipeline long execute/reduction or
+  control paths only where timing requires it;
 - choose RF port/bank organization and resolve bank conflicts;
 - select SRAM/cache/DMA widths;
 - add clock/power gating;

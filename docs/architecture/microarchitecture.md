@@ -1,7 +1,7 @@
 # 当前 SIMD 微架构图
 
-本页描述单个 SIMD4 的行为数据通路，不规定指令位宽、编码、物理 SRAM bank、
-流水级数或未来 VSP 的控制层级。上级控制、PC 与 memory 的实际接线另见
+本页描述单个 SIMD4 的当前行为数据通路，不规定指令位宽、编码、物理 SRAM bank、
+当前 operand stage 之后的进一步流水级数或未来 VSP 的控制层级。上级控制、PC 与 memory 的实际接线另见
 [当前控制与内存集成状态](current-integration.md)。
 
 ## 总体数据通路
@@ -23,7 +23,7 @@ issue slot、global single-active；多 record 并发 admission、ordered action
 queue-head late-decode 集成仍是吞吐实验，不属于当前执行 profile。
 已经实现的 `simd_group_wrapper` 也位于本叶数据
 通路图外，负责 decoded EXEC、state-write 与 VRF state-read ready/valid、状态访问
-仲裁和独立返回缓存，见
+仲裁、RF-read operand stage、同拍 RAW forwarding 和独立返回缓存，见
 [指令交付](../design/instruction-delivery.md)与
 [开发路线](../design/development-roadmap.md)。
 `simd_group_completion_tracker` 与 `simd_cluster_result_collector` 也位于图外；
@@ -145,12 +145,19 @@ ARF，也能以 value=0 清零；但它需要 immediate-A、第二立即数字�
 
 ## 当前周期模型与明确缺口
 
-当前路径为组合读取和组合执行、时钟沿 masked 写回：
+裸 `simd_datapath` 保留组合读取/执行接口；产品 `simd_group_wrapper` 的当前路径为：
 
 ```text
-RF read -> optional route / operand mux -> lane execute -> optional reduce
-                                                    -> posedge RF writeback
+admit edge: async RF read -> operand/control register
+next cycle: operand register -> optional route / operand mux
+             -> lane execute -> optional reduce -> commit edge RF writeback
+                                          \------> completion/result register
 ```
+
+输出有 credit 时，提交旧 stage 和捕获新 stage 可以同拍发生。VRF/ARF/MRF 的
+writeback-to-operand forwarding 处理这一拍的 RAW；输出背压则冻结 stage，且提交只
+发生一次。该结构切断了 RF-read→ALU 的整段组合路径，但 execute/reduction 级内部仍
+是组合逻辑，尚无目标工艺 timing/PPA 结论。
 
 尚未实现的主要结构包括：
 
