@@ -147,27 +147,42 @@ software tiling/memory, not a 256-byte register network.
 Implemented structural baseline:
 
 - one-entry elastic RF-read operand stage in each SIMD4 group wrapper;
-- same-cycle masked RAW forwarding for VRF, ARF and MRF;
-- completion/result backpressure stalls the resident stage without replaying
-  architectural writes;
-- state-transfer traffic remains serialized against a resident EXEC stage;
+- one-entry elastic execute-result stage after route/main execution;
+- reduction, architectural RF writeback and completion/result generation moved
+  behind the registered execute result;
+- same-cycle masked RAW forwarding from both the older registered result and
+  the newer operation leaving the operand stage, with newer data taking
+  priority;
+- completion/result backpressure stalls execute-result retirement and then the
+  operand stage without replaying architectural writes;
+- state-transfer traffic remains serialized until both execute stages are
+  empty;
 - registered semantic-decode output in the program wrapper; engines consume a
   stable canonical descriptor rather than a live instruction record.
 
-Remaining work should be guided by workload traces and synthesis:
+The execution cut is structure-driven.  Without it, a legal command could
+compose local route, MAC or another primary operation, result selection and a
+reduction tree in one combinational cycle.  The current uniform
+`O -> X -> RED/WB` path isolates reduction without introducing operation-specific
+latency.  This is not a frequency claim; target-library timing, placement and
+FPGA DSP/carry mapping can rank the remaining X paths differently.
 
-- measure the operand/execute split and pipeline long execute/reduction or
-  control paths only where timing requires it;
+Remaining work should be guided by workload traces and target implementation
+evidence:
+
+- compare the remaining X candidates—`route+MAC`, dynamic WORD shift,
+  WADD/WSUB and NCLIP—and split only a demonstrated path at a natural
+  intermediate value;
 - choose RF port/bank organization and resolve bank conflicts;
 - select SRAM/cache/DMA widths;
 - add clock/power gating;
 - run synthesis/PPA and update frequency assumptions;
 - define software-visible driver/ABI boundaries if desired.
 
-The current synthesis smoke uses SystemVerilog-to-Verilog lowering because the
-installed Yosys 0.9 front end cannot parse this repository's packages and
-packed types.  Generic-cell checks are useful for structural errors, but no
-frequency claim is made without a target Liberty library and STA.
+Structural lint or generic synthesis remains useful for finding malformed RTL,
+but it is not the acceptance criterion for a MHz target.  Any frequency claim
+requires a selected implementation technology, timing constraints and static
+timing analysis.
 
 ## Explicitly deferred
 

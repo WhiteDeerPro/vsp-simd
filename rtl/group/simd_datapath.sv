@@ -5,6 +5,10 @@ module simd_datapath #(
   parameter int VREGS    = 16,
   parameter int AREGS    = 8,
   parameter int MREGS    = 4,
+  // The bare datapath keeps its historical same-cycle EXEC writeback. A
+  // wrapper with a registered execute-result stage can disable it and return
+  // captured values through the cfg write ports at ordered retirement.
+  parameter logic DIRECT_EXEC_WRITEBACK = 1'b1,
   parameter int VRF_ADDR_W = (VREGS <= 2) ? 1 : $clog2(VREGS),
   parameter int ARF_ADDR_W = (AREGS <= 2) ? 1 : $clog2(AREGS),
   parameter int MRF_ADDR_W = (MREGS <= 2) ? 1 : $clog2(MREGS),
@@ -47,8 +51,10 @@ module simd_datapath #(
   input  logic [(LANES*ELEM_W)-1:0]       route_lower_i,
   input  logic [(LANES*ELEM_W)-1:0]       route_upper_i,
 
-  // External initialization/state transfer ports. They have priority over an
-  // issued write to the same register file in the same cycle.
+  // Shared RF write ports.  A bare datapath uses them for initialization and
+  // state transfer; a transaction wrapper with direct EXEC writeback disabled
+  // also uses them for ordered architectural retirement.  They have priority
+  // over a direct issued write when both modes are enabled accidentally.
   input  logic                            cfg_vrf_write_i,
   input  logic [VRF_ADDR_W-1:0]           cfg_vrf_addr_i,
   input  logic [LANES-1:0]                cfg_vrf_mask_i,
@@ -413,7 +419,8 @@ module simd_datapath #(
   );
 
   always_comb begin
-    vrf_write_enable = issue_i && write_vrf_i && !uop_illegal;
+    vrf_write_enable = issue_i && DIRECT_EXEC_WRITEBACK && write_vrf_i &&
+                       !uop_illegal;
     vrf_write_addr = dst_vrf_addr_i;
     // Rearrangement writes the complete row so inactive destinations become
     // defined zeros. compact_result_mask separately records which lanes carry
@@ -427,7 +434,8 @@ module simd_datapath #(
       vrf_write_data = cfg_vrf_data_i;
     end
 
-    arf_write_enable = issue_i && write_arf_i && !uop_illegal;
+    arf_write_enable = issue_i && DIRECT_EXEC_WRITEBACK && write_arf_i &&
+                       !uop_illegal;
     arf_write_addr = dst_arf_addr_i;
     arf_write_mask = exec_mask_o;
     arf_write_data = wide_result_o;
@@ -438,7 +446,8 @@ module simd_datapath #(
       arf_write_data = cfg_arf_data_i;
     end
 
-    mrf_write_enable = issue_i && write_mrf_i && !uop_illegal;
+    mrf_write_enable = issue_i && DIRECT_EXEC_WRITEBACK && write_mrf_i &&
+                       !uop_illegal;
     mrf_write_addr = dst_mrf_addr_i;
     mrf_write_mask = group_op ? {LANES{1'b1}} : exec_mask_o;
     mrf_write_data = predicate_result_o;

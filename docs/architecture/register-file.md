@@ -10,9 +10,11 @@
 宏的读出寄存边界与现有 operand stage 合并，而不是无条件再增加一拍。
 
 VRF、ARF 和 MRF 的组合读、时钟沿 masked-write 行为模型已经接入
-`simd_datapath`。group wrapper 捕获其读数据与 decoded control，下一周期执行并
-提交；连续 EXEC 由 VRF/ARF/MRF masked RAW forwarding 保持每拍 admission。尚待
-选择的是 bank、SRAM 类型、端口复制和 execute/reduction 的进一步流水。
+`simd_datapath`。group wrapper 捕获其读数据与 decoded control 到 O，下一周期把
+route/主运算结果捕获到 X，再由 RED/WB 做 reduction 和有序写回。连续 EXEC 由覆盖
+较老 X 注册结果与较新 O→X 组合结果的 VRF/ARF/MRF masked RAW forwarding 保持
+每拍 admission。尚待选择的是 bank、SRAM 类型、端口复制，以及目标实现是否需要在
+X 内部进一步切分。
 
 ## 当前逻辑组织 `[RTL事实]`
 
@@ -74,8 +76,9 @@ MRF 的两个读口在普通操作中分别提供 execution mask 和 `SELECT` �
 - 4 个 mask 寄存器；
 - 组合读、时钟沿 masked write；
 - 每个 SIMD4 单发射、顺序提交；
-- wrapper 内一项 RF-read operand stage，可在提交旧 EXEC 时捕获下一条；
-- VRF、ARF、MRF 各有一层 masked writeback-to-operand forwarding；
+- wrapper 内一项 RF-read operand stage 和一项 execute-result stage；
+- VRF、ARF、MRF 的 operand capture 可旁路两个有序 producer，较新的 O→X 结果覆盖
+  较老的 X 注册结果；
 - 每个文件同周期最多提交一个 row；VRF、ARF、MRF 的独立写口可以并行提交。
 
 当前行为模型等价于小型触发器阵列。寄存器容量或 SIMD4 group 数增长后，再比较

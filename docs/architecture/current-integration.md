@@ -79,6 +79,12 @@ dispatch/replace 同拍发生。execution wrapper 当前有一个 issue slot；�
 command 交给执行前端的瞬时端口，不保存 PC、不拥有程序，也不是 hardware thread。
 execution context 同样只是所有权、队列和 completion 身份，当前没有 context-local PC。
 
+每个被选 SIMD4 在 command 进入后使用统一的 `O -> X -> RED/WB` 顺序流水：O 捕获
+RF operands/control，X 捕获 route/主运算结果，RED/WB 从注册结果做可选 reduction 并
+提交 RF 与 completion。O、X 都是一项 elastic holding，不是两个 issue slot 或两个
+线程；无背压时二者可以每拍替换。masked forwarding 覆盖两项在途 producer，输出
+背压则从 X 向 O 传播。
+
 ## 3. 两种 MEMORY 地址模式 `[RTL事实]`
 
 semantic MEMORY record 在 admission 后形成以下 parent descriptor：

@@ -173,11 +173,13 @@ void capture_exec(Vsimd_group_wrapper& dut) {
 }
 
 void accept_exec(Vsimd_group_wrapper& dut) {
-  // First edge captures RF operands/control into the elastic execute stage.
+  // First edge captures RF operands/control into the elastic operand stage.
   capture_exec(dut);
-  // Second edge executes and commits the resident stage.  Tests that exercise
-  // one-command-per-cycle replacement use the cycle-accurate driver below
-  // instead of this convenience helper.
+  // Second edge executes into the elastic result stage. The third edge runs
+  // reduction/writeback and publishes completion/result records. Tests that
+  // exercise one-command-per-cycle replacement use the cycle-accurate driver
+  // below instead of this convenience helper.
+  tick(dut);
   tick(dut);
 }
 
@@ -319,13 +321,15 @@ void randomized_backpressure(Vsimd_group_wrapper& dut) {
   unsigned completion_replacements = 0;
   unsigned response_replacements = 0;
   unsigned result_interleaves = 0;
-  bool pending_exec_valid = false;
-  PendingExec pending_exec{};
+  bool operand_exec_valid = false;
+  PendingExec operand_exec{};
+  bool result_exec_valid = false;
+  PendingExec result_exec{};
 
   clear_exec(dut);
   clear_state_write(dut);
 
-  while (next < kTransactions || pending_exec_valid ||
+  while (next < kTransactions || operand_exec_valid || result_exec_valid ||
          !completions.empty() || !responses.empty() || dut.cpl_valid_o ||
          dut.rsp_valid_o) {
     if (++cycles > 10000) fail("randomized timeout", 0, cycles);
@@ -380,9 +384,12 @@ void randomized_backpressure(Vsimd_group_wrapper& dut) {
 
     const bool pop_cpl = dut.cpl_valid_o && dut.cpl_ready_i;
     const bool pop_rsp = dut.rsp_valid_o && dut.rsp_ready_i;
-    const bool exec_stage_can_commit =
-        pending_exec_valid && (!dut.cpl_valid_o || dut.cpl_ready_i) &&
+    const bool result_stage_can_retire =
+        result_exec_valid && (!dut.cpl_valid_o || dut.cpl_ready_i) &&
         (!dut.rsp_valid_o || dut.rsp_ready_i);
+    const bool operand_stage_can_advance =
+        operand_exec_valid &&
+        (!result_exec_valid || result_stage_can_retire);
     const bool fire_state_write =
         dut.state_write_valid_i && dut.state_write_ready_o;
     const bool fire_exec = dut.exec_valid_i && dut.exec_ready_o;
@@ -391,18 +398,17 @@ void randomized_backpressure(Vsimd_group_wrapper& dut) {
     if (pop_cpl) completions.pop_front();
     if (pop_rsp) responses.pop_front();
 
-    if (pop_cpl && (fire_state_write || exec_stage_can_commit)) {
+    if (pop_cpl && (fire_state_write || result_stage_can_retire)) {
       ++completion_replacements;
     }
-    if (pop_rsp && exec_stage_can_commit) ++response_replacements;
+    if (pop_rsp && result_stage_can_retire) ++response_replacements;
     if (!responses.empty() && fire_state_write) ++result_interleaves;
 
-    if (exec_stage_can_commit) {
-      completions.push_back({pending_exec.context, pending_exec.tag, kReqExec,
+    if (result_stage_can_retire) {
+      completions.push_back({result_exec.context, result_exec.tag, kReqExec,
                              true});
       responses.push_back(
-          {pending_exec.context, pending_exec.tag, pending_exec.data});
-      pending_exec_valid = false;
+          {result_exec.context, result_exec.tag, result_exec.data});
     }
 
     if (fire_state_write) {
@@ -410,9 +416,21 @@ void randomized_backpressure(Vsimd_group_wrapper& dut) {
       model_row = state_write_value;
       ++next;
     } else if (fire_exec) {
-      pending_exec = {context, tag, model_row};
-      pending_exec_valid = true;
       ++next;
+    }
+
+    // Model the two internal EXEC holding stages at the same accepting edge as
+    // the DUT. A retiring result may be replaced by the advancing operand,
+    // while that operand may in turn be replaced by a newly accepted command.
+    if (result_stage_can_retire) result_exec_valid = false;
+    if (operand_stage_can_advance) {
+      result_exec = operand_exec;
+      result_exec_valid = true;
+      operand_exec_valid = false;
+    }
+    if (fire_exec) {
+      operand_exec = {context, tag, model_row};
+      operand_exec_valid = true;
     }
 
     tick(dut);
@@ -609,6 +627,8 @@ int main(int argc, char** argv) {
   tick(dut);
   clear_exec(dut);
   clear_state_read(dut);
+  // The first post-capture edge advances O -> X; the second retires X.
+  tick(dut);
   tick(dut);
   expect_completion(dut, 0, 0x28, kReqExec, false, false);
   pop_completion(dut);
@@ -853,10 +873,10 @@ int main(int argc, char** argv) {
   expect_narrow_response(dut, 0, 0x46, 0x00cc8844u, 0xf);
   pop_both(dut);
 
-  // The operand stage accepts one EXEC every cycle when the return buffers
-  // have credit. Same-edge forwarding must make a retiring VRF write visible
-  // to the replacement command even though the asynchronous RF array itself
-  // still presents the pre-edge value.
+  // The O and X stages accept one EXEC every cycle when the return buffers
+  // have credit. Same-edge forwarding must make an O-stage result visible to
+  // its immediate replacement even though the asynchronous RF array itself
+  // still presents the old value.
   clear_exec(dut);
   dut.exec_valid_i = 1;
   dut.exec_tag_i = 0x47;
@@ -872,6 +892,9 @@ int main(int argc, char** argv) {
 
   drive_pass_export(dut, 0, 0x48, 11);
   capture_exec(dut);
+  expect_eq("X stage has not retired on O replacement", 0,
+            dut.cpl_valid_o);
+  tick(dut);
   expect_completion(dut, 0, 0x47, kReqExec, false, false);
   dut.cpl_ready_i = 1;
   tick(dut);
@@ -880,8 +903,161 @@ int main(int argc, char** argv) {
   expect_narrow_response(dut, 0, 0x48, 0x051f030bu, 0xf);
   pop_both(dut);
 
-  // ARF uses the same replacement-cycle rule. WIDEN commits while NSLICE
-  // captures the just-produced wide row through the ARF bypass.
+  // Three consecutive commands put an older producer in X and a newer
+  // producer in O while the consumer captures the same VRF row. Forwarding
+  // must overlay X first and O second so the youngest value wins:
+  //   A: V12 = V0 + 1
+  //   B: V12 = V12 + 2
+  //   C: export V12
+  clear_exec(dut);
+  dut.exec_valid_i = 1;
+  dut.exec_tag_i = 0x54;
+  dut.exec_op_i = kAdd;
+  dut.exec_src_a_addr_i = 0;
+  dut.exec_use_imm_i = 1;
+  dut.exec_imm_i = 1;
+  dut.exec_dst_vrf_addr_i = 12;
+  dut.exec_write_vrf_i = 1;
+  capture_exec(dut);
+  expect_eq("three-RAW A capture has no completion", 0,
+            dut.cpl_valid_o);
+
+  clear_exec(dut);
+  dut.exec_valid_i = 1;
+  dut.exec_tag_i = 0x55;
+  dut.exec_op_i = kAdd;
+  dut.exec_src_a_addr_i = 12;
+  dut.exec_use_imm_i = 1;
+  dut.exec_imm_i = 2;
+  dut.exec_dst_vrf_addr_i = 12;
+  dut.exec_write_vrf_i = 1;
+  capture_exec(dut);
+  expect_eq("three-RAW B capture has no completion", 0,
+            dut.cpl_valid_o);
+
+  drive_pass_export(dut, 0, 0x56, 12);
+  capture_exec(dut);
+  expect_completion(dut, 0, 0x54, kReqExec, false, false);
+
+  dut.cpl_ready_i = 1;
+  tick(dut);
+  expect_completion(dut, 0, 0x55, kReqExec, false, false);
+  tick(dut);
+  dut.cpl_ready_i = 0;
+  expect_completion(dut, 0, 0x56, kReqExec, false, true);
+  expect_narrow_response(dut, 0, 0x56, 0x0721050du, 0xf);
+  pop_both(dut);
+
+  // Partial masks exercise the same X-then-O forwarding priority lane by
+  // lane. V14 starts as {44,33,22,11}; A writes lanes 0/1, B writes lanes 1/2,
+  // and lane 3 stays raw. The consumer must therefore observe:
+  //   lane 0 = X/A, lane 1 = O/B over X/A, lane 2 = O/B, lane 3 = raw RF.
+  drive_state_write32(dut, 0, 0x57, kVrf, 14, 0xf, 0x44332211u);
+  accept_state_write(dut);
+  pop_completion(dut);
+  drive_state_write32(dut, 0, 0x58, kMrf, 0, 0xf, 0x3);
+  accept_state_write(dut);
+  pop_completion(dut);
+  drive_state_write32(dut, 0, 0x59, kMrf, 1, 0xf, 0x6);
+  accept_state_write(dut);
+  pop_completion(dut);
+
+  clear_exec(dut);
+  dut.exec_valid_i = 1;
+  dut.exec_tag_i = 0x5a;
+  dut.exec_op_i = kAdd;
+  dut.exec_src_a_addr_i = 0;
+  dut.exec_use_imm_i = 1;
+  dut.exec_imm_i = 1;
+  dut.exec_dst_vrf_addr_i = 14;
+  dut.exec_mask_enable_i = 1;
+  dut.exec_mask_addr_i = 0;
+  dut.exec_write_vrf_i = 1;
+  capture_exec(dut);
+
+  clear_exec(dut);
+  dut.exec_valid_i = 1;
+  dut.exec_tag_i = 0x5b;
+  dut.exec_op_i = kAdd;
+  dut.exec_src_a_addr_i = 1;
+  dut.exec_use_imm_i = 1;
+  dut.exec_imm_i = 2;
+  dut.exec_dst_vrf_addr_i = 14;
+  dut.exec_mask_enable_i = 1;
+  dut.exec_mask_addr_i = 1;
+  dut.exec_write_vrf_i = 1;
+  capture_exec(dut);
+
+  drive_pass_export(dut, 0, 0x5c, 14);
+  capture_exec(dut);
+  expect_completion(dut, 0, 0x5a, kReqExec, false, false);
+  dut.cpl_ready_i = 1;
+  tick(dut);
+  expect_completion(dut, 0, 0x5b, kReqExec, false, false);
+  tick(dut);
+  dut.cpl_ready_i = 0;
+  expect_completion(dut, 0, 0x5c, kReqExec, false, true);
+  expect_narrow_response(dut, 0, 0x5c, 0x4420160bu, 0xf);
+  pop_both(dut);
+
+  // Fill both internal EXEC stages behind a held completion/result pair. P
+  // retires into the externally blocked buffers while A advances to X and B
+  // occupies O. A third EXEC cannot overwrite O, and state traffic cannot pass
+  // either older stage.
+  drive_pass_export(dut, 0, 0x63, 0);
+  capture_exec(dut);
+
+  clear_exec(dut);
+  dut.exec_valid_i = 1;
+  dut.exec_tag_i = 0x64;
+  dut.exec_op_i = kPassA;
+  dut.exec_src_a_addr_i = 0;
+  capture_exec(dut);
+
+  clear_exec(dut);
+  dut.exec_valid_i = 1;
+  dut.exec_tag_i = 0x65;
+  dut.exec_op_i = kPassA;
+  dut.exec_src_a_addr_i = 1;
+  capture_exec(dut);
+  expect_completion(dut, 0, 0x63, kReqExec, false, true);
+  expect_narrow_response(dut, 0, 0x63, 0x041e020au, 0xf);
+
+  clear_exec(dut);
+  dut.exec_valid_i = 1;
+  dut.exec_tag_i = 0x66;
+  dut.exec_op_i = kPassA;
+  drive_state_write32(dut, 0, 0x67, kVrf, 15, 0xf, 0xdeadbeefu);
+  drive_state_read(dut, 0, 0x68, 0, 0xf);
+  for (unsigned stall = 0; stall < 3; ++stall) {
+    dut.eval();
+    expect_eq("full O/X blocks third EXEC", 0, dut.exec_ready_o);
+    expect_eq("full O/X blocks state write", 0,
+              dut.state_write_ready_o);
+    expect_eq("full O/X blocks state read", 0,
+              dut.state_read_ready_o);
+    expect_completion(dut, 0, 0x63, kReqExec, false, true);
+    expect_narrow_response(dut, 0, 0x63, 0x041e020au, 0xf);
+    tick(dut);
+  }
+
+  clear_exec(dut);
+  clear_state_write(dut);
+  clear_state_read(dut);
+  dut.cpl_ready_i = 1;
+  dut.rsp_ready_i = 1;
+  tick(dut);
+  expect_completion(dut, 0, 0x64, kReqExec, false, false);
+  expect_eq("held result drains before non-result A", 0,
+            dut.rsp_valid_o);
+  tick(dut);
+  dut.cpl_ready_i = 0;
+  dut.rsp_ready_i = 0;
+  expect_completion(dut, 0, 0x65, kReqExec, false, false);
+  pop_completion(dut);
+
+  // ARF uses the same replacement-cycle rule. WIDEN advances O -> X while
+  // NSLICE captures the just-produced wide row through the O-stage bypass.
   clear_exec(dut);
   dut.exec_valid_i = 1;
   dut.exec_tag_i = 0x49;
@@ -902,6 +1078,7 @@ int main(int argc, char** argv) {
   dut.exec_use_imm_i = 1;
   dut.exec_imm_i = 0;
   capture_exec(dut);
+  tick(dut);
   expect_completion(dut, 0, 0x49, kReqExec, false, false);
   dut.cpl_ready_i = 1;
   tick(dut);
@@ -929,6 +1106,7 @@ int main(int argc, char** argv) {
   dut.exec_mask_enable_i = 1;
   dut.exec_mask_addr_i = 2;
   capture_exec(dut);
+  tick(dut);
   expect_completion(dut, 0, 0x4c, kReqExec, false, false);
   dut.cpl_ready_i = 1;
   tick(dut);
@@ -965,15 +1143,19 @@ int main(int argc, char** argv) {
   expect_eq("loser eventually proceeds", 1, loser_accepted);
   clear_exec(dut);
   clear_state_write(dut);
-  if (!exec_first) tick(dut);
+  if (!exec_first) {
+    // The losing EXEC was only captured into O by the arbitration loop.
+    tick(dut);
+    tick(dut);
+  }
   dut.cpl_ready_i = 0;
   expect_completion(dut, exec_first ? 1 : 0, exec_first ? 0x51 : 0x50,
                     exec_first ? kReqStateWrite : kReqExec, false, false);
   pop_completion(dut);
 
   // Reset the protocol arbiter and present all three request classes. Accepted
-  // producers withdraw their item. The EXEC operand stage owns the shared RF
-  // ports for one additional cycle, after which RR grants write then read.
+  // producers withdraw their item. State transfer remains behind both O and X,
+  // after which RR grants write then read.
   dut.rst_ni = 0;
   tick(dut);
   dut.rst_ni = 1;
@@ -998,6 +1180,13 @@ int main(int argc, char** argv) {
 
   dut.eval();
   expect_eq("three-way execute-stage RF ownership", 0,
+            unsigned(dut.exec_ready_o) +
+                unsigned(dut.state_write_ready_o) +
+                unsigned(dut.state_read_ready_o));
+  tick(dut);
+
+  dut.eval();
+  expect_eq("three-way result-stage RF ownership", 0,
             unsigned(dut.exec_ready_o) +
                 unsigned(dut.state_write_ready_o) +
                 unsigned(dut.state_read_ready_o));

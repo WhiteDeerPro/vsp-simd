@@ -137,10 +137,9 @@ module simd_group_wrapper #(
   // The wrapper owns a one-entry elastic operand stage.  Source addresses are
   // presented to the asynchronous RF ports while an EXEC request is being
   // admitted; the returned operands and all execute-side control are captured
-  // here.  The following cycle performs route/execute/reduction and commits the
-  // RF write plus completion/result records.  This is the first real internal
-  // SIMD4 pipeline cut: it separates RF lookup from arithmetic rather than
-  // merely delaying an already-decoded command.
+  // here.  Route and the primary operation run from this stage into the
+  // registered execute-result boundary below.  Reduction, architectural RF
+  // writeback and return generation are deliberately placed after that cut.
   typedef struct packed {
     logic                              export_narrow;
     logic [SIMD_OP_W-1:0]             op;
@@ -177,9 +176,44 @@ module simd_group_wrapper #(
   logic [LANES-1:0] exec_pipe_mask_q;
   logic [LANES-1:0] exec_pipe_select_mask_q;
 
-  logic exec_pipe_can_commit;
+  // Main execution terminates at this elastic result boundary.  Reduction,
+  // architectural RF writeback and completion generation consume only these
+  // registered fields in the following stage.  Every operation therefore has
+  // the same visible latency; heavy operations are not special-cased into a
+  // variable-latency protocol.
+  typedef struct packed {
+    logic [CONTEXT_W-1:0]              context_id;
+    logic [TAG_W-1:0]                  tag_id;
+    logic                              illegal;
+    logic                              rsp_required;
+    logic                              export_narrow;
+    logic                              write_vrf;
+    logic [VRF_ADDR_W-1:0]             dst_vrf_addr;
+    logic [LANES-1:0]                  vrf_write_mask;
+    logic                              write_arf;
+    logic [ARF_ADDR_W-1:0]             dst_arf_addr;
+    logic [LANES-1:0]                  arf_write_mask;
+    logic                              write_mrf;
+    logic [MRF_ADDR_W-1:0]             dst_mrf_addr;
+    logic [LANES-1:0]                  mrf_write_mask;
+    logic [(LANES*ELEM_W)-1:0]         narrow;
+    logic [(LANES*ACC_W)-1:0]          wide;
+    logic [LANES-1:0]                  predicate;
+    logic [LANES-1:0]                  narrow_mask;
+    logic                              reduce_enable;
+    logic [REDUCE_OP_W-1:0]            reduce_op;
+    logic                              compact_valid;
+    logic [OFFSET_W-1:0]               compact_count;
+  } exec_result_t;
+
+  logic exec_result_valid_q;
+  exec_result_t exec_result_q;
+  logic exec_result_can_retire;
+  logic exec_result_ready;
+  logic exec_result_retire;
+  logic exec_pipe_can_advance;
   logic exec_pipe_ready;
-  logic exec_commit;
+  logic exec_pipe_advance;
   logic [(LANES*ELEM_W)-1:0] capture_src_a;
   logic [(LANES*ELEM_W)-1:0] capture_src_b;
   logic [(LANES*ACC_W)-1:0] capture_acc;
@@ -241,8 +275,17 @@ module simd_group_wrapper #(
   logic exec_issue;
 
   logic cfg_vrf_write;
+  logic [VRF_ADDR_W-1:0] cfg_vrf_addr;
+  logic [LANES-1:0] cfg_vrf_mask;
+  logic [(LANES*ELEM_W)-1:0] cfg_vrf_data;
   logic cfg_arf_write;
+  logic [ARF_ADDR_W-1:0] cfg_arf_addr;
+  logic [LANES-1:0] cfg_arf_mask;
+  logic [(LANES*ACC_W)-1:0] cfg_arf_data;
   logic cfg_mrf_write;
+  logic [MRF_ADDR_W-1:0] cfg_mrf_addr;
+  logic [LANES-1:0] cfg_mrf_mask;
+  logic [LANES-1:0] cfg_mrf_data;
   logic datapath_illegal;
   logic [(LANES*ELEM_W)-1:0] datapath_narrow;
   // Wide results feed the ARF forwarding path even though F1 exports only
@@ -254,11 +297,21 @@ module simd_group_wrapper #(
   logic [(LANES*ACC_W)-1:0] datapath_wide;
   logic [LANES-1:0] datapath_predicate;
   logic [LANES-1:0] datapath_exec_mask;
-  logic [ACC_W-1:0] datapath_reduce_value;
-  logic [INDEX_W-1:0] datapath_reduce_index;
-  logic datapath_reduce_valid;
+  // The inner datapath keeps its standalone reduction interface.  This
+  // wrapper deliberately discards it and recomputes reduction after X.
+  /* verilator lint_off UNUSED */
+  logic [ACC_W-1:0] datapath_reduce_value_unused;
+  logic [INDEX_W-1:0] datapath_reduce_index_unused;
+  logic datapath_reduce_valid_unused;
+  /* verilator lint_on UNUSED */
   logic [OFFSET_W-1:0] datapath_compact_count;
   logic datapath_compact_valid;
+  logic [ACC_W-1:0] result_reduce_value;
+  logic [INDEX_W-1:0] result_reduce_index;
+  logic result_reduce_valid;
+  /* verilator lint_off UNUSED */
+  logic result_reduce_illegal_unused;
+  /* verilator lint_on UNUSED */
   logic compact_op;
   logic mask_logic_op;
   logic group_op;
@@ -296,16 +349,25 @@ module simd_group_wrapper #(
   assign exec_endpoint_illegal =
       (int'(exec_context_i) >= CONTEXT_COUNT) ||
       (exec_export_narrow_i && !simd_op_can_write_vrf(exec_op_i));
-  assign exec_pipe_can_commit = rst_ni && exec_pipe_valid_q && cpl_can_push &&
-                                (!exec_pipe_rsp_required_q || rsp_can_push);
-  assign exec_pipe_ready = !exec_pipe_valid_q || exec_pipe_can_commit;
-  assign exec_commit = exec_pipe_can_commit;
+  assign exec_result_can_retire = rst_ni && exec_result_valid_q &&
+                                  cpl_can_push &&
+                                  (!exec_result_q.rsp_required ||
+                                   rsp_can_push);
+  assign exec_result_ready = !exec_result_valid_q ||
+                             exec_result_can_retire;
+  assign exec_result_retire = exec_result_can_retire;
+  assign exec_pipe_can_advance = rst_ni && exec_pipe_valid_q &&
+                                 exec_result_ready;
+  assign exec_pipe_ready = !exec_pipe_valid_q || exec_pipe_can_advance;
+  assign exec_pipe_advance = exec_pipe_can_advance;
   assign exec_eligible = rst_ni && exec_pipe_ready;
-  // State-transfer traffic shares the physical RF ports.  Do not admit it in
-  // the same cycle that a resident EXEC stage is committing; this keeps the
-  // state endpoint atomic and avoids an implicit read-during-write policy.
-  assign state_write_eligible = rst_ni && !exec_pipe_valid_q && cpl_can_push;
+  // State-transfer traffic shares the physical RF ports and must not pass an
+  // older operand or result entry.  Keeping both stages empty also avoids an
+  // implicit read-during-write policy at result retirement.
+  assign state_write_eligible = rst_ni && !exec_pipe_valid_q &&
+                                !exec_result_valid_q && cpl_can_push;
   assign state_read_eligible = rst_ni && !exec_pipe_valid_q &&
+                               !exec_result_valid_q &&
                                state_read_cpl_can_push &&
                                state_read_rsp_can_push;
 
@@ -350,7 +412,8 @@ module simd_group_wrapper #(
   end
 
   assign exec_fire = exec_valid_i && exec_ready_o;
-  assign exec_issue = exec_commit && !exec_pipe_endpoint_illegal_q;
+  assign exec_issue = exec_pipe_advance &&
+                      !exec_pipe_endpoint_illegal_q;
   assign state_write_fire = state_write_valid_i && state_write_ready_o;
   assign state_read_fire = state_read_valid_i && state_read_ready_o;
 
@@ -385,12 +448,45 @@ module simd_group_wrapper #(
                                           ? '0 : state_read_addr_i)
                                    : exec_src_a_addr_i;
 
-  assign cfg_vrf_write = state_write_fire && !state_write_illegal &&
-                          (state_write_file_i == SIMD_RF_VRF);
-  assign cfg_arf_write = state_write_fire && !state_write_illegal &&
-                          (state_write_file_i == SIMD_RF_ARF);
-  assign cfg_mrf_write = state_write_fire && !state_write_illegal &&
-                          (state_write_file_i == SIMD_RF_MRF);
+  // State traffic and execute retirement share the physical RF write ports.
+  // State requests are admitted only while both execute stages are empty, so
+  // the priority below is defensive rather than an arbitration policy.
+  always_comb begin
+    cfg_vrf_write = state_write_fire && !state_write_illegal &&
+                    (state_write_file_i == SIMD_RF_VRF);
+    cfg_vrf_addr = state_write_addr_i[VRF_ADDR_W-1:0];
+    cfg_vrf_mask = state_write_mask_i;
+    cfg_vrf_data = state_write_data_i[0 +: (LANES*ELEM_W)];
+
+    cfg_arf_write = state_write_fire && !state_write_illegal &&
+                    (state_write_file_i == SIMD_RF_ARF);
+    cfg_arf_addr = state_write_addr_i[ARF_ADDR_W-1:0];
+    cfg_arf_mask = state_write_mask_i;
+    cfg_arf_data = state_write_data_i;
+
+    cfg_mrf_write = state_write_fire && !state_write_illegal &&
+                    (state_write_file_i == SIMD_RF_MRF);
+    cfg_mrf_addr = state_write_addr_i[MRF_ADDR_W-1:0];
+    cfg_mrf_mask = state_write_mask_i;
+    cfg_mrf_data = state_write_data_i[0 +: LANES];
+
+    if (exec_result_retire && !exec_result_q.illegal) begin
+      cfg_vrf_write = exec_result_q.write_vrf;
+      cfg_vrf_addr = exec_result_q.dst_vrf_addr;
+      cfg_vrf_mask = exec_result_q.vrf_write_mask;
+      cfg_vrf_data = exec_result_q.narrow;
+
+      cfg_arf_write = exec_result_q.write_arf;
+      cfg_arf_addr = exec_result_q.dst_arf_addr;
+      cfg_arf_mask = exec_result_q.arf_write_mask;
+      cfg_arf_data = exec_result_q.wide;
+
+      cfg_mrf_write = exec_result_q.write_mrf;
+      cfg_mrf_addr = exec_result_q.dst_mrf_addr;
+      cfg_mrf_mask = exec_result_q.mrf_write_mask;
+      cfg_mrf_data = exec_result_q.predicate;
+    end
+  end
 
   always_comb begin
     if (mask_logic_op) exec_narrow_mask = {LANES{1'b1}};
@@ -398,12 +494,14 @@ module simd_group_wrapper #(
     else exec_narrow_mask = datapath_exec_mask;
   end
 
-  // Same-edge forwarding closes the only RAW hole introduced by the operand
-  // stage.  RF arrays write on the commit edge, while a replacement command
-  // captures its asynchronous reads on that same edge.  Merge only lanes that
-  // the retiring command actually writes; untouched lanes keep the raw RF
-  // value.  State transfers cannot overlap a resident EXEC stage and therefore
-  // need no corresponding bypass case.
+  // Operand capture sees two in-flight producers.  The registered result is
+  // older; the operation currently leaving the operand stage is newer and
+  // therefore overrides it.  Merge by lane so masked writes preserve the raw
+  // RF value.  This ordering covers full-rate A->B->C dependency chains even
+  // when X retires, O advances and C is admitted on the same edge.  Forwarding
+  // from a non-retired X entry is valid because this ordered engine currently
+  // has no flush/replay/cancel path; any future kill mechanism must qualify
+  // the bypass with the same epoch/kill decision.
   always_comb begin
     capture_src_a = datapath_vrf_src_a;
     capture_src_b = datapath_vrf_src_b;
@@ -411,7 +509,42 @@ module simd_group_wrapper #(
     capture_exec_mask = datapath_mrf_exec;
     capture_select_mask = datapath_mrf_select;
 
-    if (exec_commit && !exec_request_illegal) begin
+    if (exec_result_valid_q && !exec_result_q.illegal) begin
+      if (exec_result_q.write_vrf) begin
+        for (int lane = 0; lane < LANES; lane++) begin
+          if (exec_result_q.vrf_write_mask[lane]) begin
+            if (exec_src_a_addr_i == exec_result_q.dst_vrf_addr)
+              capture_src_a[(lane*ELEM_W) +: ELEM_W] =
+                  exec_result_q.narrow[(lane*ELEM_W) +: ELEM_W];
+            if (exec_src_b_addr_i == exec_result_q.dst_vrf_addr)
+              capture_src_b[(lane*ELEM_W) +: ELEM_W] =
+                  exec_result_q.narrow[(lane*ELEM_W) +: ELEM_W];
+          end
+        end
+      end
+
+      if (exec_result_q.write_arf &&
+          (exec_src_arf_addr_i == exec_result_q.dst_arf_addr)) begin
+        for (int lane = 0; lane < LANES; lane++) begin
+          if (exec_result_q.arf_write_mask[lane])
+            capture_acc[(lane*ACC_W) +: ACC_W] =
+                exec_result_q.wide[(lane*ACC_W) +: ACC_W];
+        end
+      end
+
+      if (exec_result_q.write_mrf) begin
+        for (int lane = 0; lane < LANES; lane++) begin
+          if (exec_result_q.mrf_write_mask[lane]) begin
+            if (exec_mask_addr_i == exec_result_q.dst_mrf_addr)
+              capture_exec_mask[lane] = exec_result_q.predicate[lane];
+            if (exec_select_mask_addr_i == exec_result_q.dst_mrf_addr)
+              capture_select_mask[lane] = exec_result_q.predicate[lane];
+          end
+        end
+      end
+    end
+
+    if (exec_pipe_advance && !exec_request_illegal) begin
       if (exec_pipe_ctrl_q.write_vrf) begin
         for (int lane = 0; lane < LANES; lane++) begin
           if (exec_write_mask[lane]) begin
@@ -454,6 +587,7 @@ module simd_group_wrapper #(
     .VREGS(VREGS),
     .AREGS(AREGS),
     .MREGS(MREGS),
+    .DIRECT_EXEC_WRITEBACK(1'b0),
     .VRF_ADDR_W(VRF_ADDR_W),
     .ARF_ADDR_W(ARF_ADDR_W),
     .MRF_ADDR_W(MRF_ADDR_W),
@@ -488,17 +622,17 @@ module simd_group_wrapper #(
     .route_lower_i(exec_pipe_ctrl_q.route_lower),
     .route_upper_i(exec_pipe_ctrl_q.route_upper),
     .cfg_vrf_write_i(cfg_vrf_write),
-    .cfg_vrf_addr_i(state_write_addr_i[VRF_ADDR_W-1:0]),
-    .cfg_vrf_mask_i(state_write_mask_i),
-    .cfg_vrf_data_i(state_write_data_i[0 +: (LANES*ELEM_W)]),
+    .cfg_vrf_addr_i(cfg_vrf_addr),
+    .cfg_vrf_mask_i(cfg_vrf_mask),
+    .cfg_vrf_data_i(cfg_vrf_data),
     .cfg_arf_write_i(cfg_arf_write),
-    .cfg_arf_addr_i(state_write_addr_i[ARF_ADDR_W-1:0]),
-    .cfg_arf_mask_i(state_write_mask_i),
-    .cfg_arf_data_i(state_write_data_i),
+    .cfg_arf_addr_i(cfg_arf_addr),
+    .cfg_arf_mask_i(cfg_arf_mask),
+    .cfg_arf_data_i(cfg_arf_data),
     .cfg_mrf_write_i(cfg_mrf_write),
-    .cfg_mrf_addr_i(state_write_addr_i[MRF_ADDR_W-1:0]),
-    .cfg_mrf_mask_i(state_write_mask_i),
-    .cfg_mrf_data_i(state_write_data_i[0 +: LANES]),
+    .cfg_mrf_addr_i(cfg_mrf_addr),
+    .cfg_mrf_mask_i(cfg_mrf_mask),
+    .cfg_mrf_data_i(cfg_mrf_data),
     .operand_override_i(1'b1),
     .operand_src_a_i(exec_pipe_src_a_q),
     .operand_src_b_i(exec_pipe_src_b_q),
@@ -514,13 +648,31 @@ module simd_group_wrapper #(
     .wide_result_o(datapath_wide),
     .predicate_result_o(datapath_predicate),
     .exec_mask_o(datapath_exec_mask),
-    .reduce_value_o(datapath_reduce_value),
-    .reduce_index_o(datapath_reduce_index),
-    .reduce_valid_o(datapath_reduce_valid),
+    .reduce_value_o(datapath_reduce_value_unused),
+    .reduce_index_o(datapath_reduce_index_unused),
+    .reduce_valid_o(datapath_reduce_valid_unused),
     .compact_count_o(datapath_compact_count),
     .compact_valid_o(datapath_compact_valid),
     .route_boundary_mask_o(datapath_boundary_mask_unused),
     .illegal_o(datapath_illegal)
+  );
+
+  // Reduction starts from the registered primary result.  This keeps the
+  // route/ALU/multiply/clip cone and the reduction tree on opposite sides of a
+  // clock boundary while preserving a uniform ordered completion interface.
+  simd_reduce #(
+    .LANES(LANES),
+    .DATA_W(ELEM_W),
+    .ACC_W(ACC_W),
+    .INDEX_W(INDEX_W)
+  ) u_result_reduce (
+    .op_i(exec_result_q.reduce_op),
+    .mask_i(exec_result_q.narrow_mask),
+    .data_i(exec_result_q.narrow),
+    .value_o(result_reduce_value),
+    .index_o(result_reduce_index),
+    .valid_o(result_reduce_valid),
+    .illegal_o(result_reduce_illegal_unused)
   );
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
@@ -537,6 +689,8 @@ module simd_group_wrapper #(
       exec_pipe_acc_q <= '0;
       exec_pipe_mask_q <= '0;
       exec_pipe_select_mask_q <= '0;
+      exec_result_valid_q <= 1'b0;
+      exec_result_q <= '0;
       cpl_valid_q <= 1'b0;
       cpl_context_q <= '0;
       cpl_tag_q <= '0;
@@ -571,7 +725,7 @@ module simd_group_wrapper #(
       if (state_read_cpl_ready_i) state_read_cpl_valid_q <= 1'b0;
       if (state_read_rsp_ready_i) state_read_rsp_valid_q <= 1'b0;
 
-      if (exec_commit) exec_pipe_valid_q <= 1'b0;
+      if (exec_pipe_advance) exec_pipe_valid_q <= 1'b0;
       if (exec_fire) begin
         exec_pipe_valid_q <= 1'b1;
         exec_pipe_ctrl_q.export_narrow <= exec_export_narrow_i;
@@ -612,42 +766,70 @@ module simd_group_wrapper #(
         request_rr_q <= 2'd0;
       end
 
-      if (exec_commit) begin
-        cpl_valid_q <= 1'b1;
-        cpl_context_q <= exec_pipe_context_q;
-        cpl_tag_q <= exec_pipe_tag_q;
-        cpl_kind_q <= SIMD_GROUP_REQ_EXEC;
-        cpl_illegal_q <= exec_request_illegal;
-        cpl_has_result_q <= exec_pipe_rsp_required_q;
+      if (exec_result_retire) exec_result_valid_q <= 1'b0;
+      if (exec_pipe_advance) begin
+        exec_result_valid_q <= 1'b1;
+        exec_result_q.context_id <= exec_pipe_context_q;
+        exec_result_q.tag_id <= exec_pipe_tag_q;
+        exec_result_q.illegal <= exec_request_illegal;
+        exec_result_q.rsp_required <= exec_pipe_rsp_required_q;
+        exec_result_q.export_narrow <= exec_pipe_ctrl_q.export_narrow;
+        exec_result_q.write_vrf <= exec_pipe_ctrl_q.write_vrf;
+        exec_result_q.dst_vrf_addr <= exec_pipe_ctrl_q.dst_vrf_addr;
+        exec_result_q.vrf_write_mask <= exec_write_mask;
+        exec_result_q.write_arf <= exec_pipe_ctrl_q.write_arf;
+        exec_result_q.dst_arf_addr <= exec_pipe_ctrl_q.dst_arf_addr;
+        exec_result_q.arf_write_mask <= datapath_exec_mask;
+        exec_result_q.write_mrf <= exec_pipe_ctrl_q.write_mrf;
+        exec_result_q.dst_mrf_addr <= exec_pipe_ctrl_q.dst_mrf_addr;
+        exec_result_q.mrf_write_mask <= exec_write_mask;
+        exec_result_q.narrow <= datapath_narrow;
+        exec_result_q.wide <= datapath_wide;
+        exec_result_q.predicate <= datapath_predicate;
+        exec_result_q.narrow_mask <= exec_narrow_mask;
+        exec_result_q.reduce_enable <= exec_pipe_ctrl_q.reduce_enable;
+        exec_result_q.reduce_op <= exec_pipe_ctrl_q.reduce_op;
+        exec_result_q.compact_valid <= datapath_compact_valid;
+        exec_result_q.compact_count <= datapath_compact_count;
+      end
 
-        if (exec_pipe_rsp_required_q) begin
+      if (exec_result_retire) begin
+        cpl_valid_q <= 1'b1;
+        cpl_context_q <= exec_result_q.context_id;
+        cpl_tag_q <= exec_result_q.tag_id;
+        cpl_kind_q <= SIMD_GROUP_REQ_EXEC;
+        cpl_illegal_q <= exec_result_q.illegal;
+        cpl_has_result_q <= exec_result_q.rsp_required;
+
+        if (exec_result_q.rsp_required) begin
           rsp_valid_q <= 1'b1;
-          rsp_context_q <= exec_pipe_context_q;
-          rsp_tag_q <= exec_pipe_tag_q;
-          rsp_illegal_q <= exec_request_illegal;
-          rsp_has_narrow_q <= exec_pipe_ctrl_q.export_narrow &&
-                              !exec_request_illegal;
-          rsp_narrow_q <= (exec_pipe_ctrl_q.export_narrow &&
-                           !exec_request_illegal)
-                              ? datapath_narrow : '0;
-          rsp_narrow_mask_q <= (exec_pipe_ctrl_q.export_narrow &&
-                                !exec_request_illegal)
-                                   ? exec_narrow_mask : '0;
-          rsp_has_reduce_q <= exec_pipe_ctrl_q.reduce_enable &&
-                              datapath_reduce_valid &&
-                              !exec_request_illegal;
-          rsp_reduce_value_q <= (exec_pipe_ctrl_q.reduce_enable &&
-                                 datapath_reduce_valid &&
-                                 !exec_request_illegal)
-                                    ? datapath_reduce_value : '0;
-          rsp_reduce_index_q <= (exec_pipe_ctrl_q.reduce_enable &&
-                                 datapath_reduce_valid &&
-                                 !exec_request_illegal)
-                                    ? datapath_reduce_index : '0;
-          rsp_has_count_q <= datapath_compact_valid &&
-                             !exec_request_illegal;
-          rsp_count_q <= (datapath_compact_valid && !exec_request_illegal)
-                             ? datapath_compact_count : '0;
+          rsp_context_q <= exec_result_q.context_id;
+          rsp_tag_q <= exec_result_q.tag_id;
+          rsp_illegal_q <= exec_result_q.illegal;
+          rsp_has_narrow_q <= exec_result_q.export_narrow &&
+                              !exec_result_q.illegal;
+          rsp_narrow_q <= (exec_result_q.export_narrow &&
+                           !exec_result_q.illegal)
+                              ? exec_result_q.narrow : '0;
+          rsp_narrow_mask_q <= (exec_result_q.export_narrow &&
+                                !exec_result_q.illegal)
+                                   ? exec_result_q.narrow_mask : '0;
+          rsp_has_reduce_q <= exec_result_q.reduce_enable &&
+                              result_reduce_valid &&
+                              !exec_result_q.illegal;
+          rsp_reduce_value_q <= (exec_result_q.reduce_enable &&
+                                 result_reduce_valid &&
+                                 !exec_result_q.illegal)
+                                    ? result_reduce_value : '0;
+          rsp_reduce_index_q <= (exec_result_q.reduce_enable &&
+                                 result_reduce_valid &&
+                                 !exec_result_q.illegal)
+                                    ? result_reduce_index : '0;
+          rsp_has_count_q <= exec_result_q.compact_valid &&
+                             !exec_result_q.illegal;
+          rsp_count_q <= (exec_result_q.compact_valid &&
+                          !exec_result_q.illegal)
+                             ? exec_result_q.compact_count : '0;
         end
       end else if (state_write_fire) begin
         cpl_valid_q <= 1'b1;

@@ -50,7 +50,7 @@ digraph vsp_simd_microarchitecture {
       color="#bd8b13"
     ];
     state_transfer [
-      label="cfg_* state-transfer ports\nserialized against resident EXEC\n(future DMA / LSU attachment)",
+      label="cfg_* state-transfer ports\nadmitted only while O and X are empty\n(future DMA / LSU attachment)",
       fillcolor="#f4f0ff",
       color="#7357a5"
     ];
@@ -78,12 +78,12 @@ digraph vsp_simd_microarchitecture {
   }
 
   subgraph cluster_operand {
-    label="RF-read pipeline boundary and operand preparation";
+    label="O: RF-read pipeline boundary and operand preparation";
     color="#77a882";
     style=rounded;
 
     operand_stage [
-      label="1-entry elastic operand stage\ncaptured decoded control + VRF A/B + ARF + MRF\nsame-edge masked VRF/ARF/MRF RAW forwarding",
+      label="1-entry elastic O stage\ncaptured decoded control + VRF A/B + ARF + MRF\nnewer O->X bypass overrides older X-result bypass",
       fillcolor="#e7f6ea",
       color="#4f8b5d"
     ];
@@ -111,7 +111,7 @@ digraph vsp_simd_microarchitecture {
   }
 
   subgraph cluster_execute {
-    label="Combinational SIMD execution";
+    label="O -> X: combinational primary SIMD execution";
     color="#c18c57";
     style=rounded;
 
@@ -133,17 +133,29 @@ digraph vsp_simd_microarchitecture {
     narrow_result [label="narrow result mux\nLANES x ELEM_W", fillcolor="#fff8ef"];
     wide_result [label="wide result\nLANES x ACC_W", fillcolor="#fff8ef"];
     predicate [label="predicate result\nLANES bits", fillcolor="#fff8ef"];
-    reduce [
-      label="Mask-aware reduction tree\nsum / min / max + index\n(narrow input only)",
-      fillcolor="#fff2e5"
+  }
+
+  subgraph cluster_result {
+    label="X: registered execute-result boundary";
+    color="#5c8fa8";
+    style=rounded;
+
+    exec_result [
+      label="1-entry elastic X stage\nnarrow + wide + predicate + result mask + illegal\ndestinations + reduce/count + context/tag metadata",
+      fillcolor="#e7f3f8",
+      color="#3f7d99"
     ];
   }
 
   subgraph cluster_commit {
-    label="Clock-edge state commit";
+    label="RED/WB: post-X reduction and ordered retirement";
     color="#a37dad";
     style=rounded;
 
+    reduce [
+      label="Mask-aware reduction tree\nsum / min / max + index\n(registered narrow input only)",
+      fillcolor="#f8effa"
+    ];
     vrf_commit [label="VRF execute/cfg write mux\nmasked commit at posedge", fillcolor="#f8effa"];
     arf_commit [label="ARF execute/cfg write mux\nmasked commit at posedge", fillcolor="#f8effa"];
     mrf_commit [label="MRF execute/cfg write mux\nmasked commit at posedge", fillcolor="#f8effa"];
@@ -166,7 +178,6 @@ digraph vsp_simd_microarchitecture {
   operand_stage -> compact [style=dashed, color="#7a7a7a", label="op"];
   operand_stage -> mask_alu [style=dashed, color="#7a7a7a", label="op"];
   operand_stage -> exec_mask [style=dashed, color="#7a7a7a"];
-  operand_stage -> reduce [style=dashed, color="#7a7a7a"];
 
   vrf -> operand_stage [label="async source A/B reads"];
   arf -> operand_stage [label="async acc / wide read"];
@@ -189,35 +200,45 @@ digraph vsp_simd_microarchitecture {
   lanes -> narrow_result;
   compact -> narrow_result;
   compact -> predicate [label="result mask"];
-  compact -> scalar_out [label="count + valid"];
   mask_alu -> narrow_result [label="all ones / zero"];
   mask_alu -> predicate [label="boolean result"];
   lanes -> wide_result;
   lanes -> predicate;
-  narrow_result -> reduce;
-  narrow_result -> vrf_commit;
-  wide_result -> arf_commit;
-  predicate -> mrf_commit;
+  narrow_result -> exec_result [label="narrow + write mask"];
+  wide_result -> exec_result [label="wide"];
+  predicate -> exec_result [label="predicate"];
+  compact -> exec_result [label="count + valid"];
   narrow_result -> operand_stage [
-    style=dashed, color="#2f6f9f", label="VRF RAW bypass", constraint=false
+    style=dashed, color="#2f6f9f", label="newer O->X VRF bypass", constraint=false
   ];
   wide_result -> operand_stage [
-    style=dashed, color="#2f6f9f", label="ARF RAW bypass", constraint=false
+    style=dashed, color="#2f6f9f", label="newer O->X ARF bypass", constraint=false
   ];
   predicate -> operand_stage [
-    style=dashed, color="#2f6f9f", label="MRF RAW bypass", constraint=false
+    style=dashed, color="#2f6f9f", label="newer O->X MRF bypass", constraint=false
   ];
+  exec_result -> operand_stage [
+    style=dashed, color="#2f6f9f", label="older registered masked bypass", constraint=false
+  ];
+  exec_result -> reduce [label="registered narrow + mask"];
+  exec_result -> vrf_commit [label="registered narrow"];
+  exec_result -> arf_commit [label="registered wide"];
+  exec_result -> mrf_commit [label="registered predicate"];
+  exec_result -> scalar_out [label="registered count + valid"];
   reduce -> scalar_out;
-  uop_legal -> side_effect_gate [style=dashed, color="#8a6d1d", label="contract legal"];
-  reduce -> side_effect_gate [style=dashed, color="#8a6d1d", label="reduce legal"];
+  uop_legal -> exec_result [style=dashed, color="#8a6d1d", label="capture illegal"];
+  exec_result -> side_effect_gate [style=dashed, color="#8a6d1d", label="registered illegal"];
   side_effect_gate -> vrf_commit [style=dashed, color="#8a6d1d", label="write enable"];
   side_effect_gate -> arf_commit [style=dashed, color="#8a6d1d"];
   side_effect_gate -> mrf_commit [style=dashed, color="#8a6d1d"];
   side_effect_gate -> scalar_out [style=dashed, color="#8a6d1d", label="valid"];
+  state_transfer -> vrf_commit [color="#7357a5", label="serialized cfg write"];
+  state_transfer -> arf_commit [color="#7357a5"];
+  state_transfer -> mrf_commit [color="#7357a5"];
 
   legend [
     shape=note,
-    label="Legend\nblue solid: data path\ngray dashed: captured control\nblue dashed: same-edge RAW forwarding\npurple boxes: cfg state transfer / commit\nRF reads are captured before combinational execute/route/reduce\nRF masked writes and return records commit on the following edge",
+    label="Legend\nblue solid: data path\ngray dashed: captured control\nblue dashed: same-edge RAW forwarding\npurple boxes: cfg state transfer / retirement\nO captures RF reads before primary execute\nX captures primary results before reduction\nRED/WB retires registered results in order",
     fillcolor="#ffffff",
     color="#9aa7b3"
   ];

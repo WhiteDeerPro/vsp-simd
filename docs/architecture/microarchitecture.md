@@ -1,7 +1,8 @@
 # 当前 SIMD 微架构图
 
-本页描述单个 SIMD4 的当前行为数据通路，不规定指令位宽、编码、物理 SRAM bank、
-当前 operand stage 之后的进一步流水级数或未来 VSP 的控制层级。上级控制、PC 与 memory 的实际接线另见
+本页描述单个 SIMD4 的当前行为数据通路，不规定指令位宽、编码、物理 SRAM bank
+或未来 VSP 的控制层级。产品 wrapper 已采用统一的 `O -> X -> RED/WB` 流水；若目标
+实现以后需要在 X 内部继续物理切分，那仍属于后续实现选择。上级控制、PC 与 memory 的实际接线另见
 [当前控制与内存集成状态](current-integration.md)。
 
 ## 总体数据通路
@@ -23,7 +24,8 @@ issue slot、global single-active；多 record 并发 admission、ordered action
 queue-head late-decode 集成仍是吞吐实验，不属于当前执行 profile。
 已经实现的 `simd_group_wrapper` 也位于本叶数据
 通路图外，负责 decoded EXEC、state-write 与 VRF state-read ready/valid、状态访问
-仲裁、RF-read operand stage、同拍 RAW forwarding 和独立返回缓存，见
+仲裁、RF-read operand stage、execute-result stage、post-X reduction/retirement、
+覆盖两项在途 producer 的同拍 RAW forwarding 和独立返回缓存，见
 [指令交付](../design/instruction-delivery.md)与
 [开发路线](../design/development-roadmap.md)。
 `simd_group_completion_tracker` 与 `simd_cluster_result_collector` 也位于图外；
@@ -143,21 +145,58 @@ ARF，也能以 value=0 清零；但它需要 immediate-A、第二立即数字�
 目前尚无负载证明 ARF clear 是瓶颈，因此本图把它标为 deferred。若 trace 显示
 清零/常量装载明显占用 issue 带宽，再重新比较专用接口。
 
-## 当前周期模型与明确缺口
+## 当前周期模型
 
 裸 `simd_datapath` 保留组合读取/执行接口；产品 `simd_group_wrapper` 的当前路径为：
 
 ```text
-admit edge: async RF read -> operand/control register
-next cycle: operand register -> optional route / operand mux
-             -> lane execute -> optional reduce -> commit edge RF writeback
-                                          \------> completion/result register
+admit edge: async RF read -> O operand/control register
+X edge:     O -> optional route / operand mux -> lane or group operation
+              -> X execute-result register
+RED/WB edge: X -> optional reduction -> RF retirement + completion/result
 ```
 
-输出有 credit 时，提交旧 stage 和捕获新 stage 可以同拍发生。VRF/ARF/MRF 的
-writeback-to-operand forwarding 处理这一拍的 RAW；输出背压则冻结 stage，且提交只
-发生一次。该结构切断了 RF-read→ALU 的整段组合路径，但 execute/reduction 级内部仍
-是组合逻辑，尚无目标工艺 timing/PPA 结论。
+X 保存 narrow、wide、predicate、结果 mask、illegal、目的寄存器、reduction 控制和
+completion 元数据。RED/WB 只消费这些注册值；裸 datapath 内原有的组合 reduction 输出
+不参与产品 wrapper 的退休路径。所有操作因此具有统一级数，不因 MUL/MAC、NCLIP 或
+reduction 切换成另一套 variable-latency 握手。
+
+输出有 credit 时，X 退休、O 推进和下一条 admission 可以同拍发生。operand capture
+先合并较老的 X 注册结果，再合并本拍 O→X 的较新结果，并按各自 masked write 逐 lane
+旁路 VRF/ARF/MRF。这覆盖连续 `A -> B -> C` RAW 链。输出背压冻结 X，并自然反压 O；
+同一项结果只退休一次。state-read/write 要等 O 与 X 同时为空。
+
+## 执行级的结构深度与切分依据
+
+下表是 RTL 运算链的相对比较，不是门级 STA，也不把某个综合工具的 generic-cell
+结果解释成目标频率。相同 RTL 在 ASIC standard cell、FPGA carry chain/DSP、不同布局
+和约束下可能改变排序；这里关心的是哪些功能在结构上可以串在同一条路径中。
+
+| 候选路径 | 主要组合链 | 相对风险 | 当前边界 |
+|---|---|---|---|
+| `route + MAC` | group-local 4×4 byte route → 8×8 multiply → 32-bit accumulator add → result/mask mux | 高；同时包含选择网络、乘法和宽进位传播 | 完整留在 X；不会再串 reduction |
+| dynamic WORD shift | 可选 route → 五级可分区 barrel；每级还受方向、元素边界和 arithmetic-fill 控制 → result mux | 高 mux 深度；不同于五个无条件直通小 mux 的理想化模型 | 完整留在 X |
+| `WADD/WSUB` | A/B 各自 8→32 扩展并按 shared align 左移（两路并行）→ 3:2 compressor → 32-bit carry-propagate add | 高；barrel 后仍有一次完整宽加法 | 完整留在 X；该族不可接窄 reduction |
+| `NCLIP_U/S` | 32-bit ACC 可变右移与 round-bit 选择 → rounding add → unsigned overflow 或 signed saturation 选择 | 高；barrel、宽加法和末端选择连续 | 完整留在 X；若请求 reduction，树位于下一拍 |
+| reduction | 四个 physical byte lane 的 mask-aware balanced tree；两层 sum 或 compare/select，并产生 index | 中；树深为 `log2(4)`，但过去会追加在上述窄结果链之后 | 单独位于 RED/WB |
+
+因此新增 X 寄存边界的首要收益不是宣称某个 MHz，而是禁止以下合法语义形成一个
+组合周期：
+
+```text
+route / heavy primary operation -> result selection -> reduction -> retirement
+```
+
+现在最深的 X 候选仍大致是 `route+MAC`、dynamic WORD shift、WADD/WSUB 和 NCLIP；
+RED/WB 则只承担注册窄结果后的 reduction、写口选择和返回生成。`COMPRESS/EXPAND`
+内部 cursor 是随 lane 数线性展开的组合选择链，固定 SIMD4 时较短，但不应把该 RTL
+直接参数放大成宽 compact 网络。
+
+如果目标实现后来仍无法满足约束，优先在 X 内的自然中间量比较进一步切分，例如
+MAC product、WADD/WSUB carry-save 结果或 NCLIP shifted value。那需要同步扩展 elastic
+holding、旁路和 backpressure；在没有目标工艺证据前，当前不为简单操作引入不同延迟。
+
+## 明确缺口
 
 尚未实现的主要结构包括：
 

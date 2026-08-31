@@ -39,7 +39,7 @@ The default `make lint` and `make test` cover the current one-PC/one-slot path:
 | Area | Main evidence | Supported claim |
 |---|---|---|
 | lane/datapath arithmetic | `simd_exec_tb`, dynamic ALU, mask, reduction, compact, datapath and workload tests | checked fixed-width operation and RF/writeback semantics |
-| group/EXEC protocol | group wrapper, queue, dispatcher, tracker, result collector and cluster EXEC tests | elastic operand-stage ready/valid, VRF/ARF/MRF RAW forwarding, atomic group-mask issue, child/completion conservation and ordered reject |
+| group/EXEC protocol | group wrapper, queue, dispatcher, tracker, result collector and cluster EXEC tests | elastic O/X ready/valid, two-producer masked VRF/ARF/MRF RAW forwarding, atomic group-mask issue, child/completion conservation and ordered reject |
 | uword framing/decode | predecoder, bundle assembler, multi-framer, EXEC expander and assembler tests | mixed record boundaries, `fmt=0xd` undefined behavior, extension rules and illegal no-side-effect decode |
 | program delivery | program source/frontend and uword cluster program test | byte PC `+4` per word, cross-bundle records, raw/decoded holding stability, redirect flush, strict single action and state/MEMORY/EXEC/END ordering |
 | program dataflow closure | fetched 48-byte vector-memory loop in the uword cluster program test | four-group load/compute/store loop, scalar address update, backward branch, END and final D-memory bytes against an independent oracle |

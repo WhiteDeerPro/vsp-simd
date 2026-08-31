@@ -37,24 +37,34 @@ RF async read → optional source-A route → lane execute → optional reductio
                                          └────────────→ clock-edge masked writeback
 ```
 
-产品侧 `simd_group_wrapper` 已在 RF 读后插入一项一深度 elastic operand stage：
+产品侧 `simd_group_wrapper` 使用统一的 `O -> X -> RED/WB` 顺序流水。`O` 和 `X`
+各有一项一深度 elastic holding：
 
 ```text
-cycle N:   accept decoded EXEC -> async RF read -> capture operands + control
-cycle N+1: captured operands -> route/execute/reduce -> masked RF commit
-                                                    -> completion/result buffers
+cycle N:   accept decoded EXEC -> async RF read -> O: capture operands + control
+cycle N+1: O -> optional route / lane or group operation
+             -> X: capture narrow/wide/predicate/mask/illegal + retirement metadata
+cycle N+2: X -> optional reduction -> masked RF retirement
+                                \-> completion/result buffers
 ```
 
-当 completion/result 有 credit 时，resident EXEC 可提交并在同一时钟沿捕获下一条
-EXEC，所以稳态仍可达到每个 SIMD4 每拍一条。VRF、ARF、MRF 都有同拍
-writeback-to-operand forwarding；新命令读取前一条的目的 row 时，按实际 write mask
-合并旁路数据，未写 lane 保留 RF 原值。返回背压会让 resident stage 停住且不会重复
-提交。state-read/write 与 resident EXEC 不重叠，避免给共享 RF 端口隐含定义另一套
+所有操作都经过同一个 X 边界；MUL/MAC、WADD/WSUB、NCLIP 等重操作没有另设
+variable-latency 协议。当 completion/result 有 credit 时，X 可以退休、O 可以推进且
+下一条 EXEC 可以在同一时钟沿进入 O，故稳态仍可达到每个 SIMD4 每拍一条。
+
+VRF、ARF、MRF 的 operand capture 同时检查两个有序 producer：已驻留 X 的注册结果是
+较老值，正在从 O 推进到 X 的组合结果是较新值，后者优先。两路都按实际 write mask
+与 RF 原值逐 lane 合并，因此完整的 `A -> B -> C` RAW 链无需 scoreboard 也能保持
+每拍 admission。返回背压先冻结 X，再通过 elastic ready 反压 O；任何级都不会重复
+提交。state-read/write 只在 O、X 都为空时占用共享 RF 端口，避免隐含另一套
 read-during-write 行为。
 
-这项切分把 RF lookup 与 route/ALU/reduction 分在两个周期，但尚未把乘法、动态移位
-或 reduction 再细分。实际 Fmax/PPA 尚未经过目标工艺综合。多个 group 的发射工作
-模型见[集群控制](../design/cluster-control.md)。
+这项切分把 RF lookup、主运算和 reduction/retirement 分为三个结构区间。切分依据是
+当前 RTL 可合法串接的组合功能，而不是某个综合工具给出的 MHz 数字：若不设 X
+边界，route、重算子和 reduction 可以落在同一拍。结构级比较见
+[微架构的执行级深度表](microarchitecture.md#执行级的结构深度与切分依据)。实际时序
+仍取决于工艺库、FPGA 映射、布线和约束。多个 group 的发射工作模型见
+[集群控制](../design/cluster-control.md)。
 
 ## 物理 lane 与逻辑元素
 
@@ -179,20 +189,22 @@ EXPAND:   VRF-A=[b,d,x,x], MRF=1010 -> result=[0,b,0,d], predicate=1010
 ## 外部配置端口
 
 `cfg_*` 端口用于初始化、状态传输和测试。裸 `simd_datapath` 中，配置写与执行写
-同周期命中同一文件时由配置写优先。这只是叶模块仲裁行为；transaction wrapper
-现在把 cfg 侧提升成带 `context+tag` 的 state-write 子事务，并增加独立 VRF
-state-read 子事务；二者等待 resident EXEC 退出后再占用共享 RF 端口，禁止已经
-accepted 的执行写被静默覆盖。`vsp_vector_memory_engine` 已经由 shared VRF arbiter 和 cluster integration 接到这些
+同周期命中同一文件时由配置写优先。这只是叶模块仲裁行为；产品 wrapper 关闭裸
+datapath 的直接 EXEC 写回，并复用 cfg 写端口提交 X 中已经注册的执行结果。
+transaction wrapper 同时把外部 cfg 侧提升成带 `context+tag` 的 state-write 子事务，
+并增加独立 VRF state-read 子事务；二者等待 O、X 都为空后再占用共享 RF 端口，禁止
+已经 accepted 的执行写被静默覆盖。`vsp_vector_memory_engine` 已经由 shared VRF arbiter 和 cluster integration 接到这些
 state-read/write endpoint：LOAD 写入 VRF，STORE 直接读取 VRF row。地址推进和
 program-level completion 仍不在 wrapper 内；`dmem_*` 外的物理 local SRAM、
 cache/MMU 或 DMA 也不属于裸 datapath。
 
 ## Reduction
 
-窄执行结果可在同一组合路径上进入 reduction tree。裸 datapath 给出组合
-value/index/valid，不写入内部标量寄存器；当前 group wrapper 在 operand stage 的
-提交沿捕获结果到可背压 result buffer。现已能用一条外部微操作组合出
-`ABSDIFF_U + REDUCE_SUM_U` 的 masked SAD。
+裸 datapath 仍允许窄执行结果在同一组合路径上进入 reduction tree，并给出组合
+value/index/valid，便于叶模块单元测试。产品 group wrapper 不使用这条直连结果：它先
+把主执行的 narrow result 与 mask 捕获到 X，再由独立的 post-X reduction tree 产生
+value/index，最终随有序 completion/result 退休。因此 `ABSDIFF_U + REDUCE_SUM_U`
+仍是一条 canonical EXEC，但物理上跨过 X 边界，不再形成“绝对差再规约”的单拍长链。
 
 ## 尚未包含
 
@@ -201,9 +213,10 @@ value/index/valid，不写入内部标量寄存器；当前 group wrapper 在 op
 - 宽 ARF 输入的 reduction；
 - 裸 datapath 内的 load/store、DMA 与二维地址生成；独立 VRF vector memory engine 已经由
   wrapper/cluster reference path 接到 RF，但不把地址或 memory action 下沉到裸 datapath；
-- 裸 datapath 内部的 ready/valid 和多周期单元；外层 group wrapper 已有一项
-  elastic operand stage、事务握手和 RAW forwarding；
+- 裸 datapath 内部的 ready/valid 和多周期单元；外层 group wrapper 已有 O operand
+  stage、X execute-result stage、post-X reduction/retirement，以及覆盖两项在途
+  producer 的 masked RAW forwarding；
 - compact-uword admission metadata、queue-head canonical expansion 与 decoded group
   holding/path 的集成；bundle framing/class predecode、canonical expander 以及 cluster
   queue、RR live-head 和 opaque locked shadow 已分别有参考 RTL；
-- bank conflict、跨多周期执行级的完整 scoreboard 及物理 SRAM 映射。
+- bank conflict、可变延迟执行单元的完整 scoreboard 及物理 SRAM 映射。

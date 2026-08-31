@@ -182,19 +182,19 @@ data-memory 分开的逻辑口，不因两者可能共享后端 PTW 就并成一
 ## AQ-010：什么时候讨论 pipeline、backpressure 和 bank conflict？
 
 **当前观察 `[RTL事实]`**：裸 datapath 内仍是组合读/执行、时钟沿写回；group wrapper
-已在 RF 读后加入一项 elastic operand stage，并为 VRF/ARF/MRF 提供 masked RAW
-forwarding。dispatcher
+已采用统一的 `O -> X -> RED/WB` 顺序流水，并为 VRF/ARF/MRF 提供覆盖 X 与 O 两项
+有序 producer 的 masked RAW forwarding。dispatcher
 有 group-ready 聚合。外层 `simd_group_wrapper` 已为单 group 增加 EXEC/state-write
 transaction ready/valid、tagged child completion 和可背压 result buffer，但多 group
 `simd_group_completion_tracker` 已独立实现乱序/同拍 child 聚合、无数据
 command completion 和 expected-result 生命期。frontend、per-group ingress、
-wrappers、tracker 与 RR result collector 已组成 `simd_cluster_exec`；operand/execute
-两级结构已实现，execute/reduction 的更深流水与物理 RF bank 仍未实现。
+wrappers、tracker 与 RR result collector 已组成 `simd_cluster_exec`；主执行结果先进入
+X，reduction 与有序写回位于其后。X 内部的进一步切分与物理 RF bank 仍未实现。
 
 **工作顺序 `[里程碑基线]`**：transaction wrapper 和 EXEC cluster 已闭合
-“一次接受、一次完成、返回可背压”的参考行为，并先切开 RF lookup 与执行。接下来
-用综合和 trace 判断 execute/reduction 是否还需细分。RF bank conflict 属物理化
-问题；逻辑 2R/1W 行为模型不保证能直接高效映射成 SRAM。
+“一次接受、一次完成、返回可背压”的参考行为，并切开 RF lookup、主执行与
+reduction/retirement。接下来用目标实现证据和 trace 判断 X 内部是否还需细分。
+RF bank conflict 属物理化问题；逻辑 2R/1W 行为模型不保证能直接高效映射成 SRAM。
 
 **重新评估**：目标工艺、频率、RF 容量或多周期单元出现后，以 timing/PPA 和冲突
 trace 为证据，而不是继续为行为 testbench 增加假想 stall。
