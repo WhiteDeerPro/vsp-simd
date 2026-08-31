@@ -96,19 +96,21 @@ Decode is intentionally split by responsibility:
 2. class semantic decode converts the selected complete record into a
    canonical action.
 
-EXEC uses `vsp_exec_uword_expander`; MEMORY uses
-`vsp_memory_uword_decoder`; CONTROL uses `vsp_control_uword_decoder`.  The
-action adapter combines the decoded payload with launch sideband such as group
-mask, context and tag.  Illegal records produce canonical no-side-effect
-actions and retire through the normal ordered completion path.
+MEMORY uses `vsp_memory_uword_decoder`; CONTROL uses
+`vsp_control_uword_decoder`.  The action adapter combines their decoded payload
+and the collected EXEC base/extension packet with launch sideband such as group
+mask, context and tag.  `vsp_exec_uword_expander` performs final EXEC expansion
+and legality before class routing.  Illegal records produce canonical
+no-side-effect actions and retire through the normal ordered completion path.
 
-Both sides of semantic decode now have explicit one-entry holding registers.
-The decoder therefore reads a stall-stable raw record, while the class router
-and engines read a stall-stable decoded action rather than a live instruction
-word.  The decoded entry is not replaced in the same cycle it is dispatched;
-this deliberately accepts a bubble in exchange for a small, unambiguous
-ready/valid boundary.  It is a timing/ownership boundary, not a second issue
-slot or an out-of-order window.
+The raw record and class-semantic result both have explicit one-entry holding
+registers.  A third, cluster-local canonical-action holding captures final EXEC
+expansion/legality and the common identity/payload for every cluster-bound
+class.  The class router and child engines therefore never consume a live
+instruction word or a live expander result.  Neither decoded holding is
+replaced in its consume cycle; this deliberately accepts bubbles in exchange
+for small, unambiguous ready/valid boundaries.  They are timing/ownership
+boundaries, not additional issue slots or an out-of-order window.
 
 This differs from a general CPU decoder in an important way: the output is not
 a scalar instruction for a self-fetching pipeline.  It is a command descriptor

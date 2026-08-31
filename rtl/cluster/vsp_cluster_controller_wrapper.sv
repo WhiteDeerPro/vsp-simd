@@ -208,6 +208,30 @@ module vsp_cluster_controller_wrapper #(
   logic [DECODE_ERROR_W-1:0] selected_decode_error;
   logic [EXEC_PAYLOAD_W-1:0] action_exec_payload;
   logic [MEMORY_PAYLOAD_W-1:0] action_memory_payload;
+  // One non-flow-through canonical-action holding entry separates encoded
+  // EXEC expansion from class routing and child-engine admission.  All action
+  // classes cross the same boundary so program order and common identity do
+  // not depend on the selected class.  The entry cannot be replaced in its
+  // consume cycle; the strict wrapper therefore never hides a second active
+  // parent behind the decoded-action controller.
+  typedef struct packed {
+    logic [VSP_ACTION_CLASS_W-1:0] action_class;
+    logic                         legal;
+    logic [DECODE_ERROR_W-1:0]    decode_error;
+    logic [VSP_CONTROL_OP_W-1:0]  control_op;
+    logic [CONTEXT_W-1:0]         context_id;
+    logic [TAG_W-1:0]             tag;
+    logic [GROUP_COUNT-1:0]       group_mask;
+    logic [EXEC_PAYLOAD_W-1:0]    exec_payload;
+    logic [MEMORY_PAYLOAD_W-1:0]  memory_payload;
+  } canonical_action_t;
+
+  logic canonical_action_valid_q;
+  canonical_action_t canonical_action_q;
+  logic canonical_action_capture;
+  logic canonical_action_fire;
+  logic action_controller_ready;
+  logic action_controller_busy;
   logic [EXEC_PAYLOAD_W-1:0] controller_exec_payload;
   logic [MEMORY_PAYLOAD_W-1:0] controller_memory_payload;
 
@@ -362,6 +386,40 @@ module vsp_cluster_controller_wrapper #(
       action_memory_index_vrf_row_i,
       action_memory_span_bytes_i};
 
+  // Admission is deliberately non-elastic at this boundary: an empty entry
+  // may capture only while the downstream controller is idle, and consuming a
+  // valid entry does not make the input ready in the same cycle.  This keeps
+  // the existing global-single-active contract while breaking the late EXEC
+  // decode/payload path before class routing.
+  assign action_ready_o = rst_ni && !canonical_action_valid_q &&
+                          !action_controller_busy;
+  assign canonical_action_capture = action_valid_i && action_ready_o;
+  assign canonical_action_fire = canonical_action_valid_q &&
+                                 action_controller_ready;
+  assign controller_busy_o = canonical_action_valid_q ||
+                             action_controller_busy;
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      canonical_action_valid_q <= 1'b0;
+      canonical_action_q <= '0;
+    end else if (canonical_action_fire) begin
+      canonical_action_valid_q <= 1'b0;
+      canonical_action_q <= '0;
+    end else if (canonical_action_capture) begin
+      canonical_action_valid_q <= 1'b1;
+      canonical_action_q.action_class <= action_class_i;
+      canonical_action_q.legal <= selected_action_legal;
+      canonical_action_q.decode_error <= selected_decode_error;
+      canonical_action_q.control_op <= action_control_op_i;
+      canonical_action_q.context_id <= action_context_i;
+      canonical_action_q.tag <= action_tag_i;
+      canonical_action_q.group_mask <= action_group_mask_i;
+      canonical_action_q.exec_payload <= action_exec_payload;
+      canonical_action_q.memory_payload <= action_memory_payload;
+    end
+  end
+
   assign {exec_exact_resource, exec_export_narrow, exec_op, exec_elem_mode,
           exec_src_a, exec_src_b, exec_use_imm, exec_imm, exec_dst_vrf,
           exec_src_arf, exec_dst_arf, exec_mask_enable, exec_mask_addr,
@@ -404,8 +462,11 @@ module vsp_cluster_controller_wrapper #(
           action_cpl_memory_bytes_committed_o,
           action_cpl_memory_partial_o} = action_cpl_memory_payload;
 
-  assign end_quiescent = exec_quiescent_o && !mem_busy_o &&
-                         !vrf_arbiter_busy_o;
+  // A pending canonical parent is part of controller quiescence.  END first
+  // transfers out of the holding entry and then observes downstream drain in
+  // STATE_WAIT_END, avoiding both an early END completion and self-deadlock.
+  assign end_quiescent = !canonical_action_valid_q && exec_quiescent_o &&
+                         !mem_busy_o && !vrf_arbiter_busy_o;
   assign protocol_error_o = controller_protocol_error_o ||
                             exec_protocol_error_o || mem_protocol_error_o;
 
@@ -422,17 +483,17 @@ module vsp_cluster_controller_wrapper #(
   ) u_action_controller (
     .clk_i(clk_i),
     .rst_ni(rst_ni),
-    .action_valid_i(action_valid_i),
-    .action_ready_o(action_ready_o),
-    .action_class_i(action_class_i),
-    .action_legal_i(selected_action_legal),
-    .action_decode_error_i(selected_decode_error),
-    .action_control_op_i(action_control_op_i),
-    .action_context_i(action_context_i),
-    .action_tag_i(action_tag_i),
-    .action_group_mask_i(action_group_mask_i),
-    .action_exec_payload_i(action_exec_payload),
-    .action_memory_payload_i(action_memory_payload),
+    .action_valid_i(canonical_action_valid_q),
+    .action_ready_o(action_controller_ready),
+    .action_class_i(canonical_action_q.action_class),
+    .action_legal_i(canonical_action_q.legal),
+    .action_decode_error_i(canonical_action_q.decode_error),
+    .action_control_op_i(canonical_action_q.control_op),
+    .action_context_i(canonical_action_q.context_id),
+    .action_tag_i(canonical_action_q.tag),
+    .action_group_mask_i(canonical_action_q.group_mask),
+    .action_exec_payload_i(canonical_action_q.exec_payload),
+    .action_memory_payload_i(canonical_action_q.memory_payload),
     .group_owner_valid_i(group_owner_valid_i),
     .group_owner_i(group_owner_i),
     .end_quiescent_i(end_quiescent),
@@ -472,7 +533,7 @@ module vsp_cluster_controller_wrapper #(
     .action_cpl_memory_payload_o(action_cpl_memory_payload),
     .action_cpl_end_o(action_cpl_end_o),
     .program_done_o(program_done_o),
-    .busy_o(controller_busy_o),
+    .busy_o(action_controller_busy),
     .protocol_error_clear_i(protocol_error_clear_i),
     .protocol_error_o(controller_protocol_error_o)
   );

@@ -19,6 +19,7 @@ launch(start_pc,end_pc,context,group_mask,tag_seed)
   -> 4-word fetch bundle / multi-record framing
   -> raw record holding
   -> semantic action adapter / decoded-action holding
+  -> final EXEC expansion / canonical-action holding
   -> strict single-active EXEC / MEMORY / CONTROL controller
   -> one-issue-slot, four-SIMD4 execution/memory integration
 ```
@@ -73,11 +74,14 @@ poison/drain；multi-record framer 同时清除年轻 word、continuity、EOF �
 对 taken 与 not-taken 都执行这套 redirect/refetch，优先保证一种恢复合同。
 
 multi-record framer 可以同时看见最多三条完整 record，但产品 wrapper 只把 record slot 0
-送入 raw-record holding；semantic decoder 后面另有一个 decoded-action holding。后者只
-保存 canonical fields 与 resolved MEMORY base，不是第二个 issue slot，当前也不支持
-dispatch/replace 同拍发生。execution wrapper 当前有一个 issue slot；它只是某拍把一项
-command 交给执行前端的瞬时端口，不保存 PC、不拥有程序，也不是 hardware thread。
-execution context 同样只是所有权、队列和 completion 身份，当前没有 context-local PC。
+送入 raw-record holding；class semantic decoder 后面另有一个 decoded-action holding。
+MEMORY 的 resolved base 与 CONTROL fields 在这里锁存，EXEC 则锁存已经配对的 base/
+extension packet。送往 cluster 的 action 随后经过最终 EXEC expansion/legality，并写入
+一项 non-flow-through canonical-action holding；MEMORY 与 END 也跨过同一边界。两项
+holding 都不是 issue slot，均不支持 consume/replace 同拍发生，也不会隐藏第二个 active
+parent。execution wrapper 当前有一个 issue slot；它只是某拍把一项 command 交给执行
+前端的瞬时端口，不保存 PC、不拥有程序，也不是 hardware thread。execution context
+同样只是所有权、队列和 completion 身份，当前没有 context-local PC。
 
 每个被选 SIMD4 在 command 进入后使用统一的 `O -> X -> RED/WB` 顺序流水：O 捕获
 RF operands/control，X 捕获 route/主运算结果，RED/WB 从注册结果做可选 reduction 并

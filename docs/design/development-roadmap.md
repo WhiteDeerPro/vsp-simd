@@ -158,7 +158,10 @@ Implemented structural baseline:
 - state-transfer traffic remains serialized until both execute stages are
   empty;
 - registered semantic-decode output in the program wrapper; engines consume a
-  stable canonical descriptor rather than a live instruction record.
+  stable class descriptor rather than a live instruction record;
+- one-entry non-flow-through canonical-action holding after final EXEC
+  expansion/legality; the strict class controller consumes only registered
+  canonical payload and the holding participates in busy/END quiescence.
 
 The execution cut is structure-driven.  Without it, a legal command could
 compose local route, MAC or another primary operation, result selection and a
@@ -166,6 +169,11 @@ reduction tree in one combinational cycle.  The current uniform
 `O -> X -> RED/WB` path isolates reduction without introducing operation-specific
 latency.  This is not a frequency claim; target-library timing, placement and
 FPGA DSP/carry mapping can rank the remaining X paths differently.
+
+The control cut is likewise structural: encoded EXEC base/extension no longer
+feeds the large profile expander, legality/error-priority logic and class
+controller in one register-to-register cone.  The added stage does not admit a
+second parent and does not change the single-PC ordering model.
 
 Remaining work should be guided by workload traces and target implementation
 evidence:

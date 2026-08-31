@@ -71,7 +71,12 @@ digraph vsp_current_integration {
     style=rounded;
 
     decoded_stage [
-      label="decoded-action holding\nstall-stable canonical fields\nresolved MEMORY base snapshot",
+      label="decoded-action holding\nstall-stable class fields / EXEC packet\nresolved MEMORY base snapshot",
+      fillcolor="#ecf8ef",
+      color="#4e8f62"
+    ];
+    canonical_stage [
+      label="canonical-action holding\nfinal EXEC expansion + legality\n1 entry / non-flow-through",
       fillcolor="#ecf8ef",
       color="#4e8f62"
     ];
@@ -102,7 +107,8 @@ digraph vsp_current_integration {
     ];
 
     adapter -> decoded_stage [label="semantic result"];
-    decoded_stage -> strict_controller [label="canonical action"];
+    decoded_stage -> canonical_stage [label="cluster-bound action"];
+    canonical_stage -> strict_controller [label="registered canonical action"];
     decoded_stage -> state_engine [label="state action"];
     decoded_stage -> branch_control [label="branch"];
     state_engine -> decoded_stage [

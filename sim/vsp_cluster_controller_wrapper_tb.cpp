@@ -548,6 +548,141 @@ int main(int argc, char** argv) {
   uint64_t global_cycle = 0;
 
   reset(dut, memory, global_cycle);
+  const uint64_t stream_phase_cycle = global_cycle;
+  const uint64_t memory_phase_cycle = memory.cycle;
+
+  // The canonical-action boundary is non-flow-through.  Capture an encoded
+  // EXEC, then perturb every live EXEC input while the clock remains low.  The
+  // accepted action must remain busy/not-ready and eventually execute only the
+  // captured canonical payload.
+  Action captured_exec = make_add_immediate(0x21, 0, 1, 0x12, true);
+  captured_exec.group_mask = 0x1;
+  drive_action(dut, captured_exec);
+  dut.action_cpl_ready_i = 1;
+  dut.exec_result_ready_i = 1;
+  memory.drive(dut);
+  dut.clk_i = 0;
+  dut.eval();
+  expect_eq("canonical holding capture ready", 1, dut.action_ready_o);
+  expect_eq("canonical holding capture fires", 1,
+            dut.action_valid_i && dut.action_ready_o);
+  dut.clk_i = 1;
+  dut.eval();
+  dut.clk_i = 0;
+  dut.eval();
+  memory.update_after_edge(false, 0, 0, 0, 0, false);
+  ++global_cycle;
+
+  Action changed_exec = make_add_immediate(0xa2, 0, 7, 0x7f, true);
+  changed_exec.group_mask = 0x8;
+  for (unsigned perturbation = 0; perturbation < 3; ++perturbation) {
+    changed_exec.tag = uint8_t(0xa2 + perturbation);
+    changed_exec.exec_extension = 0x7f - perturbation;
+    drive_action(dut, changed_exec);
+    memory.drive(dut);
+    dut.clk_i = 0;
+    dut.eval();
+    expect_eq("occupied canonical holding is not input-ready", 0,
+              dut.action_ready_o);
+    expect_eq("occupied canonical holding contributes busy", 1,
+              dut.controller_busy_o);
+    expect_eq("holding perturbation produces no early completion", 0,
+              dut.action_cpl_valid_o);
+    expect_eq("holding perturbation produces no memory request", 0,
+              dut.dmem_req_valid_o);
+  }
+
+  clear_action_inputs(dut);
+  bool captured_completion_seen = false;
+  bool captured_result_seen = false;
+  for (int timeout = 0; timeout < 200 &&
+       !(captured_completion_seen && captured_result_seen &&
+         !dut.controller_busy_o); ++timeout) {
+    dut.action_cpl_ready_i = 1;
+    dut.exec_result_ready_i = 1;
+    memory.drive(dut);
+    dut.clk_i = 0;
+    dut.eval();
+
+    const bool completion_fire =
+        dut.action_cpl_valid_o && dut.action_cpl_ready_i;
+    const bool result_fire =
+        dut.exec_result_valid_o && dut.exec_result_ready_i;
+    expect_eq("captured EXEC produces no data-memory request", 0,
+              dut.dmem_req_valid_o);
+    if (dut.action_cpl_valid_o) {
+      ExpectedCompletion expected{kClassExec, 0, 0x21, kStatusOk,
+                                  0, false, 0x1, false};
+      expected.exec_result_mask = 0x1;
+      check_completion(dut, expected, 0x1);
+    }
+    if (dut.exec_result_valid_o) {
+      expect_eq("captured result group", 0, dut.exec_result_group_o);
+      expect_eq("captured result context", 0, dut.exec_result_context_o);
+      expect_eq("captured result tag", 0x21, dut.exec_result_tag_o);
+      expect_eq("captured result legal", 0, dut.exec_result_illegal_o);
+      expect_eq("captured result is narrow", 1,
+                dut.exec_result_has_narrow_o);
+      expect_eq("captured result payload", 0x12121212U,
+                dut.exec_result_narrow_o);
+      expect_eq("captured result mask", 0xf,
+                dut.exec_result_narrow_mask_o);
+      expect_eq("captured result has no reduction", 0,
+                dut.exec_result_has_reduce_o);
+      expect_eq("captured result has no count", 0,
+                dut.exec_result_has_count_o);
+    }
+
+    dut.clk_i = 1;
+    dut.eval();
+    dut.clk_i = 0;
+    dut.eval();
+    memory.update_after_edge(false, 0, 0, 0, 0, false);
+    if (completion_fire) captured_completion_seen = true;
+    if (result_fire) captured_result_seen = true;
+    ++global_cycle;
+  }
+  expect_eq("captured EXEC completion observed", 1,
+            captured_completion_seen);
+  expect_eq("captured EXEC result observed", 1, captured_result_seen);
+  expect_eq("changed live action was not accepted", 0,
+            dut.action_cpl_valid_o);
+
+  // Reset while a second action resides only in the canonical holding entry.
+  // It must disappear without reaching EXEC, MEMORY, or the completion port.
+  Action reset_killed_exec = make_add_immediate(0x2f, 0, 2, 0x33, true);
+  reset_killed_exec.group_mask = 0x1;
+  drive_action(dut, reset_killed_exec);
+  memory.drive(dut);
+  dut.clk_i = 0;
+  dut.eval();
+  expect_eq("reset-killed action capture ready", 1, dut.action_ready_o);
+  dut.clk_i = 1;
+  dut.eval();
+  dut.clk_i = 0;
+  dut.eval();
+  memory.update_after_edge(false, 0, 0, 0, 0, false);
+  ++global_cycle;
+  expect_eq("reset-killed action occupies holding", 1,
+            dut.controller_busy_o);
+  expect_eq("reset-killed holding blocks admission", 0,
+            dut.action_ready_o);
+
+  reset(dut, memory, global_cycle);
+  expect_eq("reset clears canonical holding busy", 0,
+            dut.controller_busy_o);
+  expect_eq("reset restores canonical holding ready", 1,
+            dut.action_ready_o);
+  expect_eq("reset-killed action has no completion", 0,
+            dut.action_cpl_valid_o);
+  expect_eq("reset-killed action has no result", 0,
+            dut.exec_result_valid_o);
+  expect_eq("reset-killed action has no memory request", 0,
+            dut.dmem_req_valid_o);
+  // Keep the pre-existing deterministic backpressure phases of the long
+  // integration stream independent of the directed holding-stage prologue.
+  global_cycle = stream_phase_cycle;
+  memory.cycle = memory_phase_cycle;
 
   constexpr uint32_t kLoadBase = 0x20;
   constexpr uint32_t kIndexBase = 0x40;
@@ -795,7 +930,8 @@ int main(int argc, char** argv) {
 
   dut.final();
   std::cout << "PASS: VSP cluster controller " << checks
-            << " checks across indexed gather/scatter, encoded ADDI, "
+            << " checks across canonical-action holding, indexed "
+               "gather/scatter, encoded ADDI, "
                "former Format-D rejection, END, "
                "ordering, backpressure, owner/decode errors and memory "
                "faults\n";
