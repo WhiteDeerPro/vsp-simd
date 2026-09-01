@@ -172,6 +172,11 @@ indexed lane access都要等待当前 response。request、response 和 parent c
 `vsp_ordered_dmem_model` 可模拟更深的无 ID ordered endpoint，但当前 engine 实际只占用
 一项。它是 byte-array 协议模型，不是 D-cache、SRAM、MMU 或 DMA。
 
+独立的 `vsp_dmem_subsystem_wrapper` 现已把同一 effective-beat 合同接入 LSU、地址路由和
+共享 MMU/TLB/PTW，并通过动态组合测试；它尚未替换本页 program wrapper 测试中的
+ordered model。两条路径的准确边界见
+[memory subsystem integration](../integration/memory-subsystem.md)。
+
 ## 5. CONTROL、state 与结束 `[RTL事实]`
 
 `vsp_sequencer_state_engine` 当前每 context 有 32 个 32-bit state register，register 0

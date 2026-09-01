@@ -11,7 +11,9 @@
 > 定向程序已执行 `SMOVI/SADD/SADDI → VLOAD → EXEC → VSTORE → END`。
 > `sim/models/vsp_ordered_dmem_model.sv` 已提供
 > 可配置 FIFO outstanding 的有序仿真 endpoint，但不代表物理 SRAM 已实现。
-> 动态 owner/resource controller、物理 local SRAM、MMU/cache 与 DMA 仍待实现。
+> 另有 VSP-owned D-side wrapper 接入外部 LSU、地址路由和共享 MMU；具体
+> local/cache/uncached/device endpoint、physical fabric、动态 owner/resource controller
+> 与 DMA 仍待产品级接线。
 > 本文不规定总线宽度、SRAM 组织或 DMA 描述符格式。
 > 当前 MEMORY engine 同时支持 unit-stride 与 unsigned-byte indexed addressing；
 > `INDEX_U8+LOAD/STORE` 分别形成 gather/scatter。产品路径不再提供跨 group 的
@@ -26,9 +28,10 @@ instruction queue。queue 只需保存 descriptor reference、目标摘要、依
 
 候选数据层级为：
 
-下面是最终可能出现的完整层级。当前 decoded reference integration 在 `dmem_*`
-逻辑边界处终止；testbench 在边界外提供 local-memory model。物理 local SRAM、
-cache/MMU adapter、SoC DMA 及其上方接口延期到后续集成。
+下面是最终可能出现的完整层级。当前 decoded program reference integration 在
+`dmem_*` 逻辑边界处终止；testbench 在边界外提供 local-memory model。独立 D-side
+integration wrapper 已验证 logical beat 到 LSU/MMU/endpoint seam，物理 local SRAM、
+cache/fabric、SoC DMA 及其上方接口仍在后续集成。
 
 ```text
 SoC memory / producer

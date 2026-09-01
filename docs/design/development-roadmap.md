@@ -58,7 +58,9 @@ These are current design choices, not incidental test values:
 - four SIMD4 groups implemented, sixteen groups the profile bound;
 - no cross-group register-to-register route instruction;
 - no thread-like slot behavior;
-- no cache, MMU/TLB/PTW, DMA, branch prediction or exception machinery yet.
+- executable program wrapper 尚未接入 cache、MMU/TLB/PTW 或 DMA；独立 D-side
+  integration wrapper 已接入真实 LSU/MMU/TLB/PTW 并通过组合测试；
+- no branch prediction or exception machinery.
 
 Experimental Bênes/Omega/crossbar, wide gather, route rendezvous and route-wave
 RTL stays outside the default product lint/test and may be run through the
@@ -78,20 +80,20 @@ Acceptance:
   backpressure are covered;
 - four-group integration and sixteen-group elaboration both pass.
 
-## M2 — Address-system boundary
+## M2 — Address-system boundary (integration baseline implemented)
 
 Goal: preserve a clean insertion point for real memory hierarchy work.
 
-Tasks:
+Implemented baseline:
 
-- specify D-side request translation/protection adapter;
-- decide local scratchpad versus cache routing policy;
-- define reset/epoch behavior for outstanding responses;
-- add a small memory trace harness before choosing banking or coalescing;
+- D-side request 经 LSU、address-space router、MMU 和 physical-region router；
+- static region policy 选择 cacheable/local/uncached/device endpoint；
+- shared-reset cancellation 和外部不可取消 transport 的 quarantine 责任已经写入合同；
+- VSP-owned registered endpoint/PTW harness 覆盖 route、fault、stall 和 reset；
 - keep indexed requests lowered to ordinary effective-address byte operations.
 
-Acceptance is a protocol adapter and executable model, not a speculative cache
-capacity choice.
+Remaining product work is concrete endpoint/fabric integration and connection
+to the executable program wrapper, not a speculative cache-capacity choice.
 
 ## M3 — Loop and redirect (baseline implemented)
 

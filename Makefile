@@ -3,8 +3,9 @@ PYTHON ?= python3
 BUILD_DIR ?= build
 
 include rtl/files.mk
+include rtl/integration/memory_ip_files.mk
 
-BUILD_META := Makefile rtl/files.mk
+BUILD_META := Makefile rtl/files.mk rtl/integration/memory_ip_files.mk
 
 TOP       := simd_exec
 RTL       := $(SIMD_EXEC_RTL)
@@ -64,6 +65,14 @@ VSP_UWORD_CLUSTER_PROGRAM_OBJ := \
 	$(BUILD_DIR)/vsp_uword_cluster_program_obj_dir
 VSP_UWORD_CLUSTER_PROGRAM_TB := \
 	$(abspath sim/vsp_uword_cluster_program_wrapper_tb.cpp)
+VSP_DMEM_SUBSYSTEM_TOP := vsp_dmem_subsystem_wrapper_tb_top
+VSP_DMEM_SUBSYSTEM_OBJ := $(BUILD_DIR)/vsp_dmem_subsystem_obj_dir
+VSP_DMEM_SUBSYSTEM_TB_TOP := \
+	$(abspath sim/integration/vsp_dmem_subsystem_wrapper_tb_top.sv)
+VSP_DMEM_SUBSYSTEM_TB := \
+	$(abspath sim/integration/vsp_dmem_subsystem_wrapper_tb.cpp)
+VSP_DMEM_SUBSYSTEM_TEST_RTL := $(VSP_DMEM_SUBSYSTEM_WRAPPER_RTL) \
+	$(VSP_DMEM_SUBSYSTEM_TB_TOP)
 VSP_MEMORY_UWORD_DECODER_TOP := vsp_memory_uword_decoder
 VSP_MEMORY_UWORD_DECODER_OBJ := \
 	$(BUILD_DIR)/vsp_memory_uword_decoder_obj_dir
@@ -230,6 +239,8 @@ MUL32_MICRO_BIN := $(BUILD_DIR)/mul32_microcode_tb
 	test-vsp-uword-program-source \
 	test-vsp-uword-program-frontend \
 	test-vsp-uword-cluster-program \
+	check-memory-ip-deps check-memory-ip-lock \
+	lint-memory-integration test-memory-integration \
 	test-vsp-memory-uword-decoder test-vsp-control-uword-decoder \
 	test-vsp-uword-action-adapter \
 	test-vsp-ordered-action-window \
@@ -674,6 +685,63 @@ test-vsp-uword-cluster-program: $(VSP_UWORD_EXEC_END_HEX) \
 	$(VSP_UWORD_CLUSTER_PROGRAM_OBJ)/V$(VSP_UWORD_CLUSTER_PROGRAM_TOP) \
 		$(VSP_UWORD_EXEC_END_HEX) $(VSP_UWORD_MEMORY_STATE_HEX) \
 		$(VSP_UWORD_BRANCH_LOOP_HEX) $(VSP_UWORD_VECTOR_MEMORY_LOOP_HEX)
+
+check-memory-ip-deps:
+	@missing=0; \
+	for source in $(VSP_EXTERNAL_DMEM_IP_REQUIRED); do \
+		if test ! -f "$$source"; then \
+			echo "missing memory IP source: $$source" >&2; \
+			missing=1; \
+		fi; \
+	done; \
+	test "$$missing" -eq 0
+
+check-memory-ip-lock: check-memory-ip-deps $(VSP_MEMORY_IP_LOCK)
+	@set -- $(VSP_EXTERNAL_DMEM_IP_RTL); \
+	failed=0; \
+	while read -r expected logical_source; do \
+		if test "$$#" -eq 0; then \
+			echo "memory IP lock has no matching source: $$logical_source" >&2; \
+			failed=1; \
+			continue; \
+		fi; \
+		actual_source="$$1"; \
+		shift; \
+		actual=$$(sha256sum "$$actual_source" | awk '{print $$1}'); \
+		if test "$$actual" = "$$expected"; then \
+			echo "$$logical_source ($$actual_source): OK"; \
+		else \
+			echo "memory IP content mismatch: $$logical_source" >&2; \
+			echo "  source:   $$actual_source" >&2; \
+			echo "  expected: $$expected" >&2; \
+			echo "  actual:   $$actual" >&2; \
+			failed=1; \
+		fi; \
+	done < $(VSP_MEMORY_IP_LOCK); \
+	if test "$$#" -ne 0; then \
+		echo "memory IP source list has $$# unlocked entries" >&2; \
+		failed=1; \
+	fi; \
+	test "$$failed" -eq 0
+
+lint-memory-integration: check-memory-ip-lock
+	$(VERILATOR) --lint-only -Wall -Wno-fatal --assert \
+		--top-module $(VSP_DMEM_SUBSYSTEM_TOP) \
+		$(VSP_DMEM_SUBSYSTEM_TEST_RTL)
+
+$(VSP_DMEM_SUBSYSTEM_OBJ)/V$(VSP_DMEM_SUBSYSTEM_TOP): \
+		$(VSP_DMEM_SUBSYSTEM_TEST_RTL) $(VSP_DMEM_SUBSYSTEM_TB) \
+		$(BUILD_META) $(VSP_MEMORY_IP_LOCK) | check-memory-ip-lock $(BUILD_DIR)
+	$(VERILATOR) -Wall -Wno-fatal --assert --cc --exe \
+		--top-module $(VSP_DMEM_SUBSYSTEM_TOP) \
+		--Mdir $(VSP_DMEM_SUBSYSTEM_OBJ) \
+		$(VSP_DMEM_SUBSYSTEM_TEST_RTL) $(VSP_DMEM_SUBSYSTEM_TB)
+	$(MAKE) -C $(VSP_DMEM_SUBSYSTEM_OBJ) \
+		-f V$(VSP_DMEM_SUBSYSTEM_TOP).mk
+
+test-memory-integration: check-memory-ip-lock \
+		$(VSP_DMEM_SUBSYSTEM_OBJ)/V$(VSP_DMEM_SUBSYSTEM_TOP)
+	$(VSP_DMEM_SUBSYSTEM_OBJ)/V$(VSP_DMEM_SUBSYSTEM_TOP)
 
 $(VSP_MEMORY_UWORD_DECODER_OBJ)/V$(VSP_MEMORY_UWORD_DECODER_TOP): \
 		$(VSP_MEMORY_UWORD_DECODER_RTL) $(VSP_MEMORY_UWORD_DECODER_TB) \

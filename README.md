@@ -100,9 +100,13 @@ completion reports exact fault byte address, committed byte count and partial
 group state.
 
 Indexed bytes are lowered to ordinary aligned 4-byte D-side loads/stores with
-byte selection or one-hot write strobe.  A future TLB/MMU/cache/local-memory
-adapter therefore sees ordinary effective-address traffic.  Physical SRAM,
-cache, MMU/TLB/PTW, DMA and coherence are not implemented yet.
+byte selection or one-hot write strobe.  A downstream
+TLB/MMU/cache/local-memory adapter therefore sees ordinary effective-address
+traffic.  Physical SRAM, cache, MMU/TLB/PTW, DMA and coherence are not part of
+the vector memory engine.  The VSP-owned D-side integration wrapper now
+connects that logical port to the sibling LSU, address routers and shared MMU;
+concrete endpoints, physical fabric and global maintenance remain separate
+integration layers.
 
 Cross-group register-to-register routing and its former multi-slot route-wave
 protocol have been removed from the product path.  Bênes/Omega/crossbar,
@@ -145,6 +149,7 @@ rtl/
 ├── cluster/        multi-group execution and integration wrappers
 ├── control/        uword source, framing, decode and action control
 ├── memory/         vector memory engine
+├── integration/    VSP-owned external-IP composition and source manifest
 └── files.mk        ordered RTL source closures for verification
 sim/                Verilator self-checking testbenches and memory models
 tools/              uword assembler and development utilities
@@ -169,6 +174,18 @@ make test-vsp-uword-asm test-vsp-memory-uword-decoder
 make test-cluster-memory-wrapper test-vsp-uword-cluster-program
 ```
 
+The first D-side external-IP closure is opt-in because its sources are owned by
+sibling projects in the containing workspace:
+
+```bash
+make check-memory-ip-lock
+make lint-memory-integration
+make test-memory-integration
+```
+
+See [Memory subsystem integration](docs/integration/memory-subsystem.md) for
+the exact boundary, dependency baseline and remaining product-level work.
+
 Generated artifacts default to `build/`.  To keep the workspace small, use an
 external build directory and remove it after verification:
 
@@ -186,6 +203,7 @@ The clean target refuses broad unsafe paths.
 - [Terminology](docs/architecture/terminology.md)
 - [Indexed routing boundary](docs/architecture/routing.md)
 - [Memory hierarchy](docs/architecture/memory-hierarchy.md)
+- [Memory subsystem integration](docs/integration/memory-subsystem.md)
 - [Cluster control](docs/design/cluster-control.md)
 - [Instruction delivery](docs/design/instruction-delivery.md)
 - [Data movement](docs/design/data-movement.md)

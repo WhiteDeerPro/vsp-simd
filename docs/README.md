@@ -5,6 +5,7 @@
 ```text
 architecture/   当前可观察行为、数值语义和架构范围工作稿
 design/         controller、发射和实施顺序的暂行设计
+integration/    跨仓 IP 的实际接线、依赖基线和产品闭环状态
 explorations/   Q&A、分析方法和候选模型
 workloads/      代表性负载映射
 verification/   如何解释和维护验证证据
@@ -56,7 +57,13 @@ Graphviz 源与生成图和说明文档放在一起：
 - [宽窄数据流源](architecture/wide-narrow-dataflow.dot) /
   [SVG](architecture/wide-narrow-dataflow.svg)
 
-## 2. 控制设计与计划
+## 2. 跨 IP 集成
+
+| 文档 | 状态 | 内容 |
+|---|---|---|
+| [Memory subsystem integration](integration/memory-subsystem.md) | D-side 首轮产品接线 + 依赖基线 | LSU、地址路由、共享 MMU、endpoint seam、I-side/maintenance 后续边界 |
+
+## 3. 控制设计与计划
 
 | 文档 | 状态 | 内容 |
 |---|---|---|
@@ -70,7 +77,7 @@ Graphviz 源与生成图和说明文档放在一起：
 这里的 decoder 属于 sequencer 到执行 group 之间的内部控制层，不意味着 SIMD4
 获得取指、分支或异常能力。
 
-## 3. 探索与 Q&A
+## 4. 探索与 Q&A
 
 | 文档 | 性质 | 内容 |
 |---|---|---|
@@ -78,7 +85,7 @@ Graphviz 源与生成图和说明文档放在一起：
 | [数据生命周期](explorations/data-lifecycle.md) | 分析方法 | 产生、交付、读取、写入、退休与 burst 的计量 |
 | [32-bit byte 卷积](explorations/mul32-byte-convolution.md) | 参考模型 | low-32 乘法候选映射，不是现有 RTL 指令 |
 
-## 4. 负载与验证方法
+## 5. 负载与验证方法
 
 | 文档 | 性质 | 内容 |
 |---|---|---|
@@ -94,7 +101,7 @@ tracker、VRF vector memory engine、cluster VRF arbiter、decoded memory wrappe
 具体覆盖仍由 `sim/` 中的自检 testbench 记录。Bênes/route-wave 等退役跨组路由实验
 改由可选 experimental-routing 目标维护，不属于默认产品回归。
 
-## 5. 证据关系与维护
+## 6. 证据关系与维护
 
 - 设计文档表达当前意图，RTL 是当前实现，testbench 是带假设的证据；
 - 三者冲突时登记为实现缺陷、测试过期、文档歧义、架构变化或开放问题之一，

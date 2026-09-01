@@ -1,7 +1,8 @@
 # I-side / D-side 内存模型边界
 
-> 状态：逻辑端口和仿真合同已形成；I-cache、D-cache、MMU、物理 SRAM 与一致性策略
-> 仍是后续集成项。本页描述预期分层，不指定 cache 容量、行宽或替换算法。
+> 状态：逻辑端口和仿真合同已形成；D-side 已增加 LSU、地址路由和共享 MMU 的首轮
+> 集成 wrapper。I-cache、D-cache、物理 SRAM/fabric 与一致性策略仍是后续产品集成项。
+> 本页描述分层，不指定 cache 容量、行宽或替换算法。
 
 ![I-side / D-side 预期分层](memory-hierarchy.svg)
 
@@ -39,6 +40,11 @@ outstanding 生命期合并为一套含糊状态。
 
 它们是协议 oracle，不是 cache。reset 丢弃在途响应但保留 backing 内容；初始化和
 观察 sideband 不冒充 VSP transaction。
+
+独立的 `vsp_dmem_subsystem_wrapper` 已把相同 D-side logical beat 接到外部 LSU、
+address-space/region router 和真实 MMU/TLB/PTW，并以四类 physical endpoint seam 结束。
+它不替代上述 oracle，也尚未接入 program wrapper；当前组合证据及依赖基线见
+[memory subsystem integration](../integration/memory-subsystem.md)。
 
 现有 `vsp_uword_program_source` 仍直接连接 behavioral control store，且把 fetch fault
 折叠为一个 bit。新 I-side 模型额外保留 `addr_space`、`addr_context` 和详细 fault cause，
