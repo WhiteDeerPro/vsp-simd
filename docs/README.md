@@ -1,6 +1,6 @@
 # VSP项目文档索引
 
-本目录包含VSP项目的所有技术文档、交付报告和问题追踪。
+本目录包含VSP项目的所有技术文档和交付报告。
 
 ## 目录结构
 
@@ -11,16 +11,13 @@ docs/
 ├── workloads/             # 工作负载示例
 ├── integration/           # 集成文档
 ├── verification/          # 验证文档
-├── math/                  # 数学库文档 (新增)
-├── guides/                # 使用指南 (新增)
+├── math/                  # 数学库文档
+├── guides/                # 使用指南
 ├── delivery/              # 交付文档
-├── issues/                # 问题追踪
-│   ├── open/             # 待处理
-│   ├── in-progress/      # 进行中
-│   ├── resolved/         # 已解决
-│   └── archived/         # 已归档
 └── README.md             # 本文档
 ```
+
+**注**: 问题追踪系统位于根目录 `/issues/`
 
 ## 核心架构文档
 
@@ -56,7 +53,7 @@ docs/
 - `workloads/gaussian3x3-separable.md` - 可分离高斯
 - `workloads/median3x3.md` - 中值滤波
 
-## 数学库文档 (新增)
+## 数学库文档
 
 ### 核心文档
 - `math/MATH_LIBRARY.md` - 数学库完整文档
@@ -68,8 +65,8 @@ docs/
 - `math/math_transcendental_plan.md` - 实现计划
 
 ### 查找表
-- 生成工具: `tools/generate_lut.py`
-- 数据文件: `test_data/lut/*.hex`
+- 生成工具: `../tools/generate_lut.py`
+- 数据文件: `../test_data/lut/*.hex`
 
 ## 使用指南
 
@@ -87,14 +84,6 @@ docs/
 ### 项目总结
 - `delivery/PROJECT_DELIVERY_SUMMARY.md` - 完整项目交付
 - `delivery/FINAL_DELIVERY_SUMMARY.md` - 最终交付总结
-
-## 问题追踪
-
-- `issues/README.md` - 问题管理指南
-- `issues/open/` - 待处理问题
-  - `数学库硬件加速-Claude-2026-09-03.md`
-- `issues/resolved/` - 已解决问题
-  - `硬件乘法器汇编支持-WhiteDeerPro-2026-09-03.md`
 
 ## 验证文档
 
@@ -115,8 +104,8 @@ docs/
 
 ### 算法开发者
 1. 查看 `delivery/ALGORITHM_DELIVERY.md`
-2. 参考 `build/algorithms/README.md`
-3. 使用 `tools/vsp_uword_asm.py`
+2. 参考 `../build/algorithms/README.md`
+3. 使用 `../tools/vsp_uword_asm.py`
 
 ### 数学库使用者
 1. 阅读 `math/MATH_LIBRARY.md`
@@ -124,8 +113,8 @@ docs/
 3. 了解 `math/MULTIPLIER_GAP_ANALYSIS.md`的限制
 
 ### 贡献者
-1. 检查 `issues/open/`中的待处理问题
-2. 遵循 `issues/README.md`中的规范
+1. 检查 `../issues/open/`中的待处理问题
+2. 遵循 `../issues/README.md`中的规范
 3. 提交issue到对应目录
 
 ## 文档分类说明
@@ -148,14 +137,11 @@ docs/
 ### delivery/
 项目交付报告和总结
 
-### issues/
-问题追踪和特性请求
-
 ## 最近更新
 
 - **2026-09-03**: 重组文档结构，创建math/和guides/目录
+- **2026-09-03**: 问题追踪移至根目录
 - **2026-09-03**: 添加超越函数文档
-- **2026-09-03**: 创建问题追踪系统
 - **2026-09-02**: 完成数学库和算法库交付
 
 ## 文档编写规范
@@ -170,10 +156,10 @@ docs/
 ## 联系方式
 
 - 项目维护者: VSP Developer
-- 文档问题: 提交到 `docs/issues/open/`
+- 文档问题: 提交到 `/issues/open/`
 - 代码问题: 提交git issue
 
 ---
 
-**文档版本**: 2.0  
+**文档版本**: 2.1  
 **最后更新**: 2026-09-03
