@@ -1,0 +1,27 @@
+# Cosine using sine table (cos(x) = sin(x + π/2))
+# Input: angle in [0, 255] representing [0, 2*pi]
+# Output: cos(angle) in Q8.8 format
+
+entry:
+    LI rd=1 imm=0x1000          # Input angles
+    LI rd=2 imm=0x4000          # Sine table base
+    LI rd=3 imm=0x2000          # Output base
+
+    # Load angles
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0
+
+    # cos(x) = sin(x + π/2)
+    # In our encoding: π/2 = 64 (since 256 steps = 2π)
+    EXEC_ALU_RI op=add mode=byte va=0 vd=1 imm=64      # Add π/2
+
+    # Handle wrap-around (modulo 256)
+    EXEC_ALU_RI op=and mode=byte va=1 vd=2 imm=0xff
+
+    # Lookup in sine table (same as sin)
+    EXEC_ALU_RI op=shl mode=byte va=2 vd=3 imm=1       # index * 2
+    VGATHER space=local addr_context=0 sbase=2 vd=4 vi=3 offset=0
+
+    # Store
+    VSTORE space=local addr_context=0 sbase=3 vrf=4 span=16 offset=0
+
+    END

@@ -1,0 +1,61 @@
+# Sine function using lookup table and linear interpolation
+# Input: angle in [0, 255] representing [0, 2*pi]
+# Output: sin(angle) in Q8.8 format [-256, 256] representing [-1.0, 1.0]
+
+# Memory layout:
+# 0x4000: sine table, 256 entries, Q8.8 format
+# Each entry: 16-bit value (little-endian)
+
+entry:
+    LI rd=1 imm=0x1000          # Input angles base
+    LI rd=2 imm=0x4000          # Sine table base
+    LI rd=3 imm=0x2000          # Output base
+
+    # Load input angles (8-bit, normalized to 0-255)
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0
+
+    # Method 1: Direct table lookup (256 entries)
+    # For each angle, use as index into table
+
+    # Split angle into integer and fractional parts for interpolation
+    # angle = index + fraction
+    # sin(angle) ≈ sin_table[index] + fraction * (sin_table[index+1] - sin_table[index])
+
+    # Extract table index (integer part - use full byte for 256 entries)
+    EXEC_ALU_RI op=and mode=byte va=0 vd=1 imm=0xff    # Index
+
+    # For linear interpolation, we'd need:
+    # 1. Load sin_table[index] via gather
+    # 2. Load sin_table[index+1]
+    # 3. Compute difference
+    # 4. Multiply by fraction
+    # 5. Add to base value
+
+    # Simplified version: direct lookup without interpolation
+    # Use VGATHER to fetch from table
+    # Assuming we have the table pre-loaded in LOCAL memory
+
+    # Create gather indices (each angle becomes a byte offset in table)
+    # Since table entries are 16-bit (2 bytes), multiply index by 2
+    EXEC_ALU_RI op=shl mode=byte va=1 vd=2 imm=1       # index * 2
+
+    # Gather from sine table
+    # Note: This assumes 16-bit entries, need to load both bytes
+    VGATHER space=local addr_context=0 sbase=2 vd=3 vi=2 offset=0
+
+    # Store results
+    VSTORE space=local addr_context=0 sbase=3 vrf=3 span=16 offset=0
+
+    END
+
+# Note: Full implementation needs:
+# 1. Sine table generation (offline or at initialization)
+# 2. Linear interpolation for higher precision
+# 3. Range reduction for angles outside [0, 2π]
+# 4. Quadrant symmetry exploitation to reduce table size
+
+# Table generation (pseudo-code for reference):
+# for i in 0..255:
+#     angle = i * 2 * pi / 256
+#     sin_val = sin(angle)
+#     table[i] = round(sin_val * 256)  # Q8.8 format

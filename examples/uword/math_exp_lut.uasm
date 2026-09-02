@@ -1,0 +1,45 @@
+# Exponential function exp(x) using table and range reduction
+# Input: x in Q8.8 format, range [0, 8] (0 to 2048 in Q8.8)
+# Output: exp(x) in Q8.8 format
+# Method: exp(x) = exp(int_part) * exp(frac_part)
+#         Use table for integer part, polynomial for fractional
+
+entry:
+    LI rd=1 imm=0x1000          # Input x values (Q8.8)
+    LI rd=2 imm=0x5000          # Exp table base
+    LI rd=3 imm=0x2000          # Output base
+
+    # Load input Q8.8 values
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0
+
+    # Split into integer and fractional parts
+    # Q8.8: [II II II II II II II II . FF FF FF FF FF FF FF FF]
+    EXEC_ALU_RI op=shr_u mode=byte va=0 vd=1 imm=8     # Integer part
+    EXEC_ALU_RI op=and mode=byte va=0 vd=2 imm=0xff    # Fractional part
+
+    # Lookup exp(int_part) from table
+    # Table: exp[0] = 256 (e^0 = 1.0 in Q8.8)
+    #        exp[1] = 697 (e^1 = 2.718 in Q8.8)
+    #        exp[2] = 1895 (e^2 = 7.389 in Q8.8)
+    #        ... scaled appropriately
+
+    EXEC_ALU_RI op=shl mode=byte va=1 vd=3 imm=1       # index * 2
+    VGATHER space=local addr_context=0 sbase=2 vd=4 vi=3 offset=0
+
+    # Approximate exp(frac) using linear approximation:
+    # exp(x) ≈ 1 + x for small x
+    # frac is in [0, 1] (0-255 in Q8.8)
+    EXEC_ALU_RI op=add mode=byte va=2 vd=5 imm=0       # frac
+    EXEC_ALU_RI op=add mode=byte va=5 vd=5 imm=256     # 1.0 + frac
+
+    # Multiply exp(int) * exp(frac)
+    # This needs the hardware multiplier for efficiency
+    # For now, simplified output
+    VSTORE space=local addr_context=0 sbase=3 vrf=4 span=16 offset=0
+
+    END
+
+# Note: Proper implementation needs:
+# 1. Q8.8 multiplication using MUL/MAC
+# 2. Better polynomial approximation for exp(frac)
+# 3. Result scaling and saturation

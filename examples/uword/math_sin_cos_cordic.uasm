@@ -1,0 +1,63 @@
+# CORDIC-based sine and cosine computation
+# Uses rotation mode CORDIC algorithm
+# More area-efficient than large tables, iterative convergence
+
+entry:
+    LI rd=1 imm=0x1000          # Input angles
+    LI rd=2 imm=0x6000          # CORDIC angle table
+    LI rd=3 imm=0x2000          # Output (sin)
+    LI rd=4 imm=0x2100          # Output (cos)
+
+    # Load input angle in [0, 255] representing [0, 2π]
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0
+
+    # Convert to [-π/2, π/2] range and track quadrant
+    # Quadrant determination
+    EXEC_ALU_RI op=and mode=byte va=0 vd=1 imm=0xc0    # Upper 2 bits = quadrant
+    EXEC_ALU_RI op=and mode=byte va=0 vd=2 imm=0x3f    # Lower 6 bits = angle in quad
+
+    # Initialize CORDIC variables
+    # x = K (CORDIC gain ≈ 0.6073 ≈ 155 in Q8.8)
+    # y = 0
+    # z = target_angle
+
+    # Load CORDIC gain constant
+    EXEC_ALU_RI op=add mode=byte va=0 vd=3 imm=155     # x = K
+    EXEC_ALU_RI op=xor mode=byte va=0 vb=0 vd=4        # y = 0
+    EXEC_ALU_RR op=pass_a mode=byte va=2 vb=0 vd=5     # z = angle
+
+    # CORDIC iteration 0: rotate by atan(2^0) = 45° = 32 in our scale
+    # if z >= 0: x' = x - y>>0, y' = y + x>>0, z' = z - atan[0]
+    # if z < 0:  x' = x + y>>0, y' = y - x>>0, z' = z + atan[0]
+
+    # Check sign of z
+    EXEC_ALU_RI op=shr_s mode=byte va=5 vd=6 imm=7     # Extract sign bit
+
+    # Conditional rotation (simplified, needs full iteration)
+    # This would need 8-10 iterations for good precision
+    # Each iteration: shift by i, add/subtract, update angle
+
+    # After all iterations:
+    # x ≈ cos(angle) * K
+    # y ≈ sin(angle) * K
+
+    # Store sin result
+    VSTORE space=local addr_context=0 sbase=3 vrf=4 span=16 offset=0
+
+    # Store cos result
+    VSTORE space=local addr_context=0 sbase=4 vrf=3 span=16 offset=0
+
+    END
+
+# CORDIC advantages:
+# - Only add/shift operations
+# - No multiply needed
+# - Small table (only atan values)
+# - Computes sin and cos simultaneously
+
+# CORDIC angle table (arctangent values):
+# atan(2^-0) = 45.0° = 32 (in 256-step circle)
+# atan(2^-1) = 26.6° = 19
+# atan(2^-2) = 14.0° = 10
+# atan(2^-3) = 7.1° = 5
+# ... (needs about 10 entries)

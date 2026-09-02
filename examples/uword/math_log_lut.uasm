@@ -1,0 +1,41 @@
+# Natural logarithm log(x) using lookup table
+# Input: x in Q8.8 format, range (0, 256] (1 to 65536 in Q8.8)
+# Output: log(x) in Q8.8 format
+# Method: log(x) = log(2^n * m) = n*log(2) + log(m)
+#         where m in [1,2), use table for log(m)
+
+entry:
+    LI rd=1 imm=0x1000          # Input x values (Q8.8)
+    LI rd=2 imm=0x5100          # Log table base
+    LI rd=3 imm=0x2000          # Output base
+    LI rd=4 imm=0x6100          # Constants (log(2) etc)
+
+    # Load input Q8.8 values
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0
+
+    # Normalize x to [1.0, 2.0) and extract exponent
+    # Find leading 1 position (count leading zeros)
+    # For Q8.8: if x >= 256, shift right; if x < 256, shift left
+
+    # Simplified: assume x in [128, 512] for demonstration
+    # Extract high byte as approximation
+    EXEC_ALU_RI op=shr_u mode=byte va=0 vd=1 imm=8
+
+    # Use high byte as table index (normalized mantissa)
+    # Table: log(1.0) = 0, log(1.5) ≈ 104, log(2.0) ≈ 178 (Q8.8)
+    EXEC_ALU_RI op=shl mode=byte va=1 vd=2 imm=1       # index * 2
+    VGATHER space=local addr_context=0 sbase=2 vd=3 vi=2 offset=0
+
+    # Add exponent contribution (n * log(2))
+    # log(2) ≈ 177 in Q8.8 (0.693)
+    # This part is simplified
+
+    # Store result
+    VSTORE space=local addr_context=0 sbase=3 vrf=3 span=16 offset=0
+
+    END
+
+# Note: Proper implementation needs:
+# 1. Leading zero count for normalization
+# 2. Exponent extraction and scaling
+# 3. Interpolation for higher precision

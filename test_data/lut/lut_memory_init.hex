@@ -1,0 +1,11 @@
+// VSP Lookup Table Memory Initialization
+// Format: address : data (32-bit words)
+// Base addresses:
+//   0x4000: sin_table
+//   0x4200: cos_table
+//   0x5000: exp_table
+//   0x5200: log_table
+//   0x5400: sqrt_table
+//   0x5600: recip_table
+//   0x6000: cordic_atan
+
