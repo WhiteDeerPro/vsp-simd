@@ -1,0 +1,88 @@
+# Radix-2 Decimation-in-Time (DIT) FFT implementation for VSP
+# Cooley-Tukey algorithm for N-point complex FFT (N must be power of 2)
+# Input: time-domain samples in bit-reversed order
+# Output: frequency-domain samples in natural order
+
+# This is a conceptual implementation showing the FFT structure
+# Actual VSP implementation would use optimized butterfly operations
+
+entry:
+    LI rd=1 imm=0x1000          # Input real parts (bit-reversed)
+    LI rd=2 imm=0x1100          # Input imag parts (bit-reversed)
+    LI rd=3 imm=0x4000          # Twiddle factors (cos/sin table)
+    LI rd=4 imm=0x2000          # Output buffer
+    LI rd=5 imm=64              # FFT size N
+
+    # FFT parameters
+    # N = 64 (must be power of 2)
+    # log2(N) = 6 stages
+    # Each stage processes N/2 butterflies
+
+    # Load input data (assume already in bit-reversed order)
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0    # Real
+    VLOAD space=local addr_context=0 sbase=2 vrf=1 span=16 offset=0    # Imag
+
+    # Stage 0: butterfly span = 1
+    # Process butterflies with twiddle factor W_N^0 = 1
+    # Ar' = Ar + Br, Br' = Ar - Br
+    # Ai' = Ai + Bi, Bi' = Ai - Bi
+
+    # Butterfly operation (radix-2)
+    # Input: (A, B) complex pairs
+    # Output: (A+B*W, A-B*W) where W is twiddle factor
+
+    # For W = 1 (first butterfly in each stage):
+    EXEC_ALU_RR op=add mode=half va=0 vb=2 vd=4        # A_real + B_real
+    EXEC_ALU_RR op=sub mode=half va=0 vb=2 vd=5        # A_real - B_real
+    EXEC_ALU_RR op=add mode=half va=1 vb=3 vd=6        # A_imag + B_imag
+    EXEC_ALU_RR op=sub mode=half va=1 vb=3 vd=7        # A_imag - B_imag
+
+    # For general twiddle factor W = cos(θ) + j*sin(θ):
+    # B' = B * W = (Br + j*Bi) * (cos + j*sin)
+    #    = (Br*cos - Bi*sin) + j*(Br*sin + Bi*cos)
+
+    # Load twiddle factors from table
+    VGATHER space=local sbase=3 vd=8 vi=10 offset=0    # cos(θ)
+    VGATHER space=local sbase=3 vd=9 vi=10 offset=512  # sin(θ)
+
+    # Complex multiply: B * W using 4 real multiplications
+    # This requires hardware MUL/MAC for efficiency
+
+    # Br' = Br*cos(θ) - Bi*sin(θ)
+    EXEC_ALU_RR op=mul_u mode=byte va=2 vb=8 dst_arf=0   # Br*cos
+    EXEC_ALU_RR op=mul_u mode=byte va=3 vb=9 dst_arf=1   # Bi*sin
+    # ARF[0] - ARF[1] -> result (need to extract from ARF)
+
+    # Bi' = Br*sin(θ) + Bi*cos(θ)
+    EXEC_ALU_RR op=mul_u mode=byte va=2 vb=9 dst_arf=2   # Br*sin
+    EXEC_ALU_RR op=mac_u mode=byte va=3 vb=8 src_arf=2 dst_arf=2  # + Bi*cos
+
+    # Extract from ARF using NSLICE
+    # ... (ARF to VRF data movement)
+
+    # Continue for remaining stages (log2(N) total)
+    # Each stage doubles the butterfly span
+    # Stage k: span = 2^k
+
+    # Store final result
+    VSTORE space=local addr_context=0 sbase=4 vrf=4 span=16 offset=0
+
+    END
+
+# FFT Optimization notes:
+# 1. Use bit-reversed input order to avoid reordering
+# 2. Exploit symmetry: W_N^(k+N/2) = -W_N^k
+# 3. Pipeline butterfly operations across SIMD lanes
+# 4. Cache twiddle factors
+# 5. Use in-place computation to save memory
+
+# Performance:
+# N-point FFT requires: N*log2(N) complex multiplies
+# For N=64: 64*6 = 384 complex mults = 1536 real mults
+# With hardware MUL: ~6000 instructions
+# With software MUL: ~300,000 instructions (impractical)
+
+# Memory layout:
+# Input: 2*N samples (N real, N imag) in Q8.8 format
+# Twiddle: N/2 complex twiddle factors (cos, sin tables)
+# Output: 2*N frequency bins
