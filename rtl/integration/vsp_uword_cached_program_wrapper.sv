@@ -405,11 +405,13 @@ module vsp_uword_cached_program_wrapper #(
   assign protocol_error_o = program_protocol_error ||
                             memory_protocol_error_o;
 
+  /* verilator lint_off PINCONNECTEMPTY */
   vsp_uword_cluster_program_wrapper #(
     .PC_W(PC_W),
     .STORE_WORDS(STORE_WORDS),
     .STORE_BASE_PC(STORE_BASE_PC),
     .FETCH_WORDS(FETCH_WORDS),
+    .EXTERNAL_FETCH_PROVIDER(1'b0),
     .ADMIT_SLOTS(ADMIT_SLOTS),
     .GROUP_COUNT(GROUP_COUNT),
     .ISSUE_SLOTS(ISSUE_SLOTS),
@@ -444,6 +446,15 @@ module vsp_uword_cached_program_wrapper #(
     .store_write_ready_o(store_write_ready_o),
     .store_write_pc_i(store_write_pc_i),
     .store_write_data_i(store_write_data_i),
+    .ifetch_provider_req_valid_o(),
+    .ifetch_provider_req_ready_i(1'b0),
+    .ifetch_provider_req_pc_o(),
+    .ifetch_provider_req_word_count_o(),
+    .ifetch_provider_rsp_valid_i(1'b0),
+    .ifetch_provider_rsp_ready_o(),
+    .ifetch_provider_rsp_words_i('0),
+    .ifetch_provider_rsp_fault_i(1'b0),
+    .ifetch_redirect_commit_o(),
     .start_valid_i(program_start_valid),
     .start_ready_o(program_start_ready),
     .start_pc_i(start_pc_i),
@@ -514,7 +525,6 @@ module vsp_uword_cached_program_wrapper #(
     .protocol_error_o(program_protocol_error)
   );
 
-  /* verilator lint_off PINCONNECTEMPTY */
   vsp_dmem_cached_fabric_wrapper #(
     .PADDR_W(PADDR_W),
     .TRANSLATION_ENABLE(TRANSLATION_ENABLE),

@@ -85,6 +85,19 @@ VSP_DMEM_CACHED_FABRIC_TB := \
 VSP_DMEM_CACHED_FABRIC_TEST_RTL := \
 	$(VSP_DMEM_CACHED_FABRIC_WRAPPER_RTL) \
 	$(VSP_DMEM_CACHED_FABRIC_TB_TOP)
+VSP_IFETCH_CACHED_CLIENT_TOP := vsp_ifetch_cached_client_wrapper
+VSP_UWORD_MEMORY_SYSTEM_TOP := vsp_uword_memory_system_wrapper
+VSP_UWORD_MEMORY_SYSTEM_TEST_TOP := \
+	vsp_uword_memory_system_wrapper_tb_top
+VSP_UWORD_MEMORY_SYSTEM_OBJ := \
+	$(BUILD_DIR)/vsp_uword_memory_system_obj_dir
+VSP_UWORD_MEMORY_SYSTEM_TB_TOP := \
+	$(abspath sim/integration/vsp_uword_memory_system_wrapper_tb_top.sv)
+VSP_UWORD_MEMORY_SYSTEM_TB := \
+	$(abspath sim/integration/vsp_uword_memory_system_wrapper_tb.cpp)
+VSP_UWORD_MEMORY_SYSTEM_TEST_RTL := \
+	$(VSP_UWORD_MEMORY_SYSTEM_WRAPPER_RTL) \
+	$(VSP_UWORD_MEMORY_SYSTEM_TB_TOP)
 VSP_UNCACHED_DEVICE_MERGE_TEST_TOP := \
 	vsp_uncached_device_merge_tb_top
 VSP_UNCACHED_DEVICE_MERGE_OBJ := \
@@ -282,6 +295,8 @@ MUL32_MICRO_BIN := $(BUILD_DIR)/mul32_microcode_tb
 	check-memory-ip-deps check-memory-ip-lock \
 	lint-memory-integration test-memory-integration \
 	lint-memory-product-integration test-memory-product-integration \
+	lint-ifetch-product-integration lint-vsp-uword-memory-system \
+	test-vsp-uword-memory-system \
 	test-vsp-uncached-device-merge \
 	lint-vsp-uword-cached-program test-vsp-uword-cached-program \
 	test-vsp-memory-uword-decoder test-vsp-control-uword-decoder \
@@ -736,7 +751,7 @@ test-vsp-uword-cluster-program: $(VSP_UWORD_EXEC_END_HEX) \
 
 check-memory-ip-deps:
 	@missing=0; \
-	for source in $(VSP_EXTERNAL_DMEM_IP_REQUIRED); do \
+	for source in $(VSP_EXTERNAL_MEMORY_IP_REQUIRED); do \
 		if test ! -f "$$source"; then \
 			echo "missing memory IP source: $$source" >&2; \
 			missing=1; \
@@ -745,7 +760,7 @@ check-memory-ip-deps:
 	test "$$missing" -eq 0
 
 check-memory-ip-lock: check-memory-ip-deps $(VSP_MEMORY_IP_LOCK)
-	@set -- $(VSP_EXTERNAL_DMEM_IP_RTL); \
+	@set -- $(VSP_EXTERNAL_MEMORY_IP_RTL); \
 	failed=0; \
 	while read -r expected logical_source; do \
 		if test "$$#" -eq 0; then \
@@ -781,6 +796,20 @@ lint-memory-product-integration: check-memory-ip-lock
 	$(VERILATOR) --lint-only -Wall -Wno-fatal --assert \
 		--top-module $(VSP_DMEM_CACHED_FABRIC_TOP) \
 		$(VSP_DMEM_CACHED_FABRIC_WRAPPER_RTL)
+
+lint-ifetch-product-integration: check-memory-ip-lock
+	$(VERILATOR) --lint-only -Wall -Wno-fatal --assert \
+		--top-module $(VSP_IFETCH_CACHED_CLIENT_TOP) \
+		$(VSP_IFETCH_CACHED_CLIENT_WRAPPER_RTL)
+
+lint-vsp-uword-memory-system: check-memory-ip-lock
+	$(VERILATOR) --lint-only -Wall -Wno-fatal --assert \
+		--top-module $(VSP_UWORD_MEMORY_SYSTEM_TOP) \
+		$(VSP_UWORD_MEMORY_SYSTEM_WRAPPER_RTL)
+	$(VERILATOR) --lint-only -Wall -Wno-fatal --assert \
+		--top-module $(VSP_UWORD_MEMORY_SYSTEM_TOP) \
+		-GICACHE_LINE_BYTES=64 -GDCACHE_LINE_BYTES=32 \
+		$(VSP_UWORD_MEMORY_SYSTEM_WRAPPER_RTL)
 
 lint-vsp-uword-cached-program: check-memory-ip-lock
 	$(VERILATOR) --lint-only -Wall -Wno-fatal --assert \
@@ -835,6 +864,24 @@ test-vsp-uword-cached-program: check-memory-ip-lock \
 		$(VSP_UWORD_PHYSICAL_MEMORY_HEX) \
 		$(VSP_UWORD_CACHED_PROGRAM_OBJ)/V$(VSP_UWORD_CACHED_PROGRAM_TEST_TOP)
 	$(VSP_UWORD_CACHED_PROGRAM_OBJ)/V$(VSP_UWORD_CACHED_PROGRAM_TEST_TOP) \
+		$(VSP_UWORD_PHYSICAL_MEMORY_HEX)
+
+$(VSP_UWORD_MEMORY_SYSTEM_OBJ)/V$(VSP_UWORD_MEMORY_SYSTEM_TEST_TOP): \
+		$(VSP_UWORD_MEMORY_SYSTEM_TEST_RTL) \
+		$(VSP_UWORD_MEMORY_SYSTEM_TB) $(BUILD_META) \
+		$(VSP_MEMORY_IP_LOCK) | check-memory-ip-lock $(BUILD_DIR)
+	$(VERILATOR) -Wall -Wno-fatal --assert --cc --exe \
+		--top-module $(VSP_UWORD_MEMORY_SYSTEM_TEST_TOP) \
+		--Mdir $(VSP_UWORD_MEMORY_SYSTEM_OBJ) \
+		$(VSP_UWORD_MEMORY_SYSTEM_TEST_RTL) \
+		$(VSP_UWORD_MEMORY_SYSTEM_TB)
+	$(MAKE) -C $(VSP_UWORD_MEMORY_SYSTEM_OBJ) \
+		-f V$(VSP_UWORD_MEMORY_SYSTEM_TEST_TOP).mk
+
+test-vsp-uword-memory-system: check-memory-ip-lock \
+		$(VSP_UWORD_PHYSICAL_MEMORY_HEX) \
+		$(VSP_UWORD_MEMORY_SYSTEM_OBJ)/V$(VSP_UWORD_MEMORY_SYSTEM_TEST_TOP)
+	$(VSP_UWORD_MEMORY_SYSTEM_OBJ)/V$(VSP_UWORD_MEMORY_SYSTEM_TEST_TOP) \
 		$(VSP_UWORD_PHYSICAL_MEMORY_HEX)
 
 $(VSP_DMEM_SUBSYSTEM_OBJ)/V$(VSP_DMEM_SUBSYSTEM_TOP): \

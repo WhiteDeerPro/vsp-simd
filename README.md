@@ -139,6 +139,13 @@ not a frozen public ISA.  Current pseudo-ops include vector ALU/reduction,
 sequencer state, direct-comparison branches, `VLOAD/VSTORE`,
 `VGATHER/VSCATTER` and `CONTROL_END`.
 
+The behavioral store remains the focused verification source.  A separate
+product wrapper can select the external provider seam and fetch the same uword
+stream through a redirect-aware bridge, shared iMMU, independent I-region and
+read-only I-cache; I/D cache and PTW traffic then share one ordered physical
+fabric.  AXI/NoC, DMA, SoC target decode and precise IFetch fault export remain
+outside that wrapper.
+
 ## Repository layout
 
 ```text
@@ -186,6 +193,8 @@ make test-memory-integration
 make lint-memory-product-integration test-memory-product-integration
 make test-vsp-uncached-device-merge
 make lint-vsp-uword-cached-program test-vsp-uword-cached-program
+make lint-ifetch-product-integration lint-vsp-uword-memory-system
+make test-vsp-uword-memory-system
 ```
 
 See [Memory subsystem integration](docs/integration/memory-subsystem.md) for

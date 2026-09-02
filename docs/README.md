@@ -37,8 +37,8 @@ Q&A 代替这类记录。
 |---|---|---|
 | [统一术语表](architecture/terminology.md) | 当前命名约定 | RVV 对齐边界、物理拓扑、dispatch class、协议与 RTL 命名 |
 | [架构范围工作稿](architecture/overview.md) | 范围快照 + RTL 事实 + 开放问题 | VSP/SIMD4 边界、数据形状和当前能力 |
-| [当前控制与内存集成状态](architecture/current-integration.md) | RTL 接线事实 + 后续边界 | PC bundle、strict/decoded 两条闭环、向量取数、outstanding 与地址状态集成缺口 |
-| [I-side / D-side 内存模型边界](architecture/memory-hierarchy.md) | D-side RTL 事实 + I-side/SoC 候选分层 | program fetch、dmem、当前 D-cache/MMU/fabric 边界与地址状态 |
+| [当前控制与内存集成状态](architecture/current-integration.md) | RTL 接线事实 + 后续边界 | PC bundle、external IFetch、strict action、I/D cache/MMU/fabric 与仍外置的 SoC 边界 |
+| [I-side / D-side 内存模型边界](architecture/memory-hierarchy.md) | I/D RTL 事实 + SoC 候选分层 | program fetch、dmem、当前 I/D cache、共享 MMU/fabric 与地址状态 |
 | [数据通路](architecture/datapath.md) | RTL 事实 | VRF/ARF/MRF、并行控制、mask、立即数与提交 |
 | [微架构图](architecture/microarchitecture.md) | RTL 事实 | 单个 SIMD4 的读取、执行、合法性和写回 |
 | [寄存器文件](architecture/register-file.md) | RTL 事实 + 物理候选 | 逻辑端口、masked write 与 bank/SRAM 问题 |
@@ -61,18 +61,18 @@ Graphviz 源与生成图和说明文档放在一起：
 
 | 文档 | 状态 | 内容 |
 |---|---|---|
-| [Memory subsystem integration](integration/memory-subsystem.md) | D-side 产品接线 + 依赖基线 | LSU、共享 MMU、D-cache/local/uncached-device endpoint、physical fabric、program MEMORY 闭合及 I-side/SoC/maintenance 后续边界 |
+| [Memory subsystem integration](integration/memory-subsystem.md) | I/D 产品接线 + 依赖基线 | external IFetch、LSU、共享 MMU/PTW、独立 I/D region/cache、physical fabric、统一维护及 SoC/fault 后续边界 |
 
 ## 3. 控制设计与计划
 
 | 文档 | 状态 | 内容 |
 |---|---|---|
 | [集群控制工作稿](design/cluster-control.md) | EXEC/MEMORY leaf integration + strict ordered action controller 参考 RTL | frontend、class routing、ingress、group wrapper、VRF subrequest 仲裁、completion/result、owner 与 END |
-| [队列与译码候选](design/instruction-delivery.md) | byte-PC/multi-framer、CONTROL-state/MEMORY semantic decoder 与 strict slot-0 closure 已接；ordered window 独立存在；并发 admission metadata 与 queue-head 接入待办 | uword bundle、PC `+4`、queue、live-head、predecode、expander 与 CPU decoder 差异 |
+| [队列与译码候选](design/instruction-delivery.md) | byte-PC/multi-framer、behavioral/external provider、CONTROL-state/MEMORY semantic decoder 与 strict slot-0 closure 已接 | uword bundle、PC `+4`、queue、live-head、predecode、expander 与 CPU decoder 差异 |
 | [Internal EXEC uword profile v0](design/exec-uword-profile-v0.md) | 内部实验编码 + RTL 映射 | 32-bit base、optional immediate extension、canonical EXEC 与非法 cause |
 | [数据准备与 DMA 边界](design/data-movement.md) | encoded unit-stride/indexed strict closure 已实现，物理 memory 集成待办 | VLOAD/VSTORE/VGATHER/VSCATTER、VRF arbiter、data-memory 逻辑口、local SRAM 与 DMA |
 | [Sequencer 标量/地址状态](design/sequencer-state.md) | 地址状态、比较 branch 与 loop/redirect 已接 strict closure | 最小 scalar/address state、寻址裁剪、MEMORY base 与后续调用/回写边界 |
-| [集群实验路线](design/development-roadmap.md) | 单 PC/单 slot strict closure 已实现，memory/loop/测量待办 | wrapper、cluster、indexed memory、地址层、规模与物理化 |
+| [集群实验路线](design/development-roadmap.md) | 单 PC/单 slot 与 PHYSICAL I/D 动态基线已实现，translated/fault/SoC/测量待办 | wrapper、cluster、indexed memory、地址层、规模与物理化 |
 
 这里的 decoder 属于 sequencer 到执行 group 之间的内部控制层，不意味着 SIMD4
 获得取指、分支或异常能力。

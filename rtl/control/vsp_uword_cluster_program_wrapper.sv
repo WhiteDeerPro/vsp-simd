@@ -3,6 +3,10 @@ module vsp_uword_cluster_program_wrapper #(
   parameter int STORE_WORDS       = 64,
   parameter logic [PC_W-1:0] STORE_BASE_PC = '0,
   parameter int FETCH_WORDS       = 4,
+  // Selects the provider connected to vsp_uword_program_source.  The default
+  // keeps the behavioral control store for focused control-path verification;
+  // product memory-system wrappers select the external provider boundary.
+  parameter bit EXTERNAL_FETCH_PROVIDER = 1'b0,
   parameter int ADMIT_SLOTS       = 3,
   parameter int GROUP_COUNT       = 4,
   parameter int ISSUE_SLOTS       = 1,
@@ -48,6 +52,22 @@ module vsp_uword_cluster_program_wrapper #(
   output logic                                      store_write_ready_o,
   input  logic [PC_W-1:0]                           store_write_pc_i,
   input  logic [vsp_uword_pkg::VSP_UWORD_W-1:0]    store_write_data_i,
+
+  // External instruction-provider boundary.  Its request/response shape is
+  // intentionally identical to the current control store.  Redirect commit
+  // is exported so an accepted external transaction can be poisoned and
+  // drained without exposing stale words to the framer.
+  output logic                                      ifetch_provider_req_valid_o,
+  input  logic                                      ifetch_provider_req_ready_i,
+  output logic [PC_W-1:0]                           ifetch_provider_req_pc_o,
+  output logic [FETCH_COUNT_W-1:0]
+                                                     ifetch_provider_req_word_count_o,
+  input  logic                                      ifetch_provider_rsp_valid_i,
+  output logic                                      ifetch_provider_rsp_ready_o,
+  input  logic [(FETCH_WORDS*vsp_uword_pkg::VSP_UWORD_W)-1:0]
+                                                     ifetch_provider_rsp_words_i,
+  input  logic                                      ifetch_provider_rsp_fault_i,
+  output logic                                      ifetch_redirect_commit_o,
 
   // Launch captures all execution-envelope fields.  Later changes on these
   // inputs cannot alter a running stream.
@@ -146,6 +166,12 @@ module vsp_uword_cluster_program_wrapper #(
 
   logic control_store_write_valid;
   logic control_store_write_ready;
+  logic control_store_req_valid;
+  logic control_store_req_ready;
+  logic control_store_rsp_valid;
+  logic control_store_rsp_ready;
+  logic [(FETCH_WORDS*VSP_UWORD_W)-1:0] control_store_rsp_words;
+  logic control_store_rsp_fault;
   logic store_req_valid;
   logic store_req_ready;
   logic [PC_W-1:0] store_req_pc;
@@ -517,9 +543,35 @@ module vsp_uword_cluster_program_wrapper #(
   assign framer_terminal_clear = framer_clear_q;
 
   assign control_store_write_valid = store_write_valid_i &&
-      !program_active_q && !source_running;
+      !EXTERNAL_FETCH_PROVIDER && !program_active_q && !source_running;
   assign store_write_ready_o = control_store_write_ready &&
-      !program_active_q && !source_running;
+      !EXTERNAL_FETCH_PROVIDER && !program_active_q && !source_running;
+
+  // The provider choice is an elaboration-time profile, not a live mux.  The
+  // inactive boundary is driven to canonical idle values so it cannot create
+  // a second request owner or leak X/Z into transport-failure handling.
+  assign control_store_req_valid = EXTERNAL_FETCH_PROVIDER ? 1'b0 :
+                                     store_req_valid;
+  assign control_store_rsp_ready = EXTERNAL_FETCH_PROVIDER ? 1'b1 :
+                                     store_rsp_ready;
+  assign store_req_ready = EXTERNAL_FETCH_PROVIDER ?
+      ifetch_provider_req_ready_i : control_store_req_ready;
+  assign store_rsp_valid = EXTERNAL_FETCH_PROVIDER ?
+      ifetch_provider_rsp_valid_i : control_store_rsp_valid;
+  assign store_rsp_words = EXTERNAL_FETCH_PROVIDER ?
+      ifetch_provider_rsp_words_i : control_store_rsp_words;
+  assign store_rsp_fault = EXTERNAL_FETCH_PROVIDER ?
+      ifetch_provider_rsp_fault_i : control_store_rsp_fault;
+
+  assign ifetch_provider_req_valid_o = EXTERNAL_FETCH_PROVIDER ?
+      store_req_valid : 1'b0;
+  assign ifetch_provider_req_pc_o = EXTERNAL_FETCH_PROVIDER ?
+      store_req_pc : '0;
+  assign ifetch_provider_req_word_count_o = EXTERNAL_FETCH_PROVIDER ?
+      store_req_word_count : '0;
+  assign ifetch_provider_rsp_ready_o = EXTERNAL_FETCH_PROVIDER ?
+      store_rsp_ready : 1'b0;
+  assign ifetch_redirect_commit_o = branch_redirect_fire;
 
   // Once END is structurally visible, no younger bundle reaches the framer.
   // A launch whose end_pc extends beyond END is invalid, but the source is
@@ -771,30 +823,49 @@ module vsp_uword_cluster_program_wrapper #(
     end
   end
 
-  vsp_uword_control_store #(
-    .PC_W(PC_W),
-    .STORE_WORDS(STORE_WORDS),
-    .STORE_BASE_PC(STORE_BASE_PC),
-    .BUNDLE_WORDS(FETCH_WORDS),
-    .BUNDLE_COUNT_W(FETCH_COUNT_W)
-  ) u_control_store (
-    .clk_i,
-    .rst_ni,
-    .write_valid_i(control_store_write_valid),
-    .write_ready_o(control_store_write_ready),
-    .write_pc_i(store_write_pc_i),
-    .write_data_i(store_write_data_i),
-    .req_valid_i(store_req_valid),
-    .req_ready_o(store_req_ready),
-    .req_pc_i(store_req_pc),
-    .req_word_count_i(store_req_word_count),
-    .rsp_valid_o(store_rsp_valid),
-    .rsp_ready_i(store_rsp_ready),
-    .rsp_words_o(store_rsp_words),
-    .rsp_fault_o(store_rsp_fault),
-    .protocol_error_clear_i,
-    .protocol_error_o(control_store_protocol_error)
-  );
+  generate
+    if (!EXTERNAL_FETCH_PROVIDER) begin : g_internal_control_store
+      vsp_uword_control_store #(
+        .PC_W(PC_W),
+        .STORE_WORDS(STORE_WORDS),
+        .STORE_BASE_PC(STORE_BASE_PC),
+        .BUNDLE_WORDS(FETCH_WORDS),
+        .BUNDLE_COUNT_W(FETCH_COUNT_W)
+      ) u_control_store (
+        .clk_i,
+        .rst_ni,
+        .write_valid_i(control_store_write_valid),
+        .write_ready_o(control_store_write_ready),
+        .write_pc_i(store_write_pc_i),
+        .write_data_i(store_write_data_i),
+        .req_valid_i(control_store_req_valid),
+        .req_ready_o(control_store_req_ready),
+        .req_pc_i(store_req_pc),
+        .req_word_count_i(store_req_word_count),
+        .rsp_valid_o(control_store_rsp_valid),
+        .rsp_ready_i(control_store_rsp_ready),
+        .rsp_words_o(control_store_rsp_words),
+        .rsp_fault_o(control_store_rsp_fault),
+        .protocol_error_clear_i,
+        .protocol_error_o(control_store_protocol_error)
+      );
+    end else begin : g_external_control_store_idle
+      assign control_store_write_ready = 1'b0;
+      assign control_store_req_ready = 1'b0;
+      assign control_store_rsp_valid = 1'b0;
+      assign control_store_rsp_words = '0;
+      assign control_store_rsp_fault = 1'b0;
+      assign control_store_protocol_error = 1'b0;
+
+      // Programming pins remain part of the backward-compatible wrapper ABI,
+      // but have no architectural effect in the product provider profile.
+      /* verilator lint_off UNUSED */
+      wire unused_internal_store_boundary = &{1'b0, store_write_pc_i,
+          store_write_data_i, control_store_write_valid,
+          control_store_req_valid, control_store_rsp_ready};
+      /* verilator lint_on UNUSED */
+    end
+  endgenerate
 
   vsp_uword_program_source #(
     .PC_W(PC_W),

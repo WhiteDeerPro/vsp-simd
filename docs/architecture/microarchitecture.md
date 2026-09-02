@@ -40,16 +40,17 @@ read subrequest 的 completion 与 data response 后再写 memory。
 decoded reference integration。`vsp_cluster_controller_wrapper` 在其外增加一个统一
 action 入口、profile-v0 EXEC 展开、strict program ordering、统一 completion 和
 `CONTROL.END`；它自身仍以 `dmem_*` 结束。外层
-`vsp_uword_cached_program_wrapper` 已接入 product D-cache/local SRAM/MMU/fabric；DMA 与
-I-cache 仍未接入。
+`vsp_uword_cached_program_wrapper` 已接入 product D-cache/local SRAM/MMU/fabric；另一项
+`vsp_uword_memory_system_wrapper` 通过 external provider 接入 shared iMMU、独立 I-region
+和 read-only I-cache，并让 I/D 共用 physical fabric。DMA 与 SoC lower target/bus 仍未接入。
 `dmem_req/rsp` 是无 ID 的单飞行有序 data-memory 逻辑口；它携带
 address-space/address-context 与 fault cause，但 engine 内没有 MMU、TLB、
 PTW 或 cache。`sim/models/vsp_ordered_dmem_model.sv` 为该逻辑口提供 byte-addressed、
 严格顺序的可配置 outstanding 仿真 endpoint；它不属于物理 memory hierarchy，也
 不是 IFetch 端口。
 
-当前 SIMD4 没有取指。controller reference 中的 byte PC 只顺序读取内部 uword
-control store，不改变这项边界。上级已有 `simd_issue_decode_stage` 作为晚译码 holding
+当前 SIMD4 没有取指。上级 controller 的单一 byte PC 可由 behavioral control store 或
+external IFetch provider 供给，不改变这项边界。上级已有 `simd_issue_decode_stage` 作为晚译码 holding
 边界，但其 hook 尚未替换为 admission/queue-head 解析；另一路 controller reference
 已组合解析 profile-v0 EXEC packet。`op_i`/`exec_op_i` 上的
 6-bit `simd_op_e` 只是 canonical EXEC function，不是完整 opcode。

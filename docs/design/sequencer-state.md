@@ -6,7 +6,7 @@
 
 | 能力 | 当前状态 |
 |---|---|
-| 线性 byte PC 与半开程序范围 | 已实现；control-store source 单 request outstanding |
+| 线性 byte PC 与半开程序范围 | 已实现；program source 单 request outstanding，支持 behavioral/external provider profile |
 | 默认四 word fetch | 已实现；满 bundle 接受后通常 `PC + 16` |
 | 1–4 word record framing | 已实现；每个 stream word 仍是 `+4` |
 | profile-v0 EXEC semantic decode | 已实现 |
@@ -19,7 +19,7 @@
 | scalar LOAD/STORE | 未实现 |
 | reduction/count 写 scalar state | 未实现；当前只向外返回 result |
 | interrupt/trap/precise restart | 未实现；错误通过 completion/sticky status 报告 |
-| I-cache / MMU / DMA | 未实现；control store 与 `dmem_*` 仍是行为/逻辑边界 |
+| I-cache / MMU / DMA | combined wrapper 已接 external IFetch、shared iMMU、独立 I-region/I-cache；DMA 与 SoC target/bus 未实现 |
 
 EXEC 的 scalar immediate 是给 SIMD lanes 的广播操作数，不是标量指令。ordered action
 window 的 side view 是 MEMORY/CONTROL/reject 的 class-router 结构端口，也不是 scalar

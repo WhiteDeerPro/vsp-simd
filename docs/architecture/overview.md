@@ -33,14 +33,16 @@ VRF arbiter 接到 wrapper/cluster state-read/write endpoint，形成 decoded
 LOAD→EXEC→STORE 参考闭环。它传递 effective address、address-space kind
 和 address context，并以 `dmem_*` 作为可复用逻辑边界。独立的 product integration
 wrapper 已在该边界外接入 sibling LSU、MMU/TLB/PTW、D-cache、local SRAM、
-uncached/device endpoint 与 physical fabric；DMA、I-cache 及 SoC lower target 仍未接入。
+uncached/device endpoint 与 physical fabric；combined memory-system wrapper 又从 external
+provider seam 接入 shared iMMU、独立 I-region 和 read-only I-cache。DMA、AXI/NoC 及 SoC
+lower target 仍未接入。
 decoded wrapper 保留彼此独立的 EXEC/MEMORY 入口，供叶级集成测试使用。其外新增的
 `vsp_cluster_controller_wrapper` 接收一个有序 action
 流：profile-v0 encoded EXEC 在入口展开，decoded MEMORY 分派到 memory engine，
 `CONTROL.END` 在内部执行队列、tracker、memory engine 与 VRF arbiter 静止后完成。
-当前也没有 architectural IFetch；新增 PC 只为 controller 内部 uword stream 定位，
-每个 32-bit base/extension/body 地址 `+4`。这条 control-store 交付与未来软件
-instruction IFetch 是不同边界。
+当前 external IFetch 仍只运输内部 uword stream：每个 32-bit base/extension/body 地址
+`+4`，program source 仍只有一个 PC。它建立了 cache/MMU 事务边界，不表示内部 uword
+已经成为冻结的软件 ISA。
 
 ### 命名边界 `[当前约定]`
 
@@ -54,7 +56,7 @@ instruction IFetch 是不同边界。
 | `exec_context` | 命令所有权、完成回送和调度身份 |
 | `addr_context` | 地址服务使用的 opaque translation/domain handle |
 | `dmem_*` | LOAD/STORE data-memory 逻辑口 |
-| `ifetch_*` | I-side read-only fetch 逻辑口；当前只有 standalone ordered uword-fetch 仿真模型，program source 仍直接使用 control-store request，尚不表示 architectural IFetch 或 I-cache 已实现 |
+| `ifetch_*` | I-side read-only fetch 逻辑口；combined product wrapper 已接 external provider、shared iMMU、独立 I-region 和 read-only I-cache，standalone ordered model 仍只作为协议 oracle |
 
 `addr_space` 决定 `eaddr` 属于 `LOCAL`、`PHYSICAL` 或 `TRANSLATED`；不再使用
 单独、可与 address-space 语义矛盾的 `translation_bypass` 控制位。
@@ -157,16 +159,19 @@ action controller 及 standalone uword bundle predecoder 已完成参考实现�
 profile-v0 encoded EXEC → `VSTORE` → `CONTROL.END`，包括
 完成背压、owner/decode error、EXEC child reject、result staging 和 memory fault；
 另一个 product test 已把同类 load/compute/store 程序通过真实 D-cache/fabric 接到 ordered
-physical SRAM。两者都不表示最终 MEMORY ISA、architectural IFetch 或完整 sequencer 已完成。当前工作先保持
+physical SRAM。combined wrapper 的独立动态回归也已从同一个 ordered lower SRAM 取 program
+image 并运行 PHYSICAL I+D branch loop，覆盖 startup quarantine、maintenance interlock、
+MMU-config serialization、host `FENCE_I` 与重跑；当前仍缺 TRANSLATED/fault I-fetch 覆盖和精确 IFetch fault
+export。这些都不表示最终 MEMORY ISA 或完整 sequencer 已完成。当前工作先保持
 单 PC、单 issue slot、global single-active 基线，补齐 4-group/16-byte 和
 16-group/64-byte indexed-memory 程序，并实现 loop/redirect 的明确 flush 语义；只有
 trace 表明 action admission 是瓶颈时，才研究 dependency window、动态
 owner/resource 状态和计算/搬运重叠；
 control-store/byte-PC/multi-framer/slot-0 action adapter 已有 strict reference closure。
-独立 I-side/D-side protocol model 与当前 D-side 产品边界见
+独立 I-side/D-side protocol model 与当前 I/D 产品边界见
 [内存模型边界](memory-hierarchy.md)和
-[内存子系统集成](../integration/memory-subsystem.md)。随后再根据结果决定 I-side、SoC
-target、DMA 与进一步 lane feature 的顺序。见
+[内存子系统集成](../integration/memory-subsystem.md)。随后再根据结果决定 SoC target、DMA
+与进一步 lane feature 的顺序。见
 [实验路线](../design/development-roadmap.md)。
 
 数据带宽不能只用一个“每周期向量数”概括；逻辑产生、存储写入、网络交付、唯一

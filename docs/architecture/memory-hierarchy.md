@@ -1,9 +1,9 @@
 # I-side / D-side 内存模型边界
 
-> 状态：逻辑端口和仿真合同已形成；product D-side 已接入 LSU、地址路由、共享 MMU、
-> D-cache、local SRAM、uncached/device endpoint 和 physical fabric，并以 ordered lower
-> port 结束。I-cache、外部 SoC target/bus、DMA 与一致性策略仍是后续产品集成项。本页
-> 描述分层，不固定 cache 容量、行宽或替换算法。
+> 状态：逻辑端口和仿真合同已形成；combined product RTL 已把 external IFetch/I-cache 与
+> D-side LSU/cache/local/uncached-device 接入共享 MMU/PTW 和 physical fabric，并以 ordered
+> lower port 结束。外部 SoC target/bus、DMA、一致性策略和精确 IFetch fault export 仍是
+> 后续集成项。本页描述分层，不固定 cache 容量、行宽或替换算法。
 
 ![I-side / D-side 预期分层](memory-hierarchy.svg)
 
@@ -49,10 +49,11 @@ physical fabric；`vsp_uword_cached_program_wrapper` 直接连接 executable pro
 `dmem_*`。这些组合不替代上述 protocol oracle；当前证据及依赖基线见
 [memory subsystem integration](../integration/memory-subsystem.md)。
 
-现有 `vsp_uword_program_source` 仍直接连接 behavioral control store，且把 fetch fault
-折叠为一个 bit。新 I-side 模型额外保留 `addr_space`、`addr_context` 和详细 fault cause，
-因此接入程序闭环前还需要一个很薄的 launch-context/fault adapter，或等价地扩展
-program-source 合同。该差异是显式待办，不应靠常量绑死后宣称 MMU 已兼容。
+`vsp_uword_cluster_program_wrapper` 现在可在 elaboration 时选择 behavioral control store 或
+external provider。`vsp_uword_memory_system_wrapper` 选择后者，快照 launch 的 I-side
+`addr_space/addr_context`，并通过 redirect-aware bridge 接入共享 iMMU、独立 I-region 和
+read-only I-cache。program-source fault 仍只有一个 bit；canonical I-side 内部的详细 cause、
+effective address 和 physical diagnostic address 尚未输出到程序/host fault contract。
 
 ## 3. 地址空间和 MMU 扩展点
 
@@ -69,12 +70,14 @@ effective address + address-space kind + opaque address context
 
 跨页 vector transfer 必须逐 beat 检查，不能只翻译 parent base 后假设后续虚拟页物理
 连续。I-cache 若位于翻译之前，其 tag 必须包含足以区分 address context 的信息；若位于
-翻译之后，则由前级 translation/TLB 提供物理地址。当前不选择其中一种物理实现。
+翻译之后，则由前级 translation/TLB 提供物理地址。当前 product profile 采用后一种：
+IFetch adapter 逐 beat 请求共享 iMMU，独立 I-region 检查 final paddr，再以 paddr 访问
+I-cache。
 
 execution context 负责 action 所有权和 completion 回送；address context 负责翻译/
 保护域。两者不能互相替代。
 
-## 4. I-cache 候选职责与当前 D-cache 边界
+## 4. 当前 I/D cache 边界
 
 ### I-cache role
 
@@ -95,9 +98,11 @@ execution context 负责 action 所有权和 completion 回送；address context
   request；cache 不猜测 vector register 语义。未来 coalescer 或 gather/scatter 加速器仍应
   保持在 D-side request 层，不修改 I-side 合同。
 
-当前 product wrapper 已按这些职责接入 writeable `param_cache`，但 geometry 仍是参数，
-也尚未定义 DMA/host ownership。cache lower transaction 与 PTW、uncached/device traffic
-在 physical fabric 合流；fabric 以下的目标译码和 SoC transport 不在 wrapper 内。
+当前 D-side product wrapper 已接入 writeable `param_cache`，combined wrapper 另接入
+read-only `param_cache` 作为 I-cache。两者 geometry 仍是参数，也尚未定义 DMA/host
+ownership。I-cache、D-cache、PTW 与 uncached/device lower transaction 在 physical fabric
+合流；fabric 以下的目标译码和 SoC transport 不在 wrapper 内。首个 I-side profile 没有
+direct LOCAL program SRAM endpoint。
 
 另一个 cacheless profile 仍可让 I-side 接 program SRAM、D-side 接 local SRAM，再由 DMA
 在 kernel 启动/结束边界搬运；逻辑拆分并不要求所有 profile 都实例化 cache。
@@ -119,11 +124,12 @@ strict program wrapper 已把 CONTROL-state decoder、两词 MEMORY decoder、st
 
 ## 6. 后续实现顺序
 
-1. 给 program launch 增加 I-side address-space/context，接通 ordered fetch provider、
-   I-cache adapter 和现有 fabric I-cache master；
+1. 在 combined I/D 的 PHYSICAL 动态程序基线上增加 TRANSLATED/fault/redirect-during-miss
+   回归，并输出精确 IFetch fault metadata；
 2. 给 generic ordered lower port 接入真实 SoC target decode/bus，并覆盖 RAM/MMIO fault、
    response 背压、reset epoch 与 quiescence；
-3. 实现 LSU barrier 到 I/D cache、TLB 与 fabric action 的 maintenance policy bridge；
+3. 实现 LSU barrier 到已经接线的 global I/D cache、TLB 与 fabric maintenance 的 policy
+   bridge；host global command 继续只在 program inactive 时接受；
 4. 把 state/MEMORY 的 resolved base 与 RAW/WAW 依赖纳入 multi-record action window；
 5. 有 workload 命中率与带宽数据后，再选择 I-cache/D-cache line、容量和 replacement；
 6. 引入 DMA 前定义数据 ownership 与 cache maintenance；引入 self-modifying program

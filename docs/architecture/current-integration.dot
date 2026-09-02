@@ -1,5 +1,5 @@
-// Current integration map. Solid edges are instantiated in the product
-// reference path. Dashed amber nodes are independent experiments/models.
+// Current integration map. Solid edges are instantiated in a current product
+// or behavioral-reference profile. Dashed amber nodes are independent models.
 digraph vsp_current_integration {
   graph [
     rankdir=LR,
@@ -37,12 +37,17 @@ digraph vsp_current_integration {
     style=rounded;
 
     launch [
-      label="launch envelope\n[start_pc,end_pc)\ncontext + group mask + tag seed"
+      label="launch envelope\n[start_pc,end_pc) + execution metadata\nproduct: I-side address space + context"
     ];
     control_store [
-      label="behavioral control store\nverification reference",
+      label="behavioral control store\nverification/D-side program profile",
       fillcolor="#fff7dc",
       color="#b58b23"
+    ];
+    provider_seam [
+      label="external IFetch provider seam\nPC + count request / packed response\ncommitted redirect exported",
+      fillcolor="#ecf8ef",
+      color="#4e8f62"
     ];
     pc_source [
       label="one byte-PC source\n1 pc_q / 1 fetch outstanding\nsequential fetch + redirect poison/drain"
@@ -59,7 +64,8 @@ digraph vsp_current_integration {
 
     launch -> pc_source [label="start"];
     launch -> adapter [label="envelope"];
-    pc_source -> control_store [dir=both, label="ordered req/rsp"];
+    pc_source -> control_store [dir=both, label="behavioral profile"];
+    pc_source -> provider_seam [dir=both, label="memory-system profile"];
     pc_source -> framer [label="bundle"];
     framer -> holding [label="record slot 0"];
     holding -> adapter;
@@ -138,6 +144,38 @@ digraph vsp_current_integration {
     ];
   }
 
+  subgraph cluster_ifetch {
+    label="Product I-side path (memory-system profile)";
+    color="#75a986";
+    style=rounded;
+
+    ifetch_bridge [
+      label="redirect-aware request bridge\ncanonical stable ready/valid\nstale response poison/drain",
+      fillcolor="#ecf8ef",
+      color="#4e8f62"
+    ];
+    ifetch_adapter [
+      label="IFetch bundle adapter\nPC + 1..4 words\nshared iMMU client",
+      fillcolor="#ecf8ef",
+      color="#4e8f62"
+    ];
+    i_region [
+      label="independent I-region router\nexecute permission + endpoint policy",
+      fillcolor="#ecf8ef",
+      color="#4e8f62"
+    ];
+    icache [
+      label="I-cache beat adapter\n+ read-only param_cache\n128-bit first product front",
+      fillcolor="#ecf8ef",
+      color="#4e8f62"
+    ];
+
+    provider_seam -> ifetch_bridge [dir=both, label="legacy provider"];
+    ifetch_bridge -> ifetch_adapter [dir=both, label="canonical IFetch"];
+    ifetch_adapter -> i_region [dir=both, label="final physical check"];
+    i_region -> icache [dir=both, label="CACHEABLE fetch"];
+  }
+
   subgraph cluster_memory {
     label="Vector MEMORY path: UNIT_STRIDE + INDEX_U8";
     color="#75a986";
@@ -184,7 +222,7 @@ digraph vsp_current_integration {
       color="#4e8f62"
     ];
     physical_fabric [
-      label="shared physical fabric\nD-cache + PTW + uncached/device\nI-cache-native master seam exposed",
+      label="shared ordered physical fabric\nI-cache + D-cache + PTW + uncached/device\nsingle protocol-neutral lower owner",
       fillcolor="#ecf8ef",
       color="#4e8f62"
     ];
@@ -216,17 +254,20 @@ digraph vsp_current_integration {
     dmem_policy -> dmem_endpoints [dir=both, label="cache/local/UC/device"];
     dmem_policy -> physical_fabric [dir=both, label="PTW"];
     dmem_endpoints -> physical_fabric [dir=both, label="cache/UC physical traffic"];
+    ifetch_adapter -> dmem_policy [dir=both, label="shared iMMU"];
+    icache -> physical_fabric [dir=both, label="I-cache lower"];
     physical_fabric -> lower_boundary [dir=both];
     lower_boundary -> future_memory [dir=both, style=dashed, color="#999999"];
   }
 
   management_lane [
-    label="registered host management lane\nMMU cfg > TLBI > D-cache maint > drain\nprogram inactive + full D-side quiescent",
+    label="global host maintenance controller\nI/D quiesce + I/D cache + unified TLB + drain\ncommands accepted only while program inactive",
     fillcolor="#ecf8ef",
     color="#4e8f62"
   ];
   management_lane -> dmem_policy [dir=both, label="MMU/TLB"];
   management_lane -> dmem_endpoints [dir=both, label="D-cache maint"];
+  management_lane -> icache [dir=both, label="I-cache maint"];
   management_lane -> physical_fabric [dir=both, label="drain"];
 
   subgraph cluster_experimental {
@@ -250,7 +291,7 @@ digraph vsp_current_integration {
       color="#b58b23"
     ];
     ifetch_model [
-      label="experimental ordered I-side model\nnot yet bound to program source",
+      label="ordered I-side simulation oracle\nnot used by product I-cache path",
       fillcolor="#fff7dc",
       color="#b58b23"
     ];
@@ -263,19 +304,19 @@ digraph vsp_current_integration {
   }
 
   control_gap [
-    label="not implemented in product path:\narchitectural I-fetch/I-cache, SoC lower decode/bus,\nmaintenance policy bridge, scalar L/S, CALL/RET,\nreduction-to-state, branch prediction, multi-PC",
+    label="not closed in product path:\nprecise IFetch fault export, SoC lower decode/bus, DMA/coherence,\nLSU-barrier policy bridge, scalar L/S, CALL/RET,\nreduction-to-state, branch prediction, multi-PC",
     shape=note,
     style="filled,dashed",
     fillcolor="#fff0f0",
     color="#b45b5b"
   ];
   control_gap -> pc_source [style=dashed, color="#b45b5b", label="future control"];
-  control_gap -> management_lane [style=dashed, color="#b45b5b", label="global policy"];
+  control_gap -> management_lane [style=dashed, color="#b45b5b", label="LSU policy"];
   control_gap -> lower_boundary [style=dashed, color="#b45b5b", label="SoC boundary"];
 
   legend [
     shape=note,
-    label="Legend\nblue: instantiated uword transport\ngreen: instantiated semantic/engine/D-side path\namber dashed: independent experiment/model\ngray/red dashed: external or missing boundary\npurple: completion/result return",
+    label="Legend\nblue: instantiated uword transport\ngreen: instantiated semantic/engine/I-D memory path\namber dashed: independent experiment/model\ngray/red dashed: external or missing boundary\npurple: completion/result return",
     fillcolor="#ffffff",
     color="#9aa7b3"
   ];

@@ -35,13 +35,15 @@ open question.  No layer wins automatically.
 ## Product-path regression
 
 The default `make lint` and `make test` cover the repository-owned
-one-PC/one-slot path.  The last three rows below depend on sibling memory-IP
-repositories and are explicit opt-in targets:
+one-PC/one-slot path.  The product memory rows below depend on sibling
+memory-IP repositories and are explicit opt-in targets:
 
 ```bash
 make lint-memory-product-integration test-memory-product-integration
 make test-vsp-uncached-device-merge
 make lint-vsp-uword-cached-program test-vsp-uword-cached-program
+make lint-ifetch-product-integration lint-vsp-uword-memory-system
+make test-vsp-uword-memory-system
 ```
 
 | Area | Main evidence | Supported claim |
@@ -59,6 +61,7 @@ make lint-vsp-uword-cached-program test-vsp-uword-cached-program
 | product D-side integration | `vsp_dmem_cached_fabric_wrapper_tb` | real LSU/MMU, D-cache, local/uncached/device endpoints and physical fabric through an ordered lower SRAM |
 | endpoint merge | `vsp_uncached_device_merge_tb` | stalled grant/payload stability, fixed priority, response ownership, orphan handling and diagnostics |
 | cached program integration | `vsp_uword_cached_program_wrapper_tb` | three-iteration 16-byte physical/cacheable load/compute/store loop, completion backpressure/metadata, management interlock, cache events and final SRAM bytes |
+| combined I/D product integration | `test-vsp-uword-memory-system` plus explicit product lint targets | external provider, bridge, shared iMMU, independent I-region/I-cache, global maintenance and D-side execute through one ordered physical fabric; 1290 checks/1483 cycles/72 lower beats/4 I-cache misses cover startup quarantine, lower-resident PHYSICAL I+D loop, active-program interlock, MMU-config ownership/backpressure, maintenance priority, full host `FENCE_I` sequence and rerun |
 
 Recent indexed-memory directed regressions specifically cover:
 
@@ -73,12 +76,14 @@ Recent indexed-memory directed regressions specifically cover:
 - a full sixteen-group gather and scatter with 64 byte-lane requests, including
   an index reaching offset 255 and duplicate-scatter last-writer behavior.
 
-The product-integration tests do prove that the selected sibling SRAM/cache/MMU
-RTL is connected and executable in the current D-side profile.  They do not
-prove an external SoC bus or real MMIO target exists, that an I-cache or DMA is
-connected, that the pipeline meets a target-process frequency/PPA point, that
-the memory engine has more than one outstanding beat, or that the internal
-uword encoding is a final ISA.
+The product-integration tests prove both a behavioral-fetch D-side profile and
+an external-IFetch combined I/D profile against repository SRAM harnesses.  The
+combined result is a distinct same-top dynamic regression, not evidence borrowed
+from the cached-program test.  It still does not cover translated or injected
+IFetch faults.  Neither level proves an external SoC bus, real MMIO target or
+DMA exists, that precise IFetch fault metadata is exported, that the pipeline
+meets a target-process frequency/PPA point, that the memory engine has more than
+one outstanding beat, or that the internal uword encoding is a final ISA.
 
 ## Synthesis smoke
 

@@ -10,13 +10,17 @@ Graphviz 源文件为 [`current-integration.dot`](current-integration.dot)。
 ## 1. 当前可运行闭环 `[RTL事实]`
 
 当前有一个 encoded uword 程序入口和一个 decoded MEMORY 参考入口；二者最终复用同一
-strict controller、execution cluster 和 vector memory engine。encoded 产品组合又把该
-engine 的 D-side 直接闭合到 cache/local/fabric：
+strict controller、execution cluster 和 vector memory engine。encoded program wrapper
+保留 behavioral control-store profile，同时新增 external-provider profile；后者把 I/D 两侧
+闭合到共享 MMU 和 physical fabric：
 
 ```text
-launch(start_pc,end_pc,context,group_mask,tag_seed)
+launch(start_pc,end_pc,context,group_mask,tag_seed,
+       ifetch_addr_space,ifetch_addr_context)
   -> one linear byte PC
-  -> behavioral control store
+  -> external IFetch provider seam
+  -> redirect-aware bridge / bundle adapter
+  -> shared iMMU + independent I-region + read-only I-cache
   -> 4-word fetch bundle / multi-record framing
   -> raw record holding
   -> semantic action adapter / decoded-action holding
@@ -25,13 +29,15 @@ launch(start_pc,end_pc,context,group_mask,tag_seed)
   -> one-issue-slot, four-SIMD4 execution/memory integration
   -> LSU + address routers + shared MMU/TLB/PTW
   -> D-cache / direct-local SRAM / uncached-device endpoint
-  -> shared physical fabric
+  -> shared physical fabric <- I-cache / PTW / D-cache / uncached-device
   -> generic ordered physical lower port
 ```
 
-这里的 program fetch 仍来自 behavioral control store。最后一个 lower port 也仍需外部
-SoC bus/target adapter；因此上图表示 executable D-side RTL 接线，不表示 architectural
-I-cache、AXI/NoC 或真实 MMIO target 已经实现。
+原有 `vsp_uword_cached_program_wrapper` 仍从 behavioral control store 取指，用于已有 D-side
+动态回归。新的 `vsp_uword_memory_system_wrapper` 静态选择 external provider，并实例化
+request bridge、共享 iMMU client、独立 I-region router 和 I-cache；它不是两个取指源的
+运行时 mux。最后一个 lower port 仍需外部 SoC bus/target adapter，因此这些 RTL 接线不表示
+AXI/NoC、DMA、真实 RAM/MMIO target 或 coherence 已经实现。
 
 uword 路径目前可执行：
 
@@ -81,6 +87,12 @@ engine。program source 会丢弃 held bundle，并对唯一的旧 outstanding r
 poison/drain；multi-record framer 同时清除年轻 word、continuity、EOF 和预取 END 状态。
 已经越过 framer、滞留在 raw-record holding 的年轻 record 也由 redirect 显式清除。首版
 对 taken 与 not-taken 都执行这套 redirect/refetch，优先保证一种恢复合同。
+
+external-provider profile 导出与 control store 相同的 PC/count request 和 packed-word/fault
+response，以及上述同一个 committed redirect event。request bridge 先捕获 source request，
+再以 canonical ready/valid 规则驱动 IFetch；redirect 不取消已接受的 bridge/cache/MMU
+transaction，而是让其完成并丢弃 stale response。launch 的 I-side address-space/context 在
+实际 start handshake 快照，不能用 execution context 代替 address context。
 
 multi-record framer 可以同时看见最多三条完整 record，但产品 wrapper 只把 record slot 0
 送入 raw-record holding；class semantic decoder 后面另有一个 decoded-action holding。
@@ -181,12 +193,16 @@ indexed lane access都要等待当前 response。request、response 和 parent c
 `vsp_ordered_dmem_model` 可模拟更深的无 ID ordered endpoint，但当前 engine 实际只占用
 一项。它仍是 byte-array protocol oracle，不是 D-cache、SRAM、MMU 或 DMA。
 
-产品组合现在有两层实际接线：
+产品组合现在有三层实际接线：
 
 - `vsp_dmem_cached_fabric_wrapper` 把 effective beat 依次接入 LSU、地址路由、共享
   MMU/TLB/PTW、D-cache、direct-local SRAM、uncached/device endpoint 和 physical fabric；
 - `vsp_uword_cached_program_wrapper` 直接连接 program wrapper 的 `dmem_req/rsp` 与上述
-  D-side，不再在两者间插入 testbench data-memory model。
+  D-side，不再在两者间插入 testbench data-memory model；其 instruction source 仍是
+  behavioral control store；
+- `vsp_uword_memory_system_wrapper` 改用 external IFetch provider，连接 request bridge、共享
+  iMMU、独立 I-region、read-only I-cache 和统一 maintenance controller，并把 I-cache lower
+  master 接入同一个 physical fabric。
 
 program-level 回归已经运行一个三次迭代的 16-byte
 `VLOAD -> saturating add -> VSTORE` physical/cacheable 循环，并在 completion 背压下检查
@@ -194,6 +210,13 @@ MEMORY completion metadata、management interlock、cache event 和 backing SRAM
 580 integration checks、669 cycles、28 lower beats。D-side 独立 product 回归另覆盖 LOCAL、UNCACHED、
 DEVICE、BARE translation、cache maintenance 和 fabric drain。准确的物理边界见
 [memory subsystem integration](../integration/memory-subsystem.md)。
+
+combined wrapper 另有独立的同顶层动态回归：从 shared-lower SRAM 中的 program image
+取指，运行 PHYSICAL I+D branch loop，并覆盖 startup quarantine、程序活动时 maintenance
+interlock、MMU-config ownership/response 背压、maintenance 同拍优先、完整 host `FENCE_I`
+序列与重跑。当前结果为 1290 checks、1483 cycles、72 shared-lower beats、4 次 I-cache
+miss。它没有覆盖 TRANSLATED IFetch、精确 IFetch fault metadata 或真实 SoC lower target，
+不能从这项通过结果外推这些能力。
 
 ## 5. CONTROL、state 与结束 `[RTL事实]`
 
@@ -220,8 +243,13 @@ partial 和 group progress 已透出，但程序内还没有读取这些状态�
 cached program wrapper 只在 MMU/cache 初始化完成、fabric 离开 quarantine、整条 D-side
 及 lower provider quiescent 时允许 launch。MMU configuration、TLB invalidate、D-cache
 maintenance 和 fabric drain 共用一项 registered management lane，只能在 program inactive
-且 memory quiescent 时接受。该 lane 是 bring-up serialization；LSU barrier 到全局 I/D
-maintenance 的 policy bridge 仍不存在。
+且 memory quiescent 时接受。这仍是 behavioral-fetch/D-only bring-up profile。
+
+combined memory-system wrapper 则要求 I/D path、maintenance controller 和 lower provider
+全部 ready/quiescent 才接受 launch。它只在 `program_active=0` 时向 global maintenance
+controller 提交 host command；接受后同时 quiesce 新的 I/D admission，再串行执行 I/D
+cache、统一 TLB 和 fabric action。mid-program `FENCE.I` 与 LSU barrier-to-global policy
+bridge 仍不存在，AXI/NoC/DMA quiescence 也仍由 wrapper 外部负责。
 
 ## 6. 独立实验与仿真模块 `[experimental]`
 
@@ -231,7 +259,8 @@ maintenance 的 policy bridge 仍不存在。
 - `vsp_cluster_register_route_engine`：VRF 寄存器重排实验；
 - `vsp_route_rendezvous_table`、`vsp_route_wave_controller`、
   `vsp_cluster_route_wave_pipeline`：participant 配对、frontier 与 fan-out 实验；
-- `vsp_ordered_ifetch_model`：尚未替换 behavioral control store 的 I-side 协议模型。
+- `vsp_ordered_ifetch_model`：独立 I-side 协议 oracle；combined product path 使用真实
+  bridge/IFetch/I-cache 组合，不实例化该模型。
 
 当前 assembler 不提供 `EXEC_ROUTE`/`VROUTE`，产品 execution wrapper 也把内部 route
 控制固定为禁用。实验 route RTL 的存在不表示当前程序支持全域寄存器路由、多 PC wave
@@ -244,7 +273,8 @@ CSR、特权态和中断入口。未来若把多 record admission/window 接入�
 描述 state RAW/WAW、resolved base、VRF row 和 MEMORY 依赖；不能把更多 record view
 或 issue slot 当成多 PC。
 
-地址侧当前已经按以下逻辑分层，最后一行仍在 wrapper 外：
+地址侧当前已经按以下两条逻辑前端分层，并只在共享 MMU/fabric 层次合流；最后一行仍在
+wrapper 外：
 
 ```text
 MEMORY semantic decode / scalar-address state
@@ -253,15 +283,24 @@ MEMORY semantic decode / scalar-address state
   -> dmem effective-address port
   -> LSU + translation/protection + local/cache endpoint policy
   -> D-cache / local SRAM / uncached-device adapter + physical fabric
+
+program source external-provider seam
+  -> redirect-aware bridge + IFetch bundle adapter
+  -> shared iMMU + independent I-region policy
+  -> read-only I-cache + shared physical fabric
+
+shared physical fabric
   -> SoC target decode / bus / RAM / MMIO
 ```
 
-control-store fetch 与 data-memory 保持两个逻辑前端；即使以后共享 SRAM/cache，也应在
-下游仲裁处合流，而不是让 data AGU 修改程序 PC。
+program fetch 与 data memory 保持两个逻辑前端；当前 product profile 已在下游共享 MMU/PTW
+和 fabric，而不是让 data AGU 修改程序 PC。
 
 尚需明确的集成语义包括：direct `LOCAL` 地址究竟长期表示 offset 还是带基址的地址（首个
 profile 采用 base zero）；trusted uword 是否有权直接指定 PHYSICAL/address context；LSU
 barrier 如何映射为 I/D cache、TLB 和 fabric maintenance；以及 lower port 下方怎样区分真实
 RAM 与具有副作用的 MMIO target。另一个现有接口不对称是顶层
-`protocol_error_clear_i` 不能清除 reset-only sticky 的外部 D-cache adapter error；aggregate
-可能在 clear 后继续为高，不能把它当作统一 clear-all 操作。
+`protocol_error_clear_i` 不能清除 reset-only sticky 的外部 I/D cache adapter error；aggregate
+可能在 clear 后继续为高，不能把它当作统一 clear-all 操作。canonical IFetch 内部的详细
+fault cause/eaddr/paddr 也尚未穿过 legacy program-source response；当前只能观察折叠的一位
+live fetch fault。

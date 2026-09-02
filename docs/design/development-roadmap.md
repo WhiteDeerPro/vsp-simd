@@ -25,7 +25,7 @@ register routing or multi-PC synchronization as prerequisites.
 
 ### Program/control closure
 
-- one byte PC and behavioral control store;
+- one byte PC with behavioral control-store and external-provider profiles;
 - up-to-four-word fetch bundle and cross-bundle record framing;
 - mixed EXEC/MEMORY/CONTROL structural predecode;
 - EXEC expander, MEMORY/CONTROL semantic decode and action adapter;
@@ -36,8 +36,9 @@ register routing or multi-PC synchronization as prerequisites.
   flush across source, framer and raw-record holding;
 - strict one-active-action class controller and ordered completion;
 - `CONTROL.END` and `program_done` reference behavior;
-- executable cached-program wrapper with launch readiness/quiescence gate and a
-  registered, single-entry host management lane.
+- executable cached-program wrapper with a D-side launch/quiescence gate, plus
+  a combined external-IFetch memory-system wrapper with an independent I-side
+  launch envelope and global maintenance controller.
 
 ### Data movement
 
@@ -52,8 +53,14 @@ register routing or multi-PC synchronization as prerequisites.
 - product D-side closure through LSU, address routers, shared MMU/TLB/PTW,
   writable D-cache, private local SRAM, uncached/device endpoint and physical
   fabric to a generic ordered lower port;
+- product I-side closure through a redirect-aware provider bridge, shared iMMU,
+  independent instruction-region policy and read-only I-cache into the same
+  ordered physical fabric;
 - executable physical/cacheable load/compute/store program through that product
-  D-side, with detailed MEMORY completion metadata preserved.
+  D-side, with detailed MEMORY completion metadata preserved;
+- combined external-IFetch I/D program regression through one ordered physical
+  fabric, including startup quarantine, branch/END, active-program maintenance
+  interlock, serialized MMU configuration, full host `FENCE_I` and rerun.
 
 ## Profile constraints
 
@@ -65,9 +72,9 @@ These are current design choices, not incidental test values:
 - four SIMD4 groups implemented, sixteen groups the profile bound;
 - no cross-group register-to-register route instruction;
 - no thread-like slot behavior;
-- executable program MEMORY path 已接入真实 cache、MMU/TLB/PTW、local endpoint 和
-  physical fabric；instruction source 仍是 behavioral control store，DMA、I-cache 和
-  external SoC target/bus 不在该 wrapper 中；
+- behavioral-fetch wrapper 与 external-IFetch combined wrapper 均保留；后者已接入
+  shared MMU/PTW、独立 I/D cache/region 和 physical fabric，但 DMA、AXI/NoC、真实 SoC
+  target decode 及精确 IFetch fault export 仍不在当前闭环中；
 - no branch prediction or exception machinery.
 
 Experimental Bênes/Omega/crossbar, wide gather, route rendezvous and route-wave
@@ -88,7 +95,7 @@ Acceptance:
   backpressure are covered;
 - four-group integration and sixteen-group elaboration both pass.
 
-## M2 — Address-system boundary (D-side product baseline implemented)
+## M2 — Address-system boundary (I/D product wiring baseline implemented)
 
 Goal: preserve a clean insertion point for real memory hierarchy work.
 
@@ -98,19 +105,25 @@ Implemented baseline:
 - static region policy 选择 cacheable/local/uncached/device endpoint；
 - cacheable 接真实 D-cache adapter/`param_cache`，LOCAL 接 private SRAM，
   UNCACHED/DEVICE 通过 owner-preserving merge 接 fixed-beat adapter；
-- D-cache、PTW 和 uncached/device traffic 经 physical fabric 到 generic ordered lower
-  port；fabric 保留 later I-cache native master seam；
+- external provider 经 redirect bridge、共享 iMMU、独立 I-region 和 read-only I-cache；
+- I-cache、D-cache、PTW 和 uncached/device traffic 经 physical fabric 到 generic ordered
+  lower port；
 - executable uword program 的 MEMORY request/response 已直接接入该 D-side，完整
   physical/cacheable load/compute/store loop 已通过动态回归；
 - shared-reset cancellation 和外部不可取消 transport 的 quarantine 责任已经写入合同；
+- host global maintenance 只在 program inactive 时接受，并组合 I/D quiesce、I/D cache、
+  unified TLB 与 fabric drain；
 - VSP-owned registered endpoint/PTW harness 覆盖 route、fault、stall 和 reset；
 - keep indexed requests lowered to ordinary effective-address byte operations.
 
-Remaining work is the I-side provider/I-cache path, external SoC target decode
-and bus adaptation, and the global maintenance policy bridge.  Before exposing
-the uword stream to untrusted software, resolve direct-LOCAL address
-representation, PHYSICAL/address-context authority, and real DEVICE/MMIO
-semantics.
+The combined-wrapper dynamic baseline now covers a PHYSICAL I+D program image;
+remaining I-side verification includes TRANSLATED fetch, fault injection and
+redirect during an outstanding I-cache miss.  Precise IFetch fault metadata,
+external SoC target decode/bus adaptation and the LSU-barrier to
+global-maintenance policy bridge also remain.  AXI, DMA and coherence are not
+implemented by this milestone.  Before exposing the uword stream to untrusted
+software, resolve direct-LOCAL address representation, PHYSICAL/address-context
+authority and real DEVICE/MMIO semantics.
 
 ## M3 — Loop and redirect (baseline implemented)
 

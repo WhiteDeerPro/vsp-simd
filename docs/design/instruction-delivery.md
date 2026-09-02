@@ -6,7 +6,7 @@ format is a development control-store format, not a frozen software ISA.
 ## Implemented path
 
 ```text
-behavioral control store
+[behavioral control store | external IFetch provider]
         │ byte PC, request up to 4 consecutive words
         ▼
 program source
@@ -34,6 +34,11 @@ profile.  The PC advances by four bytes for every stream word, including an
 extension/body word.  `J` and direct-comparison branches may redirect that
 single PC; there is no second PC, prediction, delay slot, CALL/RET or exception
 restart.
+
+Provider selection is an elaboration-time wrapper profile.  The external path
+uses a redirect-aware request bridge before shared iMMU/I-region/I-cache; it
+does not change the program source, framer or two-stage decode contracts.  The
+behavioral control store remains the focused control-path verification source.
 
 `FETCH_WORDS=4` means that the I-side can return four consecutive 32-bit stream
 words in one bundle.  It does not mean four instructions are issued.  A bundle
