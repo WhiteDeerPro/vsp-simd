@@ -34,7 +34,15 @@ open question.  No layer wins automatically.
 
 ## Product-path regression
 
-The default `make lint` and `make test` cover the current one-PC/one-slot path:
+The default `make lint` and `make test` cover the repository-owned
+one-PC/one-slot path.  The last three rows below depend on sibling memory-IP
+repositories and are explicit opt-in targets:
+
+```bash
+make lint-memory-product-integration test-memory-product-integration
+make test-vsp-uncached-device-merge
+make lint-vsp-uword-cached-program test-vsp-uword-cached-program
+```
 
 | Area | Main evidence | Supported claim |
 |---|---|---|
@@ -48,6 +56,9 @@ The default `make lint` and `make test` cover the current one-PC/one-slot path:
 | decoded memory integration | `vsp_cluster_memory_wrapper_tb` | linear LOAD→EXEC→STORE plus indexed gather/scatter through real VRF state endpoints |
 | strict controller integration | decoded controller, cluster controller and uword program tests | single-active class routing, ordered errors/completions, indexed programs and END quiescence |
 | I/D simulation endpoints | ordered IFetch and dmem model tests | byte-addressed ordered models with backpressure/fault/reset behavior |
+| product D-side integration | `vsp_dmem_cached_fabric_wrapper_tb` | real LSU/MMU, D-cache, local/uncached/device endpoints and physical fabric through an ordered lower SRAM |
+| endpoint merge | `vsp_uncached_device_merge_tb` | stalled grant/payload stability, fixed priority, response ownership, orphan handling and diagnostics |
+| cached program integration | `vsp_uword_cached_program_wrapper_tb` | three-iteration 16-byte physical/cacheable load/compute/store loop, completion backpressure/metadata, management interlock, cache events and final SRAM bytes |
 
 Recent indexed-memory directed regressions specifically cover:
 
@@ -62,10 +73,12 @@ Recent indexed-memory directed regressions specifically cover:
 - a full sixteen-group gather and scatter with 64 byte-lane requests, including
   an index reaching offset 255 and duplicate-scatter last-writer behavior.
 
-These tests do not prove a physical SRAM/cache/MMU/DMA exists, that the new
-pipeline meets a target-process frequency/PPA point, that the memory engine has
-more than one outstanding beat, or that the internal uword encoding is a final
-ISA.
+The product-integration tests do prove that the selected sibling SRAM/cache/MMU
+RTL is connected and executable in the current D-side profile.  They do not
+prove an external SoC bus or real MMIO target exists, that an I-cache or DMA is
+connected, that the pipeline meets a target-process frequency/PPA point, that
+the memory engine has more than one outstanding beat, or that the internal
+uword encoding is a final ISA.
 
 ## Synthesis smoke
 

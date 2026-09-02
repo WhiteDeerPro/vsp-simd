@@ -103,10 +103,12 @@ Indexed bytes are lowered to ordinary aligned 4-byte D-side loads/stores with
 byte selection or one-hot write strobe.  A downstream
 TLB/MMU/cache/local-memory adapter therefore sees ordinary effective-address
 traffic.  Physical SRAM, cache, MMU/TLB/PTW, DMA and coherence are not part of
-the vector memory engine.  The VSP-owned D-side integration wrapper now
-connects that logical port to the sibling LSU, address routers and shared MMU;
-concrete endpoints, physical fabric and global maintenance remain separate
-integration layers.
+the vector memory engine.  The VSP-owned product wrapper now connects that
+logical port through the sibling LSU, address routers and shared MMU to a
+writable D-cache, private local SRAM, uncached/device endpoint and physical
+fabric.  It terminates at a generic ordered physical lower port; SoC target
+decode/bus adaptation, DMA, the I-cache path and global maintenance policy
+remain separate integration layers.
 
 Cross-group register-to-register routing and its former multi-slot route-wave
 protocol have been removed from the product path.  Bênes/Omega/crossbar,
@@ -181,6 +183,9 @@ sibling projects in the containing workspace:
 make check-memory-ip-lock
 make lint-memory-integration
 make test-memory-integration
+make lint-memory-product-integration test-memory-product-integration
+make test-vsp-uncached-device-merge
+make lint-vsp-uword-cached-program test-vsp-uword-cached-program
 ```
 
 See [Memory subsystem integration](docs/integration/memory-subsystem.md) for

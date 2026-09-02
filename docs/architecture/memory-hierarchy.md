@@ -1,8 +1,9 @@
 # I-side / D-side 内存模型边界
 
-> 状态：逻辑端口和仿真合同已形成；D-side 已增加 LSU、地址路由和共享 MMU 的首轮
-> 集成 wrapper。I-cache、D-cache、物理 SRAM/fabric 与一致性策略仍是后续产品集成项。
-> 本页描述分层，不指定 cache 容量、行宽或替换算法。
+> 状态：逻辑端口和仿真合同已形成；product D-side 已接入 LSU、地址路由、共享 MMU、
+> D-cache、local SRAM、uncached/device endpoint 和 physical fabric，并以 ordered lower
+> port 结束。I-cache、外部 SoC target/bus、DMA 与一致性策略仍是后续产品集成项。本页
+> 描述分层，不固定 cache 容量、行宽或替换算法。
 
 ![I-side / D-side 预期分层](memory-hierarchy.svg)
 
@@ -41,9 +42,11 @@ outstanding 生命期合并为一套含糊状态。
 它们是协议 oracle，不是 cache。reset 丢弃在途响应但保留 backing 内容；初始化和
 观察 sideband 不冒充 VSP transaction。
 
-独立的 `vsp_dmem_subsystem_wrapper` 已把相同 D-side logical beat 接到外部 LSU、
+`vsp_dmem_subsystem_wrapper` 把相同 D-side logical beat 接到外部 LSU、
 address-space/region router 和真实 MMU/TLB/PTW，并以四类 physical endpoint seam 结束。
-它不替代上述 oracle，也尚未接入 program wrapper；当前组合证据及依赖基线见
+`vsp_dmem_cached_fabric_wrapper` 再闭合 D-cache、local SRAM、uncached/device adapter 和
+physical fabric；`vsp_uword_cached_program_wrapper` 直接连接 executable program 的
+`dmem_*`。这些组合不替代上述 protocol oracle；当前证据及依赖基线见
 [memory subsystem integration](../integration/memory-subsystem.md)。
 
 现有 `vsp_uword_program_source` 仍直接连接 behavioral control store，且把 fetch fault
@@ -71,7 +74,7 @@ effective address + address-space kind + opaque address context
 execution context 负责 action 所有权和 completion 回送；address context 负责翻译/
 保护域。两者不能互相替代。
 
-## 4. I-cache 与 D-cache 的候选职责
+## 4. I-cache 候选职责与当前 D-cache 边界
 
 ### I-cache role
 
@@ -92,8 +95,12 @@ execution context 负责 action 所有权和 completion 回送；address context
   request；cache 不猜测 vector register 语义。未来 coalescer 或 gather/scatter 加速器仍应
   保持在 D-side request 层，不修改 I-side 合同。
 
-首个物理版本可以完全没有 cache：I-side 接 program SRAM，D-side 接 local SRAM，
-再由 DMA 在 kernel 启动/结束边界搬运。逻辑拆分仍然成立。
+当前 product wrapper 已按这些职责接入 writeable `param_cache`，但 geometry 仍是参数，
+也尚未定义 DMA/host ownership。cache lower transaction 与 PTW、uncached/device traffic
+在 physical fabric 合流；fabric 以下的目标译码和 SoC transport 不在 wrapper 内。
+
+另一个 cacheless profile 仍可让 I-side 接 program SRAM、D-side 接 local SRAM，再由 DMA
+在 kernel 启动/结束边界搬运；逻辑拆分并不要求所有 profile 都实例化 cache。
 
 ## 5. Sequencer 地址状态
 
@@ -112,12 +119,14 @@ strict program wrapper 已把 CONTROL-state decoder、两词 MEMORY decoder、st
 
 ## 6. 后续实现顺序
 
-1. 给 program launch 增加 I-side address-space/context，接通 ordered fetch provider；
-2. 把 state/MEMORY 的 resolved base 与 RAW/WAW 依赖纳入 multi-record action window；
-3. 若 I/D 最终共享端口，实现单 lower-beat outstanding 的公平 adapter，并覆盖 I/D
-   竞争、response 背压、fault 累积和 reset；
-4. 有 workload 命中率与带宽数据后，再选择 I-cache/D-cache line、容量和 replacement；
-5. 引入 DMA 前定义数据 ownership 与 cache maintenance；引入 self-modifying program
+1. 给 program launch 增加 I-side address-space/context，接通 ordered fetch provider、
+   I-cache adapter 和现有 fabric I-cache master；
+2. 给 generic ordered lower port 接入真实 SoC target decode/bus，并覆盖 RAM/MMIO fault、
+   response 背压、reset epoch 与 quiescence；
+3. 实现 LSU barrier 到 I/D cache、TLB 与 fabric action 的 maintenance policy bridge；
+4. 把 state/MEMORY 的 resolved base 与 RAW/WAW 依赖纳入 multi-record action window；
+5. 有 workload 命中率与带宽数据后，再选择 I-cache/D-cache line、容量和 replacement；
+6. 引入 DMA 前定义数据 ownership 与 cache maintenance；引入 self-modifying program
    前定义 instruction visibility。
 
 这里没有把 cache 设为必须。独立逻辑端口、地址元数据和事务合同才是本阶段需要保留的

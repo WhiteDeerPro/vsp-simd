@@ -73,6 +73,42 @@ VSP_DMEM_SUBSYSTEM_TB := \
 	$(abspath sim/integration/vsp_dmem_subsystem_wrapper_tb.cpp)
 VSP_DMEM_SUBSYSTEM_TEST_RTL := $(VSP_DMEM_SUBSYSTEM_WRAPPER_RTL) \
 	$(VSP_DMEM_SUBSYSTEM_TB_TOP)
+VSP_DMEM_CACHED_FABRIC_TOP := vsp_dmem_cached_fabric_wrapper
+VSP_DMEM_CACHED_FABRIC_TEST_TOP := \
+	vsp_dmem_cached_fabric_wrapper_tb_top
+VSP_DMEM_CACHED_FABRIC_OBJ := \
+	$(BUILD_DIR)/vsp_dmem_cached_fabric_obj_dir
+VSP_DMEM_CACHED_FABRIC_TB_TOP := \
+	$(abspath sim/integration/vsp_dmem_cached_fabric_wrapper_tb_top.sv)
+VSP_DMEM_CACHED_FABRIC_TB := \
+	$(abspath sim/integration/vsp_dmem_cached_fabric_wrapper_tb.cpp)
+VSP_DMEM_CACHED_FABRIC_TEST_RTL := \
+	$(VSP_DMEM_CACHED_FABRIC_WRAPPER_RTL) \
+	$(VSP_DMEM_CACHED_FABRIC_TB_TOP)
+VSP_UNCACHED_DEVICE_MERGE_TEST_TOP := \
+	vsp_uncached_device_merge_tb_top
+VSP_UNCACHED_DEVICE_MERGE_OBJ := \
+	$(BUILD_DIR)/vsp_uncached_device_merge_obj_dir
+VSP_UNCACHED_DEVICE_MERGE_TB_TOP := \
+	$(abspath sim/integration/vsp_uncached_device_merge_tb_top.sv)
+VSP_UNCACHED_DEVICE_MERGE_TB := \
+	$(abspath sim/integration/vsp_uncached_device_merge_tb.cpp)
+VSP_UNCACHED_DEVICE_MERGE_TEST_RTL := \
+	$(VSP_MEMORY_ENDPOINTS_PKG_RTL) \
+	$(RTL_VSP_UNCACHED_DEVICE_MERGE) \
+	$(VSP_UNCACHED_DEVICE_MERGE_TB_TOP)
+VSP_UWORD_CACHED_PROGRAM_TOP := vsp_uword_cached_program_wrapper
+VSP_UWORD_CACHED_PROGRAM_TEST_TOP := \
+	vsp_uword_cached_program_wrapper_tb_top
+VSP_UWORD_CACHED_PROGRAM_OBJ := \
+	$(BUILD_DIR)/vsp_uword_cached_program_obj_dir
+VSP_UWORD_CACHED_PROGRAM_TB_TOP := \
+	$(abspath sim/integration/vsp_uword_cached_program_wrapper_tb_top.sv)
+VSP_UWORD_CACHED_PROGRAM_TB := \
+	$(abspath sim/integration/vsp_uword_cached_program_wrapper_tb.cpp)
+VSP_UWORD_CACHED_PROGRAM_TEST_RTL := \
+	$(VSP_UWORD_CACHED_PROGRAM_WRAPPER_RTL) \
+	$(VSP_UWORD_CACHED_PROGRAM_TB_TOP)
 VSP_MEMORY_UWORD_DECODER_TOP := vsp_memory_uword_decoder
 VSP_MEMORY_UWORD_DECODER_OBJ := \
 	$(BUILD_DIR)/vsp_memory_uword_decoder_obj_dir
@@ -123,6 +159,10 @@ VSP_UWORD_VECTOR_MEMORY_LOOP_SOURCE := \
 	examples/uword/program_vector_memory_loop.uasm
 VSP_UWORD_VECTOR_MEMORY_LOOP_HEX := \
 	$(BUILD_DIR)/program_vector_memory_loop.hex
+VSP_UWORD_PHYSICAL_MEMORY_SOURCE := \
+	examples/uword/program_vector_memory_physical.uasm
+VSP_UWORD_PHYSICAL_MEMORY_HEX := \
+	$(BUILD_DIR)/program_vector_memory_physical.hex
 CLUSTER_RESULT_COLLECTOR_TOP := simd_cluster_result_collector
 CLUSTER_RESULT_COLLECTOR_OBJ := $(BUILD_DIR)/cluster_result_collector_obj_dir
 CLUSTER_RESULT_COLLECTOR_TB  := $(abspath sim/simd_cluster_result_collector_tb.cpp)
@@ -241,6 +281,9 @@ MUL32_MICRO_BIN := $(BUILD_DIR)/mul32_microcode_tb
 	test-vsp-uword-cluster-program \
 	check-memory-ip-deps check-memory-ip-lock \
 	lint-memory-integration test-memory-integration \
+	lint-memory-product-integration test-memory-product-integration \
+	test-vsp-uncached-device-merge \
+	lint-vsp-uword-cached-program test-vsp-uword-cached-program \
 	test-vsp-memory-uword-decoder test-vsp-control-uword-decoder \
 	test-vsp-uword-action-adapter \
 	test-vsp-ordered-action-window \
@@ -666,6 +709,11 @@ $(VSP_UWORD_VECTOR_MEMORY_LOOP_HEX): $(VSP_UWORD_ASM_TOOL) \
 	$(PYTHON) $(VSP_UWORD_ASM_TOOL) $(VSP_UWORD_VECTOR_MEMORY_LOOP_SOURCE) \
 		-o $@ --base-pc 0x20
 
+$(VSP_UWORD_PHYSICAL_MEMORY_HEX): $(VSP_UWORD_ASM_TOOL) \
+		$(VSP_UWORD_PHYSICAL_MEMORY_SOURCE) $(BUILD_META) | $(BUILD_DIR)
+	$(PYTHON) $(VSP_UWORD_ASM_TOOL) $(VSP_UWORD_PHYSICAL_MEMORY_SOURCE) \
+		-o $@ --base-pc 0x20
+
 $(VSP_UWORD_CLUSTER_PROGRAM_OBJ)/V$(VSP_UWORD_CLUSTER_PROGRAM_TOP): \
 		$(VSP_UWORD_CLUSTER_PROGRAM_WRAPPER_RTL) \
 		$(VSP_UWORD_CLUSTER_PROGRAM_TB) $(BUILD_META) | $(BUILD_DIR)
@@ -728,6 +776,66 @@ lint-memory-integration: check-memory-ip-lock
 	$(VERILATOR) --lint-only -Wall -Wno-fatal --assert \
 		--top-module $(VSP_DMEM_SUBSYSTEM_TOP) \
 		$(VSP_DMEM_SUBSYSTEM_TEST_RTL)
+
+lint-memory-product-integration: check-memory-ip-lock
+	$(VERILATOR) --lint-only -Wall -Wno-fatal --assert \
+		--top-module $(VSP_DMEM_CACHED_FABRIC_TOP) \
+		$(VSP_DMEM_CACHED_FABRIC_WRAPPER_RTL)
+
+lint-vsp-uword-cached-program: check-memory-ip-lock
+	$(VERILATOR) --lint-only -Wall -Wno-fatal --assert \
+		--top-module $(VSP_UWORD_CACHED_PROGRAM_TOP) \
+		$(VSP_UWORD_CACHED_PROGRAM_WRAPPER_RTL)
+
+$(VSP_DMEM_CACHED_FABRIC_OBJ)/V$(VSP_DMEM_CACHED_FABRIC_TEST_TOP): \
+		$(VSP_DMEM_CACHED_FABRIC_TEST_RTL) \
+		$(VSP_DMEM_CACHED_FABRIC_TB) $(BUILD_META) \
+		$(VSP_MEMORY_IP_LOCK) | check-memory-ip-lock $(BUILD_DIR)
+	$(VERILATOR) -Wall -Wno-fatal --assert --cc --exe \
+		--top-module $(VSP_DMEM_CACHED_FABRIC_TEST_TOP) \
+		--Mdir $(VSP_DMEM_CACHED_FABRIC_OBJ) \
+		$(VSP_DMEM_CACHED_FABRIC_TEST_RTL) \
+		$(VSP_DMEM_CACHED_FABRIC_TB)
+	$(MAKE) -C $(VSP_DMEM_CACHED_FABRIC_OBJ) \
+		-f V$(VSP_DMEM_CACHED_FABRIC_TEST_TOP).mk
+
+test-memory-product-integration: check-memory-ip-lock \
+		$(VSP_DMEM_CACHED_FABRIC_OBJ)/V$(VSP_DMEM_CACHED_FABRIC_TEST_TOP)
+	$(VSP_DMEM_CACHED_FABRIC_OBJ)/V$(VSP_DMEM_CACHED_FABRIC_TEST_TOP)
+
+$(VSP_UNCACHED_DEVICE_MERGE_OBJ)/V$(VSP_UNCACHED_DEVICE_MERGE_TEST_TOP): \
+		$(VSP_UNCACHED_DEVICE_MERGE_TEST_RTL) \
+		$(VSP_UNCACHED_DEVICE_MERGE_TB) $(BUILD_META) \
+		$(VSP_MEMORY_IP_LOCK) | check-memory-ip-lock $(BUILD_DIR)
+	$(VERILATOR) -Wall -Wno-fatal --assert --cc --exe \
+		--top-module $(VSP_UNCACHED_DEVICE_MERGE_TEST_TOP) \
+		--Mdir $(VSP_UNCACHED_DEVICE_MERGE_OBJ) \
+		$(VSP_UNCACHED_DEVICE_MERGE_TEST_RTL) \
+		$(VSP_UNCACHED_DEVICE_MERGE_TB)
+	$(MAKE) -C $(VSP_UNCACHED_DEVICE_MERGE_OBJ) \
+		-f V$(VSP_UNCACHED_DEVICE_MERGE_TEST_TOP).mk
+
+test-vsp-uncached-device-merge: check-memory-ip-lock \
+		$(VSP_UNCACHED_DEVICE_MERGE_OBJ)/V$(VSP_UNCACHED_DEVICE_MERGE_TEST_TOP)
+	$(VSP_UNCACHED_DEVICE_MERGE_OBJ)/V$(VSP_UNCACHED_DEVICE_MERGE_TEST_TOP)
+
+$(VSP_UWORD_CACHED_PROGRAM_OBJ)/V$(VSP_UWORD_CACHED_PROGRAM_TEST_TOP): \
+		$(VSP_UWORD_CACHED_PROGRAM_TEST_RTL) \
+		$(VSP_UWORD_CACHED_PROGRAM_TB) $(BUILD_META) \
+		$(VSP_MEMORY_IP_LOCK) | check-memory-ip-lock $(BUILD_DIR)
+	$(VERILATOR) -Wall -Wno-fatal --assert --cc --exe \
+		--top-module $(VSP_UWORD_CACHED_PROGRAM_TEST_TOP) \
+		--Mdir $(VSP_UWORD_CACHED_PROGRAM_OBJ) \
+		$(VSP_UWORD_CACHED_PROGRAM_TEST_RTL) \
+		$(VSP_UWORD_CACHED_PROGRAM_TB)
+	$(MAKE) -C $(VSP_UWORD_CACHED_PROGRAM_OBJ) \
+		-f V$(VSP_UWORD_CACHED_PROGRAM_TEST_TOP).mk
+
+test-vsp-uword-cached-program: check-memory-ip-lock \
+		$(VSP_UWORD_PHYSICAL_MEMORY_HEX) \
+		$(VSP_UWORD_CACHED_PROGRAM_OBJ)/V$(VSP_UWORD_CACHED_PROGRAM_TEST_TOP)
+	$(VSP_UWORD_CACHED_PROGRAM_OBJ)/V$(VSP_UWORD_CACHED_PROGRAM_TEST_TOP) \
+		$(VSP_UWORD_PHYSICAL_MEMORY_HEX)
 
 $(VSP_DMEM_SUBSYSTEM_OBJ)/V$(VSP_DMEM_SUBSYSTEM_TOP): \
 		$(VSP_DMEM_SUBSYSTEM_TEST_RTL) $(VSP_DMEM_SUBSYSTEM_TB) \

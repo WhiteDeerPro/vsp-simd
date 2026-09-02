@@ -1,0 +1,18 @@
+# Product D-side integration program.  Three 16-byte blocks are loaded through
+# the PHYSICAL/cacheable path, transformed by unsigned saturating add, and
+# written back through the write-through D-cache.  The loop intentionally
+# matches program_vector_memory_loop.uasm while moving its data source from the
+# behavioral D-memory model to the integrated cache/fabric hierarchy.
+
+entry:
+    LI rd=1 imm=0x1040
+    LI rd=2 imm=0x1070
+
+loop:
+    VLOAD space=physical addr_context=0 sbase=1 vrf=0 span=16 offset=0
+    EXEC_ALU_RI op=add_sat_u mode=byte va=0 vd=1 imm=40
+    VSTORE space=physical addr_context=0 sbase=1 vrf=1 span=16 offset=256
+    ADDI rd=1 rs1=1 imm=16
+    BLTU rs1=1 rs2=2 target=loop
+
+    END

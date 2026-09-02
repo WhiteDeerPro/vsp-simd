@@ -98,7 +98,7 @@ physical `SIMD group` 没有对应关系，文档不得把二者简称为同一�
 | child transaction / beat | parent 对一个 VRF group endpoint 或 dmem endpoint 发出的原子传输 |
 | outstanding transaction | request 已被 endpoint 接受而相应 response 尚未完成的事务 |
 | single-outstanding MEMORY | 当前为 `1 active parent + 1 dmem beat outstanding`；dmem 无 transaction ID，下一 beat 必须等待当前 response |
-| address context | 交给未来 translation/protection adapter 的 opaque domain handle |
+| address context | 交给 translation/protection subsystem 的 opaque domain handle；当前 trusted-uword profile 可直接提供，尚无 privilege 层校验 |
 | AGU | 把 base、signed offset、group/lane 和 index byte 变为 effective address；不负责 response correlation 或 retirement |
 
 当前只有一个程序 PC。fetch 一次可带四个 word、framer 可看见多个 record、执行前端可以

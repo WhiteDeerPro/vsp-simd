@@ -35,7 +35,9 @@ register routing or multi-PC synchronization as prerequisites.
 - PC-relative `J/BEQ/BNE/BLT/BGE/BLTU/BGEU`, source redirect and younger-state
   flush across source, framer and raw-record holding;
 - strict one-active-action class controller and ordered completion;
-- `CONTROL.END` and `program_done` reference behavior.
+- `CONTROL.END` and `program_done` reference behavior;
+- executable cached-program wrapper with launch readiness/quiescence gate and a
+  registered, single-entry host management lane.
 
 ### Data movement
 
@@ -46,7 +48,12 @@ register routing or multi-PC synchronization as prerequisites.
 - actual four-group/16-byte profile, parameterized to sixteen groups/64 bytes;
 - one active MEMORY parent and one outstanding D-side beat;
 - exact stop-on-first fault/partial completion state;
-- ordered D-side simulation model and independent I-side simulation model.
+- ordered D-side simulation model and independent I-side simulation model;
+- product D-side closure through LSU, address routers, shared MMU/TLB/PTW,
+  writable D-cache, private local SRAM, uncached/device endpoint and physical
+  fabric to a generic ordered lower port;
+- executable physical/cacheable load/compute/store program through that product
+  D-side, with detailed MEMORY completion metadata preserved.
 
 ## Profile constraints
 
@@ -58,8 +65,9 @@ These are current design choices, not incidental test values:
 - four SIMD4 groups implemented, sixteen groups the profile bound;
 - no cross-group register-to-register route instruction;
 - no thread-like slot behavior;
-- executable program wrapper 尚未接入 cache、MMU/TLB/PTW 或 DMA；独立 D-side
-  integration wrapper 已接入真实 LSU/MMU/TLB/PTW 并通过组合测试；
+- executable program MEMORY path 已接入真实 cache、MMU/TLB/PTW、local endpoint 和
+  physical fabric；instruction source 仍是 behavioral control store，DMA、I-cache 和
+  external SoC target/bus 不在该 wrapper 中；
 - no branch prediction or exception machinery.
 
 Experimental Bênes/Omega/crossbar, wide gather, route rendezvous and route-wave
@@ -80,7 +88,7 @@ Acceptance:
   backpressure are covered;
 - four-group integration and sixteen-group elaboration both pass.
 
-## M2 — Address-system boundary (integration baseline implemented)
+## M2 — Address-system boundary (D-side product baseline implemented)
 
 Goal: preserve a clean insertion point for real memory hierarchy work.
 
@@ -88,12 +96,21 @@ Implemented baseline:
 
 - D-side request 经 LSU、address-space router、MMU 和 physical-region router；
 - static region policy 选择 cacheable/local/uncached/device endpoint；
+- cacheable 接真实 D-cache adapter/`param_cache`，LOCAL 接 private SRAM，
+  UNCACHED/DEVICE 通过 owner-preserving merge 接 fixed-beat adapter；
+- D-cache、PTW 和 uncached/device traffic 经 physical fabric 到 generic ordered lower
+  port；fabric 保留 later I-cache native master seam；
+- executable uword program 的 MEMORY request/response 已直接接入该 D-side，完整
+  physical/cacheable load/compute/store loop 已通过动态回归；
 - shared-reset cancellation 和外部不可取消 transport 的 quarantine 责任已经写入合同；
 - VSP-owned registered endpoint/PTW harness 覆盖 route、fault、stall 和 reset；
 - keep indexed requests lowered to ordinary effective-address byte operations.
 
-Remaining product work is concrete endpoint/fabric integration and connection
-to the executable program wrapper, not a speculative cache-capacity choice.
+Remaining work is the I-side provider/I-cache path, external SoC target decode
+and bus adaptation, and the global maintenance policy bridge.  Before exposing
+the uword stream to untrusted software, resolve direct-LOCAL address
+representation, PHYSICAL/address-context authority, and real DEVICE/MMIO
+semantics.
 
 ## M3 — Loop and redirect (baseline implemented)
 

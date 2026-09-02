@@ -85,6 +85,25 @@ module vsp_uword_cluster_program_wrapper #(
                                                      action_cpl_status_o,
   output logic [DECODE_ERROR_W-1:0]                 action_cpl_decode_error_o,
   output logic                                      action_cpl_end_o,
+  // MEMORY-class detail is valid with an ordered MEMORY completion.  Other
+  // completion classes drive canonical zero so software-facing integration
+  // does not have to inspect stale child-engine payload.
+  output logic [vsp_pkg::VSP_MEM_OP_W-1:0]         action_cpl_memory_op_o,
+  output logic [vsp_pkg::VSP_MEM_CPL_STATUS_W-1:0]
+                                                     action_cpl_memory_status_o,
+  output logic [vsp_pkg::VSP_MEM_FAULT_CAUSE_W-1:0]
+                                                     action_cpl_memory_fault_cause_o,
+  output logic [MEM_EADDR_W-1:0]
+                                                     action_cpl_memory_fault_eaddr_o,
+  output logic [GROUP_COUNT-1:0]
+                                                     action_cpl_memory_requested_group_mask_o,
+  output logic [GROUP_COUNT-1:0]
+                                                     action_cpl_memory_completed_group_mask_o,
+  output logic [GROUP_COUNT-1:0]
+                                                     action_cpl_memory_failed_group_mask_o,
+  output logic [SPAN_BYTES_W-1:0]
+                                                     action_cpl_memory_bytes_committed_o,
+  output logic                                      action_cpl_memory_partial_o,
 
   output logic                                      exec_result_valid_o,
   input  logic                                      exec_result_ready_i,
@@ -330,6 +349,20 @@ module vsp_uword_cluster_program_wrapper #(
   logic [VSP_ACTION_CPL_STATUS_W-1:0] cluster_action_cpl_status;
   logic [DECODE_ERROR_W-1:0] cluster_action_cpl_decode_error;
   logic cluster_action_cpl_end;
+  logic [vsp_pkg::VSP_MEM_OP_W-1:0] cluster_action_cpl_memory_op;
+  logic [vsp_pkg::VSP_MEM_CPL_STATUS_W-1:0]
+      cluster_action_cpl_memory_status;
+  logic [vsp_pkg::VSP_MEM_FAULT_CAUSE_W-1:0]
+      cluster_action_cpl_memory_fault_cause;
+  logic [MEM_EADDR_W-1:0] cluster_action_cpl_memory_fault_eaddr;
+  logic [GROUP_COUNT-1:0]
+      cluster_action_cpl_memory_requested_group_mask;
+  logic [GROUP_COUNT-1:0]
+      cluster_action_cpl_memory_completed_group_mask;
+  logic [GROUP_COUNT-1:0]
+      cluster_action_cpl_memory_failed_group_mask;
+  logic [SPAN_BYTES_W-1:0] cluster_action_cpl_memory_bytes_committed;
+  logic cluster_action_cpl_memory_partial;
 
   logic state_action_selected;
   logic state_cmd_valid;
@@ -707,6 +740,36 @@ module vsp_uword_cluster_program_wrapper #(
       '0 : cluster_action_cpl_decode_error);
   assign action_cpl_end_o = (branch_cpl_valid_q || state_cpl_valid) ? 1'b0 :
       cluster_action_cpl_end;
+  always_comb begin : p_memory_completion_detail
+    action_cpl_memory_op_o = '0;
+    action_cpl_memory_status_o = '0;
+    action_cpl_memory_fault_cause_o = '0;
+    action_cpl_memory_fault_eaddr_o = '0;
+    action_cpl_memory_requested_group_mask_o = '0;
+    action_cpl_memory_completed_group_mask_o = '0;
+    action_cpl_memory_failed_group_mask_o = '0;
+    action_cpl_memory_bytes_committed_o = '0;
+    action_cpl_memory_partial_o = 1'b0;
+
+    if (action_cpl_valid_o &&
+        (action_cpl_class_o == VSP_ACTION_CLASS_MEMORY)) begin
+      action_cpl_memory_op_o = cluster_action_cpl_memory_op;
+      action_cpl_memory_status_o = cluster_action_cpl_memory_status;
+      action_cpl_memory_fault_cause_o =
+          cluster_action_cpl_memory_fault_cause;
+      action_cpl_memory_fault_eaddr_o =
+          cluster_action_cpl_memory_fault_eaddr;
+      action_cpl_memory_requested_group_mask_o =
+          cluster_action_cpl_memory_requested_group_mask;
+      action_cpl_memory_completed_group_mask_o =
+          cluster_action_cpl_memory_completed_group_mask;
+      action_cpl_memory_failed_group_mask_o =
+          cluster_action_cpl_memory_failed_group_mask;
+      action_cpl_memory_bytes_committed_o =
+          cluster_action_cpl_memory_bytes_committed;
+      action_cpl_memory_partial_o = cluster_action_cpl_memory_partial;
+    end
+  end
 
   vsp_uword_control_store #(
     .PC_W(PC_W),
@@ -989,15 +1052,21 @@ module vsp_uword_cluster_program_wrapper #(
     .action_cpl_exec_rejected_o(),
     .action_cpl_exec_empty_mask_o(),
     .action_cpl_exec_owner_mismatch_o(),
-    .action_cpl_memory_op_o(),
-    .action_cpl_memory_status_o(),
-    .action_cpl_memory_fault_cause_o(),
-    .action_cpl_memory_fault_eaddr_o(),
-    .action_cpl_memory_requested_group_mask_o(),
-    .action_cpl_memory_completed_group_mask_o(),
-    .action_cpl_memory_failed_group_mask_o(),
-    .action_cpl_memory_bytes_committed_o(),
-    .action_cpl_memory_partial_o(),
+    .action_cpl_memory_op_o(cluster_action_cpl_memory_op),
+    .action_cpl_memory_status_o(cluster_action_cpl_memory_status),
+    .action_cpl_memory_fault_cause_o(
+        cluster_action_cpl_memory_fault_cause),
+    .action_cpl_memory_fault_eaddr_o(
+        cluster_action_cpl_memory_fault_eaddr),
+    .action_cpl_memory_requested_group_mask_o(
+        cluster_action_cpl_memory_requested_group_mask),
+    .action_cpl_memory_completed_group_mask_o(
+        cluster_action_cpl_memory_completed_group_mask),
+    .action_cpl_memory_failed_group_mask_o(
+        cluster_action_cpl_memory_failed_group_mask),
+    .action_cpl_memory_bytes_committed_o(
+        cluster_action_cpl_memory_bytes_committed),
+    .action_cpl_memory_partial_o(cluster_action_cpl_memory_partial),
     .exec_result_valid_o,
     .exec_result_ready_i,
     .exec_result_group_o,

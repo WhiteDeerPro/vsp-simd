@@ -169,18 +169,32 @@ digraph vsp_current_integration {
       color="#755eaa"
     ];
     dmem_model [
-      label="ordered dmem simulation model\nbyte array + strobes + faults\nnot a cache/SRAM",
+      label="ordered dmem simulation oracle\nbyte array + strobes + faults\nnot in product cached path",
       fillcolor="#fff7dc",
       color="#b58b23"
     ];
-    future_adapter [
-      label="future translation/protection adapter\nTLB + cache/local router",
-      style="rounded,dashed,filled",
-      fillcolor="#f6f6f6",
-      color="#999999"
+    dmem_policy [
+      label="D-side policy core\nLSU + address-space/region routers\nshared MMU + i/d TLB/PTW",
+      fillcolor="#ecf8ef",
+      color="#4e8f62"
+    ];
+    dmem_endpoints [
+      label="product D-side endpoints\nwritable D-cache + private local SRAM\nUNCACHED/DEVICE owner-preserving merge",
+      fillcolor="#ecf8ef",
+      color="#4e8f62"
+    ];
+    physical_fabric [
+      label="shared physical fabric\nD-cache + PTW + uncached/device\nI-cache-native master seam exposed",
+      fillcolor="#ecf8ef",
+      color="#4e8f62"
+    ];
+    lower_boundary [
+      label="generic ordered physical lower port\nsingle outstanding / protocol neutral",
+      fillcolor="#f0edff",
+      color="#755eaa"
     ];
     future_memory [
-      label="future local SRAM / cache / SoC memory\nDMA is a separate producer/client",
+      label="external SoC target integration\nbus adapter + RAM/MMIO decode\nDMA is a separate producer/client",
       style="rounded,dashed,filled",
       fillcolor="#f6f6f6",
       color="#999999"
@@ -197,10 +211,23 @@ digraph vsp_current_integration {
     vector_memory -> vrf_arbiter [dir=both, label="VRF child transaction"];
     vrf_arbiter -> exec_cluster [dir=both, label="group VRF endpoint"];
     vector_memory -> dmem_boundary [dir=both, label="one beat at a time"];
-    dmem_boundary -> dmem_model [dir=both, color="#b58b23", label="simulation"];
-    dmem_boundary -> future_adapter [dir=both, style=dashed, color="#999999"];
-    future_adapter -> future_memory [dir=both, style=dashed, color="#999999"];
+    dmem_boundary -> dmem_model [dir=both, style=dashed, color="#b58b23", label="oracle"];
+    dmem_boundary -> dmem_policy [dir=both, label="product"];
+    dmem_policy -> dmem_endpoints [dir=both, label="cache/local/UC/device"];
+    dmem_policy -> physical_fabric [dir=both, label="PTW"];
+    dmem_endpoints -> physical_fabric [dir=both, label="cache/UC physical traffic"];
+    physical_fabric -> lower_boundary [dir=both];
+    lower_boundary -> future_memory [dir=both, style=dashed, color="#999999"];
   }
+
+  management_lane [
+    label="registered host management lane\nMMU cfg > TLBI > D-cache maint > drain\nprogram inactive + full D-side quiescent",
+    fillcolor="#ecf8ef",
+    color="#4e8f62"
+  ];
+  management_lane -> dmem_policy [dir=both, label="MMU/TLB"];
+  management_lane -> dmem_endpoints [dir=both, label="D-cache maint"];
+  management_lane -> physical_fabric [dir=both, label="drain"];
 
   subgraph cluster_experimental {
     label="Independent experimental RTL (not connected to product PC/path)";
@@ -236,18 +263,19 @@ digraph vsp_current_integration {
   }
 
   control_gap [
-    label="not implemented in product path:\nscalar L/S, CALL/RET, reduction-to-state,\nbranch prediction, multi-PC, cache/MMU",
+    label="not implemented in product path:\narchitectural I-fetch/I-cache, SoC lower decode/bus,\nmaintenance policy bridge, scalar L/S, CALL/RET,\nreduction-to-state, branch prediction, multi-PC",
     shape=note,
     style="filled,dashed",
     fillcolor="#fff0f0",
     color="#b45b5b"
   ];
   control_gap -> pc_source [style=dashed, color="#b45b5b", label="future control"];
-  control_gap -> future_adapter [style=dashed, color="#b45b5b"];
+  control_gap -> management_lane [style=dashed, color="#b45b5b", label="global policy"];
+  control_gap -> lower_boundary [style=dashed, color="#b45b5b", label="SoC boundary"];
 
   legend [
     shape=note,
-    label="Legend\nblue: instantiated uword transport\ngreen: instantiated semantic/engine path\namber dashed: independent experiment/model\ngray/red dashed: future or missing boundary\npurple: completion/result return",
+    label="Legend\nblue: instantiated uword transport\ngreen: instantiated semantic/engine/D-side path\namber dashed: independent experiment/model\ngray/red dashed: external or missing boundary\npurple: completion/result return",
     fillcolor="#ffffff",
     color="#9aa7b3"
   ];

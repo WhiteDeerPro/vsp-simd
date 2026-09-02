@@ -11,9 +11,10 @@
 > 定向程序已执行 `SMOVI/SADD/SADDI → VLOAD → EXEC → VSTORE → END`。
 > `sim/models/vsp_ordered_dmem_model.sv` 已提供
 > 可配置 FIFO outstanding 的有序仿真 endpoint，但不代表物理 SRAM 已实现。
-> 另有 VSP-owned D-side wrapper 接入外部 LSU、地址路由和共享 MMU；具体
-> local/cache/uncached/device endpoint、physical fabric、动态 owner/resource controller
-> 与 DMA 仍待产品级接线。
+> VSP-owned product wrapper 已把同一 D-side 接入外部 LSU、地址路由、共享 MMU、
+> D-cache、local SRAM、uncached/device endpoint 和 physical fabric，并直接承接 executable
+> uword MEMORY path；generic ordered lower 以下的 SoC target/bus、I-cache、DMA 与全局
+> maintenance policy 仍待接线。
 > 本文不规定总线宽度、SRAM 组织或 DMA 描述符格式。
 > 当前 MEMORY engine 同时支持 unit-stride 与 unsigned-byte indexed addressing；
 > `INDEX_U8+LOAD/STORE` 分别形成 gather/scatter。产品路径不再提供跨 group 的
@@ -28,10 +29,10 @@ instruction queue。queue 只需保存 descriptor reference、目标摘要、依
 
 候选数据层级为：
 
-下面是最终可能出现的完整层级。当前 decoded program reference integration 在
-`dmem_*` 逻辑边界处终止；testbench 在边界外提供 local-memory model。独立 D-side
-integration wrapper 已验证 logical beat 到 LSU/MMU/endpoint seam，物理 local SRAM、
-cache/fabric、SoC DMA 及其上方接口仍在后续集成。
+下面是最终可能出现的完整数据准备层级。decoded reference integration 仍可在
+`dmem_*` 逻辑边界处终止并使用 local-memory oracle；另一个 product program wrapper 已把
+同一逻辑口接到 LSU/MMU、local/cache/uncached-device endpoint 与 physical fabric。
+SoC lower target、DMA 及其 ingress/capture 接口仍在后续集成。
 
 ```text
 SoC memory / producer
@@ -216,7 +217,7 @@ dmem LOAD response
 decoded STORE → END` action stream，不由 driver 等待并选择下一 class；strict
 controller 自动建立顺序，并验证统一 completion 背压、MEMORY owner precheck、
 fault/partial detail 与 END。该 closure 仍是 blocking single-active reference，
-不表示 queue-head sequencer、物理 SRAM 或 DMA 已完成。
+不表示 queue-head sequencer 或 DMA 已完成。
 
 再外层 `vsp_uword_cluster_program_wrapper` 已从 behavioral control store 的 byte-PC
 stream 解析 CONTROL state 与 MEMORY record。当前 directed closure 先以
@@ -226,14 +227,19 @@ address space/context、request backpressure、load data、store data/strobe，�
 有序 completion/tag。MEMORY admission 快照 state base，后续 transfer 不 live-read
 state RF。
 
+产品级 `vsp_uword_cached_program_wrapper` 另以同一个 behavioral control-store program
+执行三次 16-byte physical/cacheable `VLOAD -> saturating add -> VSTORE` 循环，并通过
+真实 D-cache、physical fabric 和 ordered SRAM 检查结果及详细 MEMORY completion。它保持
+相同 single-active/single-dmem-beat engine 合同，不增加 action overlap。
+
 该闭环仍只消费 framer slot 0，并在全局 single-active controller 下逐项推进；它没有
 接入 `vsp_ordered_action_window`，也没有实现 multi-record 并发 admission、计算/搬运
 重叠或高吞吐 memory supply；program path 已有严格串行的
 `J` 与六种双寄存器比较 branch 可以 redirect，但仍没有 memory/action overlap。
 
-物理 local SRAM、DMA、
-cache/MMU adapter、packetizer/gearbox 和系统级 ingress/capture FIFO 也未集成；
-`dmem_*` 仍只是 effective-address 逻辑边界。ping-pong、计算/搬运重叠、
+当前 product path 已集成 local SRAM、cache/MMU adapter 与 lower-width cache/fabric
+转换；DMA、I-cache、SoC target/bus 和系统级 ingress/capture FIFO 仍未集成。
+`dmem_*` 继续作为 engine 与产品内存子系统间的 effective-address 逻辑边界。ping-pong、计算/搬运重叠、
 多 outstanding、二维地址和一致性在真实 trace 与 SoC 边界出现后再评估。
 
 独立 `vsp_ordered_dmem_model` 已把该逻辑边界的 byte array、little-endian 读写、
@@ -242,4 +248,4 @@ write strobe、地址空间/范围 fault、固定延迟和 FIFO ordered response
 产生一个 outstanding beat。乱序返回需要 transaction ID 与 requester scoreboard，
 不由 AGU 单独解决。
 
-实施顺序与验收条件见[集群实验路线的 M4](development-roadmap.md)。
+实施顺序与验收条件见[开发路线的 M2 与 M4](development-roadmap.md)。

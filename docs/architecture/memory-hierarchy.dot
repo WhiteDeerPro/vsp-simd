@@ -1,5 +1,5 @@
-// Candidate I-side / D-side hierarchy. Dashed nodes are extension roles, not
-// claims that a physical cache, MMU, or shared-memory fabric exists today.
+// Logical I-side / D-side hierarchy.  The D-side product path is solid;
+// dashed nodes/edges remain models or later I-side/SoC integration roles.
 digraph vsp_memory_hierarchy {
   graph [
     rankdir=LR,
@@ -48,13 +48,13 @@ digraph vsp_memory_hierarchy {
 
   state_engine [
     label="sequencer state engine\nper-context 32-bit address state\nSMOVI / SADD / SADDI",
-    fillcolor="#fff7dc",
-    color="#b58b23"
+    fillcolor="#ecf8ef",
+    color="#4e8f62"
   ];
   memory_decode [
     label="MEMORY semantic decoder\nsnapshot sbase + signed offset\nUNIT_STRIDE / INDEX_U8",
-    fillcolor="#fff7dc",
-    color="#b58b23"
+    fillcolor="#ecf8ef",
+    color="#4e8f62"
   ];
   vector_memory [
     label="vector memory engine\nunit-stride + indexed byte AGU\ncurrently 1 dmem beat outstanding"
@@ -65,10 +65,9 @@ digraph vsp_memory_hierarchy {
     color="#b58b23"
   ];
   dcache [
-    label="future D-cache role\nline fill/write policy\nclean / invalidate / ownership",
-    style="rounded,dashed,filled",
-    fillcolor="#f6f6f6",
-    color="#999999"
+    label="product D-side endpoints\nwritable D-cache + private local SRAM\nUNCACHED/DEVICE fixed-beat adapter",
+    fillcolor="#ecf8ef",
+    color="#4e8f62"
   ];
 
   lower_i [
@@ -78,25 +77,22 @@ digraph vsp_memory_hierarchy {
     color="#999999"
   ];
   lower_d [
-    label="D miss/writeback client",
-    style="rounded,dashed,filled",
-    fillcolor="#f6f6f6",
-    color="#999999"
+    label="D-cache / PTW / uncached-device clients",
+    fillcolor="#ecf8ef",
+    color="#4e8f62"
   ];
   arbiter [
-    label="future bounded-fair lower-port arbiter\nclient ownership held through response",
-    style="rounded,dashed,filled",
-    fillcolor="#f6f6f6",
-    color="#999999"
+    label="product physical fabric\nclient ownership held through response\nI-cache-native master seam exposed",
+    fillcolor="#ecf8ef",
+    color="#4e8f62"
   ];
   address_service [
-    label="future per-side address services\ntranslation + protection\nshared TLB/PTW remains possible",
-    style="rounded,dashed,filled",
-    fillcolor="#f6f6f6",
-    color="#999999"
+    label="product D-side address service\nLSU + address-space/region policy\nshared MMU + i/d TLB/PTW",
+    fillcolor="#ecf8ef",
+    color="#4e8f62"
   ];
   memory [
-    label="physical local SRAM / SoC memory\nDMA is another explicit client",
+    label="external ordered lower provider\nSoC bus + RAM/MMIO target decode\nDMA is another explicit client",
     style="rounded,dashed,filled",
     fillcolor="#f6f6f6",
     color="#999999"
@@ -114,20 +110,17 @@ digraph vsp_memory_hierarchy {
                              label="I translated/protected"];
   icache -> lower_i [dir=both, style=dashed, color="#999999"];
 
-  state_engine -> memory_decode [style=dashed, color="#b58b23",
-                                 label="base query; not yet bound"];
-  memory_decode -> vector_memory [style=dashed, color="#999999",
-                                  label="resolved descriptor"];
-  vector_memory -> dmem_model [dir=both, color="#b58b23",
-                               label="current model contract"];
-  vector_memory -> address_service [dir=both, style=dashed, color="#999999",
-                                    label="D effective address"];
-  address_service -> dcache [dir=both, style=dashed, color="#999999",
-                             label="D translated/protected"];
-  dcache -> lower_d [dir=both, style=dashed, color="#999999"];
+  state_engine -> memory_decode [label="base query"];
+  memory_decode -> vector_memory [label="resolved descriptor"];
+  vector_memory -> dmem_model [dir=both, style=dashed, color="#b58b23",
+                               label="protocol oracle"];
+  vector_memory -> address_service [dir=both, label="D effective address"];
+  address_service -> dcache [dir=both, label="endpoint policy"];
+  address_service -> lower_d [dir=both, label="PTW"];
+  dcache -> lower_d [dir=both];
 
   lower_i -> arbiter [dir=both, style=dashed, color="#999999"];
-  lower_d -> arbiter [dir=both, style=dashed, color="#999999"];
+  lower_d -> arbiter [dir=both];
   arbiter -> memory [dir=both, style=dashed, color="#999999"];
 
   note [

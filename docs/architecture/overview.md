@@ -31,9 +31,11 @@ window 与 queue-head 接入尚未实现，见
 `vsp_cluster_memory_wrapper` 已把 VRF-only blocking `vsp_vector_memory_engine` 经共享
 VRF arbiter 接到 wrapper/cluster state-read/write endpoint，形成 decoded
 LOAD→EXEC→STORE 参考闭环。它传递 effective address、address-space kind
-和 address context，但 `dmem_*` 仍是逻辑边界；仓库中没有物理 local SRAM、
-MMU、TLB、PTW、cache 或 DMA。它保留彼此独立的 decoded EXEC/MEMORY 入口，供
-叶级集成测试使用。其外新增的 `vsp_cluster_controller_wrapper` 接收一个有序 action
+和 address context，并以 `dmem_*` 作为可复用逻辑边界。独立的 product integration
+wrapper 已在该边界外接入 sibling LSU、MMU/TLB/PTW、D-cache、local SRAM、
+uncached/device endpoint 与 physical fabric；DMA、I-cache 及 SoC lower target 仍未接入。
+decoded wrapper 保留彼此独立的 EXEC/MEMORY 入口，供叶级集成测试使用。其外新增的
+`vsp_cluster_controller_wrapper` 接收一个有序 action
 流：profile-v0 encoded EXEC 在入口展开，decoded MEMORY 分派到 memory engine，
 `CONTROL.END` 在内部执行队列、tracker、memory engine 与 VRF arbiter 静止后完成。
 当前也没有 architectural IFetch；新增 PC 只为 controller 内部 uword stream 定位，
@@ -48,7 +50,7 @@ instruction IFetch 是不同边界。
 | `vsp_*` | sequencer 可见的 engine、integration wrapper 或 VSP 子系统模块 |
 | `VRF_ADDR_W/ARF_ADDR_W/MRF_ADDR_W` | 对应寄存器文件的 row index 宽度；不表示 virtual address |
 | `eaddr` | translation/route 之前、位于所声明 address space 中的 effective address |
-| `paddr` | 未来 translation/protection 之后的 physical address；当前 RTL 尚无此端口 |
+| `paddr` | translation/protection 之后的 physical address；当前 product D-side 与 lower port 使用该命名 |
 | `exec_context` | 命令所有权、完成回送和调度身份 |
 | `addr_context` | 地址服务使用的 opaque translation/domain handle |
 | `dmem_*` | LOAD/STORE data-memory 逻辑口 |
@@ -154,15 +156,17 @@ action controller 及 standalone uword bundle predecoder 已完成参考实现�
 `dmem_*` 外用 local-memory model 验证 encoded `SMOVI/SADD/SADDI` → `VLOAD` →
 profile-v0 encoded EXEC → `VSTORE` → `CONTROL.END`，包括
 完成背压、owner/decode error、EXEC child reject、result staging 和 memory fault；
-这不表示 local SRAM RTL、最终 MEMORY ISA 或完整 sequencer 已完成。当前工作先保持
+另一个 product test 已把同类 load/compute/store 程序通过真实 D-cache/fabric 接到 ordered
+physical SRAM。两者都不表示最终 MEMORY ISA、architectural IFetch 或完整 sequencer 已完成。当前工作先保持
 单 PC、单 issue slot、global single-active 基线，补齐 4-group/16-byte 和
 16-group/64-byte indexed-memory 程序，并实现 loop/redirect 的明确 flush 语义；只有
 trace 表明 action admission 是瓶颈时，才研究 dependency window、动态
 owner/resource 状态和计算/搬运重叠；
 control-store/byte-PC/multi-framer/slot-0 action adapter 已有 strict reference closure。
-独立 I-side/D-side protocol model 及其预期 cache 边界见
-[内存模型边界](memory-hierarchy.md)。随后再根据结果决定物理 memory hierarchy、DMA 与
-进一步 lane feature 的顺序。见
+独立 I-side/D-side protocol model 与当前 D-side 产品边界见
+[内存模型边界](memory-hierarchy.md)和
+[内存子系统集成](../integration/memory-subsystem.md)。随后再根据结果决定 I-side、SoC
+target、DMA 与进一步 lane feature 的顺序。见
 [实验路线](../design/development-roadmap.md)。
 
 数据带宽不能只用一个“每周期向量数”概括；逻辑产生、存储写入、网络交付、唯一

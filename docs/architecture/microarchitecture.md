@@ -39,7 +39,9 @@ read subrequest 的 completion 与 data response 后再写 memory。
 `vsp_cluster_memory_wrapper` 再把 vector memory engine 与 full-decoded EXEC integration 组合成
 decoded reference integration。`vsp_cluster_controller_wrapper` 在其外增加一个统一
 action 入口、profile-v0 EXEC 展开、strict program ordering、统一 completion 和
-`CONTROL.END`；它仍未接物理 local SRAM 或 DMA。
+`CONTROL.END`；它自身仍以 `dmem_*` 结束。外层
+`vsp_uword_cached_program_wrapper` 已接入 product D-cache/local SRAM/MMU/fabric；DMA 与
+I-cache 仍未接入。
 `dmem_req/rsp` 是无 ID 的单飞行有序 data-memory 逻辑口；它携带
 address-space/address-context 与 fault cause，但 engine 内没有 MMU、TLB、
 PTW 或 cache。`sim/models/vsp_ordered_dmem_model.sv` 为该逻辑口提供 byte-addressed、

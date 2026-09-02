@@ -4,6 +4,10 @@ c06047bb9cc6e75505b780fada63c407347609244fc337f3a32b03ce96d0c7bc  ../VSP_MEMORY_
 b421963b71ee3d48bddc0fc617e3f1812a81ee3df9c92029553950eb60d46e8e  ../VSP_PTW/rtl/pkg/vsp_ptw_pkg.sv
 fd87f4431f8d162f64aef8fd17074564f21afaa718eec0f012adc9b293d4755f  ../VSP_MMU/rtl/pkg/vsp_mmu_pkg.sv
 1b5da2b10b92ec4534405a3ff84abf850f4ed77e7716c9a0df74d30354515473  ../VSP_LSU_BACKEND/rtl/pkg/vsp_lsu_backend_pkg.sv
+b1b81caaf349c8b8a231c5235261bc7dc472a317782a2475ebcc5b37703f2edd  ../CACHE_MODULE/rtl/pkg/cache_pkg.sv
+aa0571c5c39fd9999dd8dd3e094b5da1a21eb1da93b0a949c797c3e759304536  ../VSP_CACHE_ADAPTERS/rtl/pkg/vsp_cache_adapters_pkg.sv
+bddacb06d31ea4a37ed667ae058d274b8aed7284f3ffc29aafe2128651e1aa72  ../VSP_MEMORY_ENDPOINTS/rtl/pkg/vsp_memory_endpoints_pkg.sv
+7eb414baa9851c7273036c29ade6f716b892c4adf7ed6f152dd2eca4a57d62a9  ../VSP_PHYSICAL_FABRIC/rtl/pkg/vsp_physical_fabric_pkg.sv
 2cd6a82efb8854c713abb33fb6fe1189da4a8a2aeda1ed034dee9dfc9213a2b5  ../VSP_ADDRESS_REGION_ROUTER/rtl/core/vsp_address_space_router.sv
 c166bcc4315469061fce593d0d203b238f044c8969c7babb2f9500ed6da92a12  ../VSP_ADDRESS_REGION_ROUTER/rtl/core/vsp_address_region_router.sv
 1ee6cf3fad390c96c812a99eb75e2969c1680f04254931df1cf9ab4de92e97ca  ../VSP_TLB/rtl/core/vsp_tlb.sv
@@ -11,3 +15,13 @@ c166bcc4315469061fce593d0d203b238f044c8969c7babb2f9500ed6da92a12  ../VSP_ADDRESS
 f3e270aa4312b1760dff2c7f76b21267c9759c996a17c599fcc9c706645f32cf  ../VSP_MMU/rtl/core/vsp_mmu_frontend.sv
 7c52c23d40cc6fd5b44a140d48aa18c0b4a8442fcddecaa8d2770161a640b640  ../VSP_MMU/rtl/core/vsp_mmu.sv
 9b2739417362e21204fd0609a2afc8eb828aafa8e347f95e81c38e651d5b1855  ../VSP_LSU_BACKEND/rtl/core/vsp_lsu_backend.sv
+eaae576269782a85472f70289854f389f4b6e50b5cf3e2588ec73fd62994ed52  ../CACHE_MODULE/rtl/sram/cache_tag_meta_sram.sv
+80ff7702e2e382c6a77c93e1d1b151f9358ce311f3c86dcb726f4e34d81a1357  ../CACHE_MODULE/rtl/sram/cache_data_sram.sv
+690bd73b88e1dc8cd49bb17fed291b5623bec6aa2c8ae6e8be3bc9f1e6876688  ../CACHE_MODULE/rtl/core/param_cache.sv
+df90d4020f0e416f1981c16251848e0de46ffe861aaf300700422703d95a191a  ../VSP_CACHE_ADAPTERS/rtl/core/vsp_cache_adapter_core.sv
+33404d517cef1f5af1186cb0271ec64d9877476087a59def62c11e5e5c38e8dc  ../VSP_CACHE_ADAPTERS/rtl/adapters/vsp_dcache_adapter.sv
+aa226ef3ed98a2ac3cd3384317d7542f03e11bc9450697d6c0b5ce1d8c4ea5d0  ../VSP_MEMORY_ENDPOINTS/rtl/sram/vsp_local_sram.sv
+a7591acc8aa6b80740376eaecfa8d160f1309358325273466d5340139bbf61dc  ../VSP_MEMORY_ENDPOINTS/rtl/core/vsp_local_sram_adapter.sv
+da09c72e9318aed118afac0ab3b5f9aeb26e940094ee56d4e2555e7c393888f3  ../VSP_MEMORY_ENDPOINTS/rtl/adapters/vsp_uncached_device_adapter.sv
+2789bf6162c054b31a53b4aca52edc15e81c86689a56921e8d22c1a4f02976d8  ../VSP_PHYSICAL_FABRIC/rtl/core/vsp_physical_fabric.sv
+a914e980ed51c8551831b61492b6f1995492013e27e1a53c1f3b97e85417964c  ../VSP_PHYSICAL_FABRIC/rtl/sram/vsp_fabric_ordered_sram.sv
