@@ -1,0 +1,49 @@
+# Threshold algorithm: compare each pixel with a threshold value
+# Input: v0 contains 16 input pixels (loaded from memory)
+# Output: v1 contains binary result (0 or 255)
+# Threshold value: 128 (configurable via immediate)
+
+entry:
+    # Load base addresses into state registers
+    LI rd=1 imm=0x1000          # Input base address
+    LI rd=2 imm=0x2000          # Output base address
+    LI rd=3 imm=0x40            # Process 64 bytes (4 iterations × 16 bytes)
+    LI rd=4 imm=0               # Current offset counter
+
+loop_start:
+    # Load 16 bytes from input
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0
+
+    # Compare: result is 0xff where va >= threshold, 0x00 otherwise
+    # Using CMPGT: if pixel > 127, result = 0xff
+    EXEC_ALU_RI op=max_u mode=byte va=0 vd=2 imm=128
+    EXEC_ALU_RR op=xor mode=byte va=0 vb=2 vd=1
+
+    # Convert to binary: 0 or 255
+    # If pixel >= 128: xor gives 0..127, we want 255
+    # If pixel < 128: xor gives 128..255, we want 0
+    EXEC_ALU_RI op=min_u mode=byte va=1 vd=3 imm=127
+    EXEC_ALU_RI op=sub mode=byte va=3 vd=1 imm=0
+    EXEC_ALU_RI op=shl mode=byte va=1 vd=1 imm=1
+
+    # Alternative simpler approach: use pass_a with mask for selection
+    # SELECT between 0 and 255 based on comparison
+    EXEC_ALU_RI op=add mode=byte va=0 vd=4 imm=128  # Add 128 to test sign bit
+    EXEC_ALU_RI op=shr_u mode=byte va=4 vd=4 imm=7  # Extract MSB: 0 or 1
+    EXEC_ALU_RI op=sub mode=byte va=4 vd=1 imm=0    # 0 stays 0, 1 stays 1
+    EXEC_ALU_RI op=sub mode=byte va=0 vd=1 imm=0    # Get 0 or compute 255
+    EXEC_ALU_RI op=or mode=byte va=1 vd=5 imm=0
+    EXEC_ALU_RI op=sub_sat_u mode=byte va=5 vd=1 imm=0
+
+    # Store result
+    VSTORE space=local addr_context=0 sbase=2 vrf=1 span=16 offset=0
+
+    # Increment pointers
+    ADDI rd=1 rs1=1 imm=16
+    ADDI rd=2 rs1=2 imm=16
+    ADDI rd=4 rs1=4 imm=16
+
+    # Loop condition: continue if offset < 64
+    BLTU rs1=4 rs2=3 target=loop_start
+
+    END

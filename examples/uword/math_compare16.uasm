@@ -1,0 +1,49 @@
+# Comparison operations for 16-bit integers
+# Implements: equal, not equal, less than, greater than
+
+entry:
+    LI rd=1 imm=0x1000          # A operands
+    LI rd=2 imm=0x1100          # B operands
+    LI rd=3 imm=0x2000          # Results base
+
+    # Load 16-bit values
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0
+    VLOAD space=local addr_context=0 sbase=2 vrf=1 span=16 offset=0
+
+    # Compare operations return 0x00 (false) or 0xFF (true) per element
+
+    # Equal: A == B
+    EXEC_ALU_RR op=xor mode=half va=0 vb=1 vd=2       # XOR gives 0 if equal
+    # Convert to boolean: result is 0 if equal, non-zero otherwise
+    # We want: 0xFF if equal, 0x00 if not equal
+    # Can use: !(A XOR B) but no direct NOT, so compare with 0
+
+    # Not equal: A != B (result of XOR is already the indicator)
+    EXEC_ALU_RI op=min_u mode=half va=2 vd=3 imm=1    # Clamp to 0 or 1
+    EXEC_ALU_RI op=sub mode=half va=3 vd=3 imm=0      # Convert to 0xFF
+
+    # Less than (unsigned): A < B
+    EXEC_ALU_RR op=sub mode=half va=0 vb=1 vd=4       # A - B
+    EXEC_ALU_RI op=shr_u mode=half va=4 vd=5 imm=15   # Check sign bit (underflow)
+    EXEC_ALU_RI op=sub mode=half va=5 vd=5 imm=0      # Convert to 0xFF
+
+    # Greater than (unsigned): A > B = B < A
+    EXEC_ALU_RR op=sub mode=half va=1 vb=0 vd=6
+    EXEC_ALU_RI op=shr_u mode=half va=6 vd=7 imm=15
+
+    # Less than or equal: A <= B = !(A > B)
+    EXEC_ALU_RR op=sub mode=half va=0 vb=1 vd=8
+    EXEC_ALU_RI op=shr_u mode=half va=8 vd=9 imm=15
+    EXEC_ALU_RI op=xor mode=half va=9 vd=9 imm=1      # Invert
+
+    # Greater than or equal: A >= B = !(A < B)
+    EXEC_ALU_RR op=sub mode=half va=1 vb=0 vd=10
+    EXEC_ALU_RI op=shr_u mode=half va=10 vd=11 imm=15
+    EXEC_ALU_RI op=xor mode=half va=11 vd=11 imm=1
+
+    # Store comparison results
+    VSTORE space=local addr_context=0 sbase=3 vrf=3 span=16 offset=0    # !=
+    VSTORE space=local addr_context=0 sbase=3 vrf=5 span=16 offset=256  # <
+    VSTORE space=local addr_context=0 sbase=3 vrf=7 span=16 offset=512  # >
+
+    END

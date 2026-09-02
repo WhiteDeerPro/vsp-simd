@@ -1,0 +1,29 @@
+# Min/Max filtering (erosion/dilation basis)
+# Erosion: min of neighborhood
+# Dilation: max of neighborhood
+# This version does both on 3 rows (vertical only due to encoding limitations)
+
+entry:
+    # Setup base addresses
+    LI rd=1 imm=0x1000          # Input base
+    LI rd=2 imm=0x2000          # Min output (erosion)
+    LI rd=3 imm=0x3000          # Max output (dilation)
+
+    # Load three rows
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0    # Row 0
+    VLOAD space=local addr_context=0 sbase=1 vrf=1 span=16 offset=256  # Row 1
+    VLOAD space=local addr_context=0 sbase=1 vrf=2 span=16 offset=512  # Row 2
+
+    # Compute minimum across three rows (erosion)
+    EXEC_ALU_RR op=min_u mode=byte va=0 vb=1 vd=3
+    EXEC_ALU_RR op=min_u mode=byte va=3 vb=2 vd=4   # v4 = min(row0, row1, row2)
+
+    # Compute maximum across three rows (dilation)
+    EXEC_ALU_RR op=max_u mode=byte va=0 vb=1 vd=5
+    EXEC_ALU_RR op=max_u mode=byte va=5 vb=2 vd=6   # v6 = max(row0, row1, row2)
+
+    # Store results
+    VSTORE space=local addr_context=0 sbase=2 vrf=4 span=16 offset=0   # Store erosion
+    VSTORE space=local addr_context=0 sbase=3 vrf=6 span=16 offset=0   # Store dilation
+
+    END

@@ -1,0 +1,44 @@
+# Reciprocal approximation without multiplication
+# Uses successive approximation based on bit shifting
+
+entry:
+    LI rd=1 imm=0x1000          # Input X (8-bit or 16-bit)
+    LI rd=2 imm=0x2000          # Output 1/X (Q8.8 format)
+
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0
+
+    # Method: Binary search for 1/x
+    # Goal: find Y such that X * Y ≈ 256 (in Q8.8, this means Y = 1/X)
+
+    # For x in [128, 255], 1/x in [1.0, 2.0] or [256, 512] in Q8.8
+    # For x in [64, 127], 1/x in [2.0, 4.0] or [512, 1024] in Q8.8
+
+    # Normalize: find leading 1 bit position
+    # Then reciprocal ≈ 256 / (x >> shift)
+
+    # Approximate: 1/x ≈ 2^16 / x for x as 8-bit
+    # In Q8.8: (256 * 256) / x = 65536 / x
+
+    # Method 1: Lookup table (most practical)
+    # Load from precomputed table indexed by x
+
+    # Method 2: Newton iteration (needs multiply)
+    # y_{n+1} = y_n * (2 - x * y_n)
+
+    # Method 3: Shift-based approximation
+    # Count leading zeros, use as shift amount
+
+    # Simplified: Linear approximation for small range
+    # For x in [128, 255]: 1/x ≈ (512 - x) (rough approximation)
+    EXEC_ALU_RI op=sub mode=byte va=0 vd=1 imm=0
+    EXEC_ALU_RI op=add mode=byte va=1 vd=1 imm=0      # Placeholder
+
+    VSTORE space=local addr_context=0 sbase=2 vrf=1 span=16 offset=0
+
+    END
+
+# Reality check: Without multiply or divide hardware:
+# - Best option is precomputed lookup table
+# - 256-entry table for 8-bit input → 16-bit reciprocal
+# - Memory: 512 bytes for full 8-bit coverage
+# - Interpolation for higher precision

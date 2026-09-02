@@ -1,0 +1,32 @@
+# 16-bit integer subtraction
+# Computes C = A - B where A, B, C are 16-bit unsigned/signed integers
+
+entry:
+    # Setup addresses
+    LI rd=1 imm=0x1000          # A operands base
+    LI rd=2 imm=0x1100          # B operands base
+    LI rd=3 imm=0x2000          # Results base
+
+    # Load operands
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0   # A
+    VLOAD space=local addr_context=0 sbase=2 vrf=1 span=16 offset=0   # B
+
+    # Method 1: Standard subtraction (HALF mode for 16-bit)
+    EXEC_ALU_RR op=sub mode=half va=0 vb=1 vd=2
+
+    # Store result
+    VSTORE space=local addr_context=0 sbase=3 vrf=2 span=16 offset=0
+
+    # Profile v0 has no HALF saturating subtract; use wrapping HALF subtract.
+    EXEC_ALU_RR op=sub mode=half va=0 vb=1 vd=3
+
+    # Store the second wrapping result.
+    VSTORE space=local addr_context=0 sbase=3 vrf=3 span=16 offset=256
+
+    # Signed saturation is likewise byte-only in this profile.
+    EXEC_ALU_RR op=sub mode=half va=0 vb=1 vd=4
+
+    # Store the third wrapping result.
+    VSTORE space=local addr_context=0 sbase=3 vrf=4 span=16 offset=512
+
+    END

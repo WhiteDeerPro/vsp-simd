@@ -65,6 +65,48 @@ def main() -> int:
         0x1A020005,
     ]
 
+    multiply_accumulate = asm.assemble_text(
+        """
+        EXEC_MUL_RR op=mul_s va=2 vb=3 vd=4 dst_arf=5 mask=m0 \
+                    write_vrf=1 write_arf=1 export=1 reduce=sum_s
+        EXEC_MUL_RI op=mul_u va=15 imm=-1 dst_arf=7 mask=m3
+        EXEC_MAC_RR op=mac_u va=1 vb=2 src_arf=3 dst_arf=4 vd=5 \
+                    mask=m3 write_vrf=1 write_arf=1 reduce=sum_u
+        EXEC_MAC_RI op=mac_s va=6 imm=0xa5 src_arf=2 dst_arf=7 vd=9 \
+                    write_vrf=1 write_arf=1 export=1
+        """,
+        0,
+    )
+    assert [word.value for word in multiply_accumulate.words] == [
+        0x491A52E8,
+        0x47807940,
+        0x000000FF,
+        0x50938B31,
+        0x6B02F238,
+        0x000000A5,
+    ]
+
+    # The former ALU spelling remains a source-level compatibility alias, but
+    # it must still select the dedicated profile-v0 MUL/MAC formats.
+    compatibility_mul = asm.assemble_text(
+        "EXEC_ALU_RR op=mul_u mode=byte va=2 vb=4 vd=6\n"
+        "EXEC_ALU_RI op=mac_u va=3 imm=7 src_arf=1 dst_arf=1\n",
+        0,
+    )
+    canonical_mul = asm.assemble_text(
+        "EXEC_MUL_RR op=mul_u mode=byte va=2 vb=4 vd=6\n"
+        "EXEC_MAC_RI op=mac_u va=3 imm=7 src_arf=1 dst_arf=1\n",
+        0,
+    )
+    assert [word.value for word in compatibility_mul.words] == [
+        word.value for word in canonical_mul.words
+    ]
+    assert [word.value for word in canonical_mul.words] == [
+        0x41230080,
+        0x61812010,
+        0x00000007,
+    ]
+
     state_and_memory = asm.assemble_text(
         """
         move: SMOVI rd=1 imm=0x100
@@ -263,6 +305,23 @@ def main() -> int:
     expect_error("EXEC_REDUCE op=min_u va=1 export=1")
     expect_error("MEMORY 0 1 2 3")
     expect_error("EXEC_ALU_RR op=add va=0 vb=1 vd=2 mystery=1")
+    expect_error("EXEC_MUL_RR op=mac_u va=0 vb=1 dst_arf=0")
+    expect_error("EXEC_MAC_RR op=mul_u va=0 vb=1 src_arf=0")
+    expect_error("EXEC_MUL_RR op=mul_u mode=half va=0 vb=1 dst_arf=0")
+    expect_error("EXEC_MAC_RR op=mac_u va=0 vb=1")
+    expect_error("EXEC_MAC_RR op=mac_u va=0 vb=1 src_arf=8")
+    expect_error("EXEC_MAC_RI op=mac_s va=0 src_arf=0 imm=256")
+    expect_error("EXEC_MAC_RI op=mac_s va=0 src_arf=0")
+    expect_error("EXEC_MAC_RR op=mac_s va=0 vb=1 src_arf=0 imm=1")
+    expect_error(
+        "EXEC_MAC_RR op=mac_u va=0 vb=1 src_arf=0 dst_arf=1 write_arf=0"
+    )
+    expect_error(
+        "EXEC_MAC_RR op=mac_u va=0 vb=1 src_arf=0 vd=1 write_vrf=0"
+    )
+    expect_error(
+        "EXEC_MAC_RR op=mac_u va=0 vb=1 src_arf=0 as=0"
+    )
     expect_error("SMOVI imm=1")
     expect_error("SMOVI rd=32 imm=1")
     expect_error("SMOVI rd=1 imm=0x100000000")
@@ -323,8 +382,8 @@ def main() -> int:
         raise AssertionError("unaligned base PC unexpectedly accepted")
 
     print(
-        "vsp_uword_asm_tb: exact EXEC, state, branch, sequential/indexed "
-        "MEMORY images and rejection checks passed"
+        "vsp_uword_asm_tb: exact ALU/MUL/MAC, state, branch, "
+        "sequential/indexed MEMORY images and rejection checks passed"
     )
     return 0
 

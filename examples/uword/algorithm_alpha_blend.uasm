@@ -1,0 +1,33 @@
+# Alpha blending: output = (alpha * A + (255 - alpha) * B) / 255
+# Simplified for fixed alpha = 128 (50% blend)
+# Formula: output = (A + B) / 2
+
+entry:
+    # Initialize addresses
+    LI rd=1 imm=0x1000          # Image A base
+    LI rd=2 imm=0x2000          # Image B base
+    LI rd=3 imm=0x3000          # Output base
+    LI rd=4 imm=0               # Offset counter
+    LI rd=5 imm=0x40            # Process 64 bytes total
+
+blend_loop:
+    # Load pixels from both images
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0   # Load A
+    VLOAD space=local addr_context=0 sbase=2 vrf=1 span=16 offset=0   # Load B
+
+    # Method 1: Use AVG_U for 50% blend
+    EXEC_ALU_RR op=avg_u mode=byte va=0 vb=1 vd=2
+
+    # Store blended result
+    VSTORE space=local addr_context=0 sbase=3 vrf=2 span=16 offset=0
+
+    # Update pointers
+    ADDI rd=1 rs1=1 imm=16
+    ADDI rd=2 rs1=2 imm=16
+    ADDI rd=3 rs1=3 imm=16
+    ADDI rd=4 rs1=4 imm=16
+
+    # Loop while offset < total
+    BLTU rs1=4 rs2=5 target=blend_loop
+
+    END

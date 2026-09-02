@@ -1,0 +1,38 @@
+# 16-bit multiplication using VSP's 8x8 hardware multipliers
+# Strategy: decompose 16x16 into four 8x8 multiplies, accumulate in ARF
+# Uses MUL_U and MAC_U which produce 16-bit results in ARF (ACC_W=32)
+
+entry:
+    LI rd=1 imm=0x1000          # A operands (16-bit values)
+    LI rd=2 imm=0x1100          # B operands (16-bit values)
+    LI rd=3 imm=0x2000          # Result base (32-bit products)
+
+    # Load 16-bit operands as byte pairs
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0
+    VLOAD space=local addr_context=0 sbase=2 vrf=1 span=16 offset=0
+
+    # For 16x16 multiply: (A_hi*256 + A_lo) * (B_hi*256 + B_lo)
+    # = A_lo*B_lo + A_lo*B_hi*256 + A_hi*B_lo*256 + A_hi*B_hi*65536
+
+    # Extract bytes (even positions = low, odd positions = high)
+    EXEC_ALU_RI op=and mode=byte va=0 vd=2 imm=0xff    # A_lo (even bytes)
+    EXEC_ALU_RI op=shr_u mode=byte va=0 vd=3 imm=8     # A_hi (odd bytes)
+    EXEC_ALU_RI op=and mode=byte va=1 vd=4 imm=0xff    # B_lo
+    EXEC_ALU_RI op=shr_u mode=byte va=1 vd=5 imm=8     # B_hi
+
+    # P0 = A_lo * B_lo.  The complete byte product overwrites ARF a0;
+    # vd=6 also captures the low product byte for this smoke program.
+    EXEC_MUL_RR op=mul_u va=2 vb=4 vd=6 dst_arf=0
+
+    # Demonstrate the accumulator read/write path.  A complete 16x16 mapping
+    # must additionally align the cross products before combining them.
+    EXEC_MAC_RR op=mac_u va=3 vb=4 src_arf=0 dst_arf=0
+
+    # Store only the narrow product byte exposed above, not a full 16x16 result.
+    VSTORE space=local addr_context=0 sbase=3 vrf=6 span=16 offset=0
+
+    END
+
+# Profile v0 exposes MUL/MAC through dedicated fmt=4/5/6 encodings.  These
+# operations remain byte-only; this file demonstrates reachability of the
+# hardware path and does not claim a complete packed 16x16 implementation.

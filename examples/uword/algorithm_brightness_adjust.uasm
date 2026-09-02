@@ -1,0 +1,29 @@
+# Brightness adjustment with saturation
+# Add a constant value to all pixels with unsigned saturation
+# Demonstrates saturating arithmetic
+
+entry:
+    # Setup
+    LI rd=1 imm=0x1000          # Input base
+    LI rd=2 imm=0x2000          # Output base
+    LI rd=3 imm=0               # Counter
+    LI rd=4 imm=0x100           # Process 256 bytes
+
+adjust_loop:
+    # Load pixels
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0
+
+    # Brighten: add 50 with unsigned saturation
+    EXEC_ALU_RI op=add_sat_u mode=byte va=0 vd=1 imm=50
+
+    # Store brightened result
+    VSTORE space=local addr_context=0 sbase=2 vrf=1 span=16 offset=0
+
+    # Advance pointers
+    ADDI rd=1 rs1=1 imm=16
+    ADDI rd=2 rs1=2 imm=16
+    ADDI rd=3 rs1=3 imm=16
+
+    BLTU rs1=3 rs2=4 target=adjust_loop
+
+    END

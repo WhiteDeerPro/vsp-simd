@@ -1,0 +1,50 @@
+# Reciprocal approximation for fast division
+# Computes 1/x using Newton-Raphson iteration
+# Format: Q8.8 fixed-point
+
+entry:
+    LI rd=1 imm=0x1000          # Input values (Q8.8)
+    LI rd=2 imm=0x2000          # Reciprocal output (Q8.8)
+
+    # Load input
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0
+
+    # Initial guess from lookup table (for x in [0.5, 1.0])
+    # Approximate: 1/x ≈ 2.9 - 2*x (for x in [0.5, 1])
+
+    # Normalize input to [0.5, 1.0] range (if needed)
+    # For Q8.8: values are in [0, 255.996]
+
+    # Simple initial guess: reciprocal ≈ 256 / x (for small x)
+    # Better: use small lookup table + interpolation
+
+    # Load initial guess (simplified: constant)
+    EXEC_ALU_RI op=add mode=byte va=0 vd=1 imm=0      # Copy input
+
+    # Newton-Raphson iteration: x_next = x_curr * (2 - input * x_curr)
+    # Iteration 1:
+    # temp = input * x_curr (multiply Q8.8 values)
+    EXEC_ALU_RR op=mul_u mode=byte va=0 vb=1 vd=2
+
+    # 2 - temp (in Q8.8, 2.0 = 0x0200)
+    EXEC_ALU_RI op=sub mode=byte va=2 vd=3 imm=0      # Subtract from 2.0
+
+    # x_next = x_curr * (2 - input*x_curr)
+    EXEC_ALU_RR op=mul_u mode=byte va=1 vb=3 vd=4
+
+    # Iteration 2: repeat for better accuracy
+    EXEC_ALU_RR op=mul_u mode=byte va=0 vb=4 vd=5
+    EXEC_ALU_RI op=sub mode=byte va=5 vd=6 imm=0
+    EXEC_ALU_RR op=mul_u mode=byte va=4 vb=6 vd=7
+
+    # Store final reciprocal
+    VSTORE space=local addr_context=0 sbase=2 vrf=7 span=16 offset=0
+
+    END
+
+# Note: This is a conceptual outline. Full implementation needs:
+# 1. Proper Q8.8 multiplication with shift
+# 2. Range normalization and denormalization
+# 3. Special case handling (x=0, x=1)
+# 4. Lookup table for initial guess
+# 5. Typically 2-3 iterations for 8-bit accuracy

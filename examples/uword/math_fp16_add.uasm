@@ -1,0 +1,67 @@
+# 16-bit floating point addition (custom BF16 format)
+# Format: 1 sign bit, 7 exponent bits, 8 mantissa bits
+# This is a simplified version showing the algorithm structure
+
+entry:
+    # Load two FP16 operands
+    LI rd=1 imm=0x1000          # Operand A base
+    LI rd=2 imm=0x1100          # Operand B base
+    LI rd=3 imm=0x2000          # Result base
+
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0   # A values
+    VLOAD space=local addr_context=0 sbase=2 vrf=1 span=16 offset=0   # B values
+
+    # Step 1: Extract components (sign, exponent, mantissa)
+    # High byte: [S|E6|E5|E4|E3|E2|E1|E0]
+    # Low byte:  [M7|M6|M5|M4|M3|M2|M1|M0]
+
+    # Extract exponents (upper byte, mask off sign)
+    EXEC_ALU_RI op=shr_u mode=byte va=0 vd=2 imm=8     # Shift to get high byte
+    EXEC_ALU_RI op=and mode=byte va=2 vd=2 imm=0x7f    # Mask off sign bit (E only)
+
+    EXEC_ALU_RI op=shr_u mode=byte va=1 vd=3 imm=8     # B exponent
+    EXEC_ALU_RI op=and mode=byte va=3 vd=3 imm=0x7f
+
+    # Step 2: Compare exponents to align mantissas
+    EXEC_ALU_RR op=sub mode=byte va=2 vb=3 vd=4        # exp_diff = exp_a - exp_b
+
+    # Step 3: Extract mantissas (low bytes + implied leading 1)
+    EXEC_ALU_RI op=and mode=byte va=0 vd=5 imm=0xff    # A mantissa
+    EXEC_ALU_RI op=or mode=byte va=5 vd=5 imm=0x80     # Add implied leading 1
+
+    EXEC_ALU_RI op=and mode=byte va=1 vd=6 imm=0xff    # B mantissa
+    EXEC_ALU_RI op=or mode=byte va=6 vd=6 imm=0x80     # Add implied leading 1
+
+    # Step 4: Align mantissa (shift smaller exponent's mantissa right)
+    # This requires conditional logic based on exp_diff
+    # For now, assume A has larger exponent, shift B right
+    # Real implementation needs comparison and conditional shift
+
+    # Simplified: Add aligned mantissas (assuming same exponent)
+    EXEC_ALU_RR op=add mode=byte va=5 vb=6 vd=7        # mantissa_sum
+
+    # Step 5: Normalize result (shift if overflow, adjust exponent)
+    # Check if mantissa_sum >= 512 (bit 9 set)
+    EXEC_ALU_RI op=shr_u mode=byte va=7 vd=8 imm=1     # Divide by 2 if needed
+    EXEC_ALU_RI op=add mode=byte va=2 vd=9 imm=1       # Increment exponent
+
+    # Step 6: Round mantissa to 8 bits
+    EXEC_ALU_RI op=and mode=byte va=8 vd=10 imm=0xff   # Keep low 8 bits
+
+    # Step 7: Pack result (combine sign, exponent, mantissa)
+    EXEC_ALU_RI op=shl mode=byte va=9 vd=11 imm=8      # Shift exp to high byte
+    EXEC_ALU_RR op=or mode=byte va=11 vb=10 vd=12      # Combine with mantissa
+
+    # Store result
+    VSTORE space=local addr_context=0 sbase=3 vrf=12 span=16 offset=0
+
+    END
+
+# Note: This is a simplified outline. Full IEEE-like FP addition requires:
+# 1. Sign handling (same/different signs → add/subtract)
+# 2. Exponent alignment with proper shifting
+# 3. Mantissa addition with carry handling
+# 4. Normalization (finding leading 1)
+# 5. Rounding (multiple modes)
+# 6. Special case handling (zero, infinity, NaN)
+# 7. Overflow/underflow detection

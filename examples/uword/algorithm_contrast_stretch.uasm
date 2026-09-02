@@ -1,0 +1,31 @@
+# Contrast adjustment: output = saturate((input - 128) * 2 + 128)
+# Approximated as: shift-based multiplication and saturating arithmetic
+
+entry:
+    LI rd=1 imm=0x1000          # Input base
+    LI rd=2 imm=0x2000          # Output base
+    LI rd=3 imm=0
+    LI rd=4 imm=0x40            # 64 bytes
+
+contrast_loop:
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0
+
+    # Subtract 128 (shift to centered range)
+    EXEC_ALU_RI op=sub_sat_u mode=byte va=0 vd=1 imm=128
+
+    # Multiply by 2 (left shift by 1)
+    EXEC_ALU_RI op=shl mode=byte va=1 vd=2 imm=1
+
+    # Add 128 back (shift to output range)
+    EXEC_ALU_RI op=add_sat_u mode=byte va=2 vd=3 imm=128
+
+    # Store result
+    VSTORE space=local addr_context=0 sbase=2 vrf=3 span=16 offset=0
+
+    ADDI rd=1 rs1=1 imm=16
+    ADDI rd=2 rs1=2 imm=16
+    ADDI rd=3 rs1=3 imm=16
+
+    BLTU rs1=3 rs2=4 target=contrast_loop
+
+    END

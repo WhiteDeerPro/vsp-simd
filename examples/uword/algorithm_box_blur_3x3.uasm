@@ -1,0 +1,36 @@
+# 3x3 Box Blur using AVG_U operations
+# Simplified version: assumes input rows are pre-loaded
+# Output = (sum of 9 neighbors) / 9 ≈ average
+# For simplicity, we use shift-based approximation: sum/8 using repeated AVG_U
+
+entry:
+    # Initialize base addresses
+    LI rd=1 imm=0x1000          # Input base
+    LI rd=2 imm=0x2000          # Output base
+
+    # Load three consecutive rows (simplified: assumes they're already available)
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0    # Top row
+    VLOAD space=local addr_context=0 sbase=1 vrf=1 span=16 offset=256  # Middle row
+    VLOAD space=local addr_context=0 sbase=1 vrf=2 span=16 offset=512  # Bottom row
+
+    # Use AVG_U to compute averages
+    # First average top and middle rows
+    EXEC_ALU_RR op=avg_u mode=byte va=0 vb=1 vd=3
+
+    # Then average result with bottom row
+    EXEC_ALU_RR op=avg_u mode=byte va=3 vb=2 vd=4
+
+    # For better approximation, we need horizontal averaging too
+    # But without slide/route encoding, we can't access neighboring columns
+    # So this is a vertical-only simplified version
+
+    # Alternative: use add with saturation and shift
+    EXEC_ALU_RR op=add mode=byte va=0 vb=1 vd=5
+    EXEC_ALU_RR op=add mode=byte va=5 vb=2 vd=6
+    EXEC_ALU_RI op=shr_u mode=byte va=6 vd=7 imm=1  # Divide by 2
+    EXEC_ALU_RI op=shr_u mode=byte va=7 vd=4 imm=1  # Divide by 4 (total /8 approximation)
+
+    # Store result
+    VSTORE space=local addr_context=0 sbase=2 vrf=4 span=16 offset=0
+
+    END

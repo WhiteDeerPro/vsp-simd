@@ -112,6 +112,24 @@ Signed/unsigned interpretation and add/subtract variant are format-local.  The
 operation writes one ARF destination.  It does not require the accumulator to
 be encoded as an ordinary third VRF operand.
 
+## Assembler multiply/MAC spellings
+
+The engineering assembler exposes the byte-only multiply formats directly:
+
+```text
+EXEC_MUL_RR op=mul_u|mul_s va=<VRF> vb=<VRF> [vd=<VRF>] [dst_arf=<ARF>]
+EXEC_MUL_RI op=mul_u|mul_s va=<VRF> imm=<byte> [vd=<VRF>] [dst_arf=<ARF>]
+EXEC_MAC_RR op=mac_u|mac_s va=<VRF> vb=<VRF> src_arf=<ARF> [dst_arf=<ARF>]
+EXEC_MAC_RI op=mac_u|mac_s va=<VRF> imm=<byte> src_arf=<ARF> [dst_arf=<ARF>]
+```
+
+All four accept `mask`, `write_vrf`, `write_arf`, `export` and `reduce`.
+Naming a destination enables its write by default.  MAC defaults `dst_arf` to
+`src_arf` and enables the in-place ARF write; `as`/`ad` are accepted as short
+aliases for `src_arf`/`dst_arf`.  The older `EXEC_ALU_RR/RI` spelling with a
+`mul_*` or `mac_*` operation remains a source compatibility alias, but the
+assembler emits the dedicated `fmt=4/5/6` encoding rather than an ALU sub-op.
+
 ## Relationship to MEMORY
 
 The mixed stream uses major `0xb` for a structurally framed MEMORY record.

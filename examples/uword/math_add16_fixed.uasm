@@ -1,0 +1,20 @@
+# 16-bit integer addition using HALF mode
+# Computes C = A + B where A, B, C are 16-bit unsigned/signed integers
+
+entry:
+    # Setup addresses
+    LI rd=1 imm=0x1000          # A operands base
+    LI rd=2 imm=0x1100          # B operands base
+    LI rd=3 imm=0x2000          # Results base
+
+    # Load 16-bit operands (stored as little-endian pairs)
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0   # A
+    VLOAD space=local addr_context=0 sbase=2 vrf=1 span=16 offset=0   # B
+
+    # HALF mode ADD: proper 16-bit addition with carry within elements
+    EXEC_ALU_RR op=add mode=half va=0 vb=1 vd=2
+
+    # Store result
+    VSTORE space=local addr_context=0 sbase=3 vrf=2 span=16 offset=0
+
+    END

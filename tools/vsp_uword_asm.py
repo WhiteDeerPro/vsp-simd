@@ -40,6 +40,9 @@ ALU_OPS = {
     "pass_a": 20,
 }
 
+MUL_OPS = {"mul_u": 0, "mul_s": 1}
+MAC_OPS = {"mac_u": 0, "mac_s": 1}
+
 # These are the ALU functions for which profile v0 exposes HALF/WORD element
 # modes. All other ALU builders are byte-only; RAW remains available when a
 # test intentionally needs an illegal packet.
@@ -107,6 +110,8 @@ MEMORY_ADDR_SPACES = {
 # and rejection tests which intentionally need records outside this profile.
 STATE_REGS = 32
 MEMORY_VRF_ROWS = 16
+EXEC_VRF_ROWS = 16
+EXEC_ARF_ROWS = 8
 MEMORY_MAX_EXPLICIT_SPAN_BYTES = 31
 MEMORY_OFFSET_W = 16
 
@@ -182,6 +187,24 @@ def take_named(named: dict[str, str], key: str, default: str | None,
     if default is not None:
         return default
     raise AssemblyError(f"line {line_number}: missing required argument {key!r}")
+
+
+def take_named_alias(named: dict[str, str], keys: tuple[str, ...],
+                     default: str | None, line_number: int) -> str:
+    """Take one field while accepting documented long and short spellings."""
+    present = [key for key in keys if key in named]
+    if len(present) > 1:
+        aliases = ", ".join(repr(key) for key in present)
+        raise AssemblyError(
+            f"line {line_number}: duplicate aliases for {keys[0]!r}: {aliases}"
+        )
+    if present:
+        return named.pop(present[0])
+    if default is not None:
+        return default
+    raise AssemblyError(
+        f"line {line_number}: missing required argument {keys[0]!r}"
+    )
 
 
 def encode_element_immediate(text: str, mode: str, line_number: int) -> int:
@@ -529,6 +552,159 @@ def encode_alu(tokens: list[str], immediate_form: bool,
     return [base] if extension is None else [base, extension]
 
 
+def encode_multiply(tokens: list[str], family: str, immediate_form: bool,
+                    line_number: int) -> list[int]:
+    """Encode profile-v0 MUL or MAC, including their ARF controls."""
+    named, positional = split_arguments(tokens, line_number)
+    instruction = f"{family.upper()}_{'RI' if immediate_form else 'RR'}"
+    if positional:
+        raise AssemblyError(
+            f"line {line_number}: {instruction} fields must use key=value syntax"
+        )
+
+    op_name = take_named(named, "op", None, line_number).lower()
+    valid_ops = MUL_OPS if family == "mul" else MAC_OPS
+    if op_name not in valid_ops:
+        raise AssemblyError(
+            f"line {line_number}: unknown {family.upper()} op {op_name!r}"
+        )
+
+    mode_name = take_named(named, "mode", "byte", line_number).lower()
+    if mode_name not in ELEMENT_MODES:
+        raise AssemblyError(
+            f"line {line_number}: unknown element mode {mode_name!r}"
+        )
+    if mode_name != "byte":
+        raise AssemblyError(
+            f"line {line_number}: {op_name} is byte-only in EXEC profile v0"
+        )
+
+    va = require_range(
+        "va", parse_integer(take_named(named, "va", None, line_number),
+                            line_number),
+        0, EXEC_VRF_ROWS - 1, line_number,
+    )
+    vb = 0
+    extension: int | None = None
+    if immediate_form:
+        extension = encode_element_immediate(
+            take_named(named, "imm", None, line_number), mode_name, line_number
+        )
+    else:
+        vb = require_range(
+            "vb", parse_integer(take_named(named, "vb", None, line_number),
+                                line_number),
+            0, EXEC_VRF_ROWS - 1, line_number,
+        )
+
+    src_arf = 0
+    if family == "mac":
+        src_arf = require_range(
+            "src_arf",
+            parse_integer(
+                take_named_alias(
+                    named, ("src_arf", "as"), None, line_number
+                ),
+                line_number,
+            ),
+            0, EXEC_ARF_ROWS - 1, line_number,
+        )
+
+    dst_arf_present = "dst_arf" in named or "ad" in named
+    default_dst_arf = str(src_arf) if family == "mac" else "0"
+    dst_arf = require_range(
+        "dst_arf",
+        parse_integer(
+            take_named_alias(
+                named, ("dst_arf", "ad"), default_dst_arf, line_number
+            ),
+            line_number,
+        ),
+        0, EXEC_ARF_ROWS - 1, line_number,
+    )
+
+    vd_present = "vd" in named
+    vd = require_range(
+        "vd", parse_integer(take_named(named, "vd", "0", line_number),
+                            line_number),
+        0, EXEC_VRF_ROWS - 1, line_number,
+    )
+    mask_name = take_named(named, "mask", "none", line_number).lower()
+    reduce_name = take_named(named, "reduce", "none", line_number).lower()
+    if mask_name not in MASK_SELECTORS:
+        raise AssemblyError(
+            f"line {line_number}: unknown mask selector {mask_name!r}"
+        )
+    if reduce_name not in REDUCE_SELECTORS:
+        raise AssemblyError(
+            f"line {line_number}: unknown reduction {reduce_name!r}"
+        )
+
+    write_vrf = parse_boolean(
+        take_named_alias(
+            named, ("write_vrf", "write"), "1" if vd_present else "0",
+            line_number,
+        ),
+        "write_vrf", line_number,
+    )
+    write_arf = parse_boolean(
+        take_named(
+            named, "write_arf",
+            "1" if (dst_arf_present or family == "mac") else "0",
+            line_number,
+        ),
+        "write_arf", line_number,
+    )
+    export_narrow = parse_boolean(
+        take_named(named, "export", "0", line_number), "export", line_number
+    )
+
+    if named:
+        unknown = ", ".join(sorted(named))
+        raise AssemblyError(
+            f"line {line_number}: unknown {instruction} fields: {unknown}"
+        )
+    if not write_vrf and vd != 0:
+        raise AssemblyError(
+            f"line {line_number}: vd must be zero when write_vrf=0"
+        )
+    if not write_arf and dst_arf != 0:
+        raise AssemblyError(
+            f"line {line_number}: dst_arf must be zero when write_arf=0"
+        )
+
+    is_signed = valid_ops[op_name]
+    if family == "mul":
+        base = 0
+        base |= 0x4 << 28
+        base |= is_signed << 27
+        base |= va << 23
+        base |= vb << 19
+        base |= vd << 15
+        base |= dst_arf << 12
+        base |= MASK_SELECTORS[mask_name] << 9
+        base |= int(immediate_form) << 8
+        base |= write_vrf << 7
+        base |= write_arf << 6
+        base |= export_narrow << 5
+        base |= REDUCE_SELECTORS[reduce_name] << 2
+    else:
+        base = 0
+        base |= (0x6 if immediate_form else 0x5) << 28
+        base |= is_signed << 27
+        base |= va << 23
+        base |= vb << 19
+        base |= src_arf << 16
+        base |= dst_arf << 13
+        base |= vd << 9
+        base |= MASK_SELECTORS[mask_name] << 6
+        base |= write_vrf << 5
+        base |= write_arf << 4
+        base |= export_narrow << 3
+        base |= REDUCE_SELECTORS[reduce_name]
+    return [base] if extension is None else [base, extension]
+
+
 def encode_reduce(tokens: list[str], line_number: int) -> list[int]:
     """Pseudo-op for the existing PASS_A plus SIMD4 reduction encoding."""
     named, positional = split_arguments(tokens, line_number)
@@ -599,9 +775,35 @@ def encode_statement(statement: str, line_number: int, current_pc: int = 0,
         value = parse_integer(arguments[0], line_number)
         return [require_range("raw word", value, 0, 0xFFFFFFFF, line_number)]
     if operation == "exec_alu_rr":
+        requested_op = next(
+            (token.split("=", 1)[1].lower() for token in arguments
+             if token.lower().startswith("op=")),
+            "",
+        )
+        if requested_op in MUL_OPS:
+            return encode_multiply(arguments, "mul", False, line_number)
+        if requested_op in MAC_OPS:
+            return encode_multiply(arguments, "mac", False, line_number)
         return encode_alu(arguments, False, line_number)
     if operation == "exec_alu_ri":
+        requested_op = next(
+            (token.split("=", 1)[1].lower() for token in arguments
+             if token.lower().startswith("op=")),
+            "",
+        )
+        if requested_op in MUL_OPS:
+            return encode_multiply(arguments, "mul", True, line_number)
+        if requested_op in MAC_OPS:
+            return encode_multiply(arguments, "mac", True, line_number)
         return encode_alu(arguments, True, line_number)
+    if operation == "exec_mul_rr":
+        return encode_multiply(arguments, "mul", False, line_number)
+    if operation == "exec_mul_ri":
+        return encode_multiply(arguments, "mul", True, line_number)
+    if operation == "exec_mac_rr":
+        return encode_multiply(arguments, "mac", False, line_number)
+    if operation == "exec_mac_ri":
+        return encode_multiply(arguments, "mac", True, line_number)
     if operation == "exec_reduce":
         return encode_reduce(arguments, line_number)
     if operation in STATE_OPS:

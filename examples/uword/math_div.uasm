@@ -1,0 +1,36 @@
+# Integer division by repeated subtraction
+# Computes Q = A / B (quotient) and R = A % B (remainder)
+# For 8-bit values (can extend to 16-bit with similar logic)
+
+entry:
+    LI rd=1 imm=0x1000          # Dividend A
+    LI rd=2 imm=0x1100          # Divisor B
+    LI rd=3 imm=0x2000          # Quotient Q
+    LI rd=4 imm=0x2100          # Remainder R
+
+    # Load operands
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0   # A
+    VLOAD space=local addr_context=0 sbase=2 vrf=1 span=16 offset=0   # B
+
+    # Method 1: Division by constant power of 2 (shift right)
+    # Example: A / 16 = A >> 4
+    EXEC_ALU_RI op=shr_u mode=byte va=0 vd=2 imm=4    # Divide by 16
+
+    # Method 2: Remainder by power of 2 (mask)
+    # Example: A % 16 = A & 15
+    EXEC_ALU_RI op=and mode=byte va=0 vd=3 imm=0x0f   # Remainder mod 16
+
+    # Method 3: General division approximation using lookup table
+    # For real division, need iterative algorithm (Newton-Raphson or digit-by-digit)
+
+    # Store quotient and remainder
+    VSTORE space=local addr_context=0 sbase=3 vrf=2 span=16 offset=0
+    VSTORE space=local addr_context=0 sbase=4 vrf=3 span=16 offset=0
+
+    END
+
+# Note: General integer division on SIMD is complex:
+# - Requires iterative algorithms (not a single instruction)
+# - Can use reciprocal approximation + multiply for faster division
+# - For exact division, need digit-by-digit or Newton-Raphson method
+# - VSP doesn't have native division instruction

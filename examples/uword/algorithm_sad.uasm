@@ -1,0 +1,35 @@
+# SAD (Sum of Absolute Differences) computation
+# Used for block matching in motion estimation
+# Computes sum of |A[i] - B[i]| across a block
+
+entry:
+    # Initialize addresses
+    LI rd=1 imm=0x1000          # Block A base
+    LI rd=2 imm=0x2000          # Block B base
+    LI rd=3 imm=0               # Iteration counter
+    LI rd=4 imm=0x40            # Block size: 64 bytes
+
+sad_loop:
+    # Load corresponding blocks
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0   # Load A
+    VLOAD space=local addr_context=0 sbase=2 vrf=1 span=16 offset=0   # Load B
+
+    # Compute absolute difference: |A - B|
+    EXEC_ALU_RR op=absdiff_u mode=byte va=0 vb=1 vd=2
+
+    # Reduce to sum (accumulate in reduction unit)
+    # Note: reduction result goes to ARF, would need NSLICE to get back to VRF
+    EXEC_REDUCE op=sum_u va=2 mask=none
+
+    # For demonstration, store the abs diff vector
+    VSTORE space=local addr_context=0 sbase=1 vrf=2 span=16 offset=1024
+
+    # Update addresses
+    ADDI rd=1 rs1=1 imm=16
+    ADDI rd=2 rs1=2 imm=16
+    ADDI rd=3 rs1=3 imm=16
+
+    # Continue until full block processed
+    BLTU rs1=3 rs2=4 target=sad_loop
+
+    END

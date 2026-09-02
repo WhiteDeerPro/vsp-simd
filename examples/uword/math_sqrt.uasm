@@ -1,0 +1,36 @@
+# Square root approximation using Newton-Raphson
+# Computes sqrt(x) for Q8.8 fixed-point numbers
+
+entry:
+    LI rd=1 imm=0x1000          # Input values (Q8.8)
+    LI rd=2 imm=0x2000          # Square root output (Q8.8)
+
+    # Load input
+    VLOAD space=local addr_context=0 sbase=1 vrf=0 span=16 offset=0
+
+    # Initial guess: sqrt(x) ≈ x/2 + 1 (for x in reasonable range)
+    EXEC_ALU_RI op=shr_u mode=byte va=0 vd=1 imm=1    # x / 2
+    EXEC_ALU_RI op=add mode=byte va=1 vd=2 imm=1      # x/2 + 1
+
+    # Newton-Raphson iteration: x_next = (x_curr + input/x_curr) / 2
+
+    # Iteration 1:
+    # Compute input / x_curr (use reciprocal * input)
+    # For now, simplified with direct operations
+
+    # temp = input / guess (approximate)
+    EXEC_ALU_RR op=mul_u mode=byte va=0 vb=2 vd=3     # Placeholder
+
+    # average = (guess + temp) / 2
+    EXEC_ALU_RR op=add mode=byte va=2 vb=3 vd=4
+    EXEC_ALU_RI op=shr_u mode=byte va=4 vd=5 imm=1
+
+    # Iteration 2: repeat
+    EXEC_ALU_RR op=mul_u mode=byte va=0 vb=5 vd=6
+    EXEC_ALU_RR op=add mode=byte va=5 vb=6 vd=7
+    EXEC_ALU_RI op=shr_u mode=byte va=7 vd=8 imm=1
+
+    # Store result
+    VSTORE space=local addr_context=0 sbase=2 vrf=8 span=16 offset=0
+
+    END
