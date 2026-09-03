@@ -14,7 +14,7 @@
 - 需要bit-reverse输入排序
 
 **复杂度**: O(N log N)  
-**操作数**: N log₂(N)个复数蝶形运算  
+**操作数**: (N/2) log₂(N)个复数蝶形运算
 **内存**: 2N个复数样本 + N/2个旋转因子
 
 ### 蝶形运算 (Butterfly)
@@ -62,11 +62,14 @@ W_N^k = e^(-j2πk/N) = cos(2πk/N) - j sin(2πk/N)
 
 **性能估计** (N=64):
 ```
-蝶形运算数: N*log₂(N) = 64*6 = 384
-每个蝶形: 4个复数乘法 + 2个复数加法
-         = 16个实数MUL + 8个实数ADD
-总计: 6144 MUL + 3072 ADD ≈ 15000条指令
+蝶形运算数: (N/2)*log₂(N) = 32*6 = 192
+每个通用蝶形: 1个复数乘法 + 2个复数加/减
+             = 4个实数MUL + 6个实数ADD/SUB
+标量算术总计: 768 MUL + 1152 ADD/SUB
 ```
+
+上述是未扣除平凡旋转因子、未计SIMD并行度和数据移动的算法计数，
+不等于VSP实测指令数或周期数。
 
 ### 方法2: CORDIC-based FFT
 
@@ -199,6 +202,30 @@ difference = compare_results(fft_result, vsp_output)
 ```
 
 ## 工具
+
+### VCS 64点FFT自检Demo
+
+仓库提供一个独立的、可重复运行的SystemVerilog行为级参考TB。它加载现有的
+64点bin-8测试信号、Q8.8旋转因子和bit-reverse表，执行radix-2 DIT FFT，
+并检查bin 8/56共轭峰、DC和非峰值杂散。
+
+```bash
+make test-vcs-fft64
+```
+
+通过时的关键输出为：
+
+```text
+FFT64 spectrum: bin 8=(0,-6561), bin 56=(0,6561) Q8.8
+PASS fft64_vcs_tb: 132 checks
+```
+
+该目标为可选目标，需要Synopsys VCS许可证，不加入默认的`make test`。
+默认链接参数包含`-Wl,--no-as-needed`，用于兼容本项目验证环境中的
+VCS O-2018.09与新版GNU ld；可通过`VCS_LDFLAGS=...`覆盖。
+TB验证的是FFT算法和仓库测试数据在VCS/SystemVerilog环境中的一致性；它不执行
+`dsp_fft_radix2.uasm`，也不证明VSP RTL已经形成完整FFT执行闭环。对应的RTL/
+微码闭环缺口记录在`issues/open/FFT微码RTL闭环执行缺口-Codex-2026-09-03.md`。
 
 ### generate_signals_pure.py
 

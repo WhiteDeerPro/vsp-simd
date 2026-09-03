@@ -1,0 +1,30 @@
+# Test NSLICE/NCLIP assembler support
+# Verifies format 0x7 encoding
+
+entry:
+    LI rd=1 imm=0x1000
+    LI rd=2 imm=0x2000
+
+    # Test NSLICE with immediate (extract byte from ARF)
+    EXEC_WIDE_RI op=nslice arf=0 shift=0 vd=2    # Extract bits [7:0]
+    EXEC_WIDE_RI op=nslice arf=0 shift=8 vd=3    # Extract bits [15:8]
+    EXEC_WIDE_RI op=nslice arf=1 shift=16 vd=4   # Extract bits [23:16]
+
+    # Test NCLIP with immediate (shift, round, saturate)
+    EXEC_WIDE_RI op=nclip_u arf=0 shift=4 vd=5   # Divide by 16, unsigned
+    EXEC_WIDE_RI op=nclip_s arf=1 shift=8 vd=6   # Divide by 256, signed
+
+    # Test NSLICE with register (shift amount from VRF)
+    EXEC_WIDE_RR op=nslice arf=2 vb=0 vd=7
+
+    # Test WIDEN (VRF -> ARF widening)
+    EXEC_WIDE_RI op=widen_u va=0 shift=0 dst_arf=3
+    EXEC_WIDE_RI op=widen_s va=1 shift=2 dst_arf=4
+
+    END
+
+# This file tests the assembler encoding of format 0x7 operations.
+# Expected encodings:
+# EXEC_WIDE_RI op=nslice arf=0 shift=8 vd=3
+#   -> [31:28]=0x7, [27:25]=6 (NSLICE), [23:21]=0 (arf), [16:13]=3 (vd),
+#      [8]=1 (write), extension=8 (shift)

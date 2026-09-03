@@ -1,0 +1,85 @@
+# Memory-based data reordering using VGATHER/VSCATTER
+# Replaces register-level routing which is no longer in EXEC profile v0
+#
+# Use case: FFT bit-reversal, stencil halo gathering, arbitrary permutation
+# Strategy: Store indices in VRF, use VGATHER to reorder from memory
+
+entry:
+    # Setup: base addresses for source and destination
+    LI rd=1 imm=0x1000          # Source data base
+    LI rd=2 imm=0x2000          # Destination base
+    LI rd=3 imm=0x3000          # Index pattern base
+
+    # Example 1: Bit-reversal pattern for 16-element FFT
+    # Indices: [0,8,4,12,2,10,6,14,1,9,5,13,3,11,7,15]
+    # Store this pattern in memory at 0x3000, load into VRF[0]
+    VLOAD space=local addr_context=0 sbase=3 vrf=0 span=16 offset=0
+
+    # Gather reordered data: read from source using indices
+    # Each lane fetches data[index[lane]]
+    VGATHER space=local addr_context=0 sbase=1 vd=1 vi=0 offset=0
+
+    # Result in VRF[1] is now bit-reversed
+    # Store to destination
+    VSTORE space=local addr_context=0 sbase=2 vrf=1 span=16 offset=0
+
+    # Example 2: Scatter to reorder output (inverse operation)
+    # Load source data
+    VLOAD space=local addr_context=0 sbase=1 vrf=2 span=16 offset=16
+
+    # Load scatter indices
+    VLOAD space=local addr_context=0 sbase=3 vrf=3 span=16 offset=16
+
+    # Scatter data: write data[lane] to destination[index[lane]]
+    VSCATTER space=local addr_context=0 sbase=2 vs=2 vi=3 offset=0
+
+    # Example 3: 3x3 stencil halo gathering
+    # For a 3x3 window around each pixel, gather 9 values
+    # Indices for [-1,-1], [-1,0], [-1,+1], [0,-1], [0,0], [0,+1], [+1,-1], [+1,0], [+1,+1]
+    # Assuming row stride is 16, indices would be: [-17,-16,-15,-1,0,+1,+15,+16,+17]
+    # (needs signed offset handling)
+
+    # Load center pixel indices
+    VLOAD space=local addr_context=0 sbase=3 vrf=4 span=16 offset=32
+
+    # Gather top-left neighbor (index - 17)
+    # Note: VGATHER offset is signed 16-bit, can handle negative offsets
+    VGATHER space=local addr_context=0 sbase=1 vd=5 vi=4 offset=-17
+
+    # Gather center pixel
+    VGATHER space=local addr_context=0 sbase=1 vd=6 vi=4 offset=0
+
+    # Gather bottom-right neighbor (index + 17)
+    VGATHER space=local addr_context=0 sbase=1 vd=7 vi=4 offset=17
+
+    # Now VRF[5,6,7] contains reordered data for processing
+
+    END
+
+# VGATHER/VSCATTER semantics (from indexed_reduce.uasm comment):
+# - VRF row supplies one unsigned byte offset per lane
+# - With 4 SIMD4 groups: 16 bytes transferred in group-major, lane-ascending order
+# - Access within base+0..255 byte window
+# - Offset field is signed 16-bit added to each index
+#
+# Syntax:
+#   VGATHER space=local addr_context=0 sbase=BASE vd=DEST vi=INDEX_VRF offset=OFF
+#   VSCATTER space=local addr_context=0 sbase=BASE vs=SRC vi=INDEX_VRF offset=OFF
+#
+# Performance vs register routing:
+# - Memory latency: ~10-50 cycles (depending on cache/SRAM)
+# - Register routing: 0 cycles (but NOT SUPPORTED in profile v0)
+# - Tradeoff: Latency for flexibility and profile compliance
+#
+# When to use:
+# 1. FFT bit-reversal permutation (once per FFT)
+# 2. Non-uniform stencil patterns (e.g., bilateral filter)
+# 3. Histogram bin gathering (index = pixel value)
+# 4. Lookup table interpolation
+# 5. Any arbitrary data reordering pattern
+#
+# Optimization strategies:
+# 1. Precompute index patterns and store in fast memory
+# 2. Batch multiple gathers to hide latency
+# 3. Interleave computation with gather/scatter
+# 4. Use aligned access patterns when possible

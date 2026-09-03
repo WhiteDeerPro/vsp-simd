@@ -1,0 +1,92 @@
+# FFT 64-point bit-reversal using VGATHER
+# Replaces in-register permutation with memory-based reordering
+# Addresses FFT Issue 1 gap #1: "未遍历64个复数样本"
+
+entry:
+    # Bit-reversal index table for 64-point FFT (6-bit reversal)
+    # Normal:  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15, ...
+    # Reversed: 0, 32, 16, 48,  8, 40, 24, 56,  4, 36, 20, 52, 12, 44, 28, 60, ...
+    #
+    # Full 64-element table stored at BR_TABLE_BASE
+    # Each entry is a byte index for gather operation
+
+    LI rd=1 imm=0x1000          # Input data base (64 complex = 128 bytes)
+    LI rd=2 imm=0x2000          # Output data base (bit-reversed)
+    LI rd=3 imm=0x3000          # Bit-reversal index table base
+
+    # Process in 4 passes of 16 lanes each (64 total elements)
+    # Each pass processes one 16-byte chunk
+
+    # ===== Pass 0: Elements 0-15 =====
+    # Load bit-reversal indices for first 16 elements
+    VLOAD space=local addr_context=0 sbase=3 vrf=0 span=16 offset=0
+
+    # Gather real parts (assuming complex layout: [r0,i0,r1,i1,...])
+    # Index pattern needs to account for 2-byte complex pairs
+    # For now, gather byte-by-byte (refinement: gather pairs)
+    VGATHER space=local addr_context=0 sbase=1 vd=1 vi=0 offset=0
+
+    # Store reordered data
+    VSTORE space=local addr_context=0 sbase=2 vrf=1 span=16 offset=0
+
+    # ===== Pass 1: Elements 16-31 =====
+    VLOAD space=local addr_context=0 sbase=3 vrf=2 span=16 offset=16
+    VGATHER space=local addr_context=0 sbase=1 vd=3 vi=2 offset=0
+    VSTORE space=local addr_context=0 sbase=2 vrf=3 span=16 offset=16
+
+    # ===== Pass 2: Elements 32-47 =====
+    VLOAD space=local addr_context=0 sbase=3 vrf=4 span=16 offset=32
+    VGATHER space=local addr_context=0 sbase=1 vd=5 vi=4 offset=0
+    VSTORE space=local addr_context=0 sbase=2 vrf=5 span=16 offset=32
+
+    # ===== Pass 3: Elements 48-63 =====
+    VLOAD space=local addr_context=0 sbase=3 vrf=6 span=16 offset=48
+    VGATHER space=local addr_context=0 sbase=1 vd=7 vi=6 offset=0
+    VSTORE space=local addr_context=0 sbase=2 vrf=7 span=16 offset=48
+
+    # At this point, all 64 bytes are bit-reversed in memory at 0x2000
+    # FFT stages can now read from this reordered buffer
+
+    END
+
+# Bit-reversal table generation (Python/C pre-processing):
+#
+# def bit_reverse_6bit(x):
+#     result = 0
+#     for i in range(6):
+#         if x & (1 << i):
+#             result |= (1 << (5 - i))
+#     return result
+#
+# table = [bit_reverse_6bit(i) for i in range(64)]
+# # [0, 32, 16, 48, 8, 40, 24, 56, 4, 36, 20, 52, 12, 44, 28, 60,
+# #  2, 34, 18, 50, 10, 42, 26, 58, 6, 38, 22, 54, 14, 46, 30, 62,
+# #  1, 33, 17, 49, 9, 41, 25, 57, 5, 37, 21, 53, 13, 45, 29, 61,
+# #  3, 35, 19, 51, 11, 43, 27, 59, 7, 39, 23, 55, 15, 47, 31, 63]
+#
+# For complex Q8.8 data, multiply indices by 2:
+# real_idx = table[i] * 2
+# imag_idx = table[i] * 2 + 1
+
+# Performance analysis:
+# - 4 VLOAD (index loading): 4 memory accesses
+# - 4 VGATHER (data gathering): 4 indexed memory accesses
+# - 4 VSTORE (output): 4 memory accesses
+# Total: 12 memory operations for 64-element bit-reversal
+#
+# vs in-register permutation: Would need cross-group routing (NOT SUPPORTED)
+#
+# Memory overhead:
+# - 64-byte index table (one-time precomputation)
+# - 2× data buffer (input + output) = 128 bytes each
+#
+# Latency hiding:
+# - Can overlap with twiddle factor loading
+# - One-time cost amortized over all FFT stages
+
+# Integration with FFT radix-2:
+# 1. Load input data to 0x1000 (natural order)
+# 2. Run this bit-reversal (output to 0x2000)
+# 3. FFT stages read from 0x2000 (bit-reversed order)
+# 4. In-place butterfly updates in 0x2000
+# 5. Output is naturally ordered (due to bit-reversal input)

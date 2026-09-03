@@ -1,6 +1,17 @@
 VERILATOR ?= verilator
+VCS ?= vcs
+VCS_LDFLAGS ?= -Wl,--no-as-needed
 PYTHON ?= python3
 BUILD_DIR ?= build
+
+VCS_FFT64_TB := sim/fft64_vcs_tb.sv
+VCS_FFT64_DIR := $(BUILD_DIR)/vcs_fft64
+VCS_FFT64_SIM := $(VCS_FFT64_DIR)/simv
+VCS_FFT64_FIXTURES := \
+	test_data/signals/fft_test_64_bin8.hex \
+	test_data/fft/fft64_twiddle_cos.hex \
+	test_data/fft/fft64_twiddle_sin.hex \
+	test_data/fft/fft64_bitreverse.hex
 
 include rtl/files.mk
 include rtl/integration/memory_ip_files.mk
@@ -285,7 +296,7 @@ FOUR_PASS_GATHER_ENGINE_TB := \
 MUL32_MICRO_TB := sim/mul32_microcode_tb.cpp
 MUL32_MICRO_BIN := $(BUILD_DIR)/mul32_microcode_tb
 
-.PHONY: all lint test test-vsp-exec-uword-expander \
+.PHONY: all lint test test-vcs-fft64 test-vsp-exec-uword-expander \
 	test-vsp-uword-predecoder test-vsp-uword-asm \
 	test-vsp-uword-bundle-assembler \
 	test-vsp-uword-multi-framer \
@@ -315,6 +326,19 @@ MUL32_MICRO_BIN := $(BUILD_DIR)/mul32_microcode_tb
 	lint-experimental-routing clean
 
 all: test
+
+$(VCS_FFT64_SIM): $(VCS_FFT64_TB) $(VCS_FFT64_FIXTURES) Makefile
+	mkdir -p $(VCS_FFT64_DIR)
+	cd $(VCS_FFT64_DIR) && $(VCS) -full64 -sverilog -timescale=1ns/1ps \
+		-LDFLAGS $(VCS_LDFLAGS) \
+		-Mdir=$(abspath $(VCS_FFT64_DIR)/csrc) \
+		-l compile.log \
+		-o $(abspath $@) $(abspath $(VCS_FFT64_TB))
+
+# Opt-in: VCS is a licensed commercial simulator and is not a requirement of
+# the default Verilator regression.
+test-vcs-fft64: $(VCS_FFT64_SIM)
+	$(VCS_FFT64_SIM) -l $(VCS_FFT64_DIR)/run.log
 
 lint:
 	$(VERILATOR) --lint-only -Wall -Wno-fatal --top-module $(TOP) $(RTL)

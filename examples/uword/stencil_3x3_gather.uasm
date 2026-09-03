@@ -1,0 +1,133 @@
+# 3x3 stencil data gathering using VGATHER
+# Replaces register-level slide/routing with memory-based window gathering
+# Use case: Sobel, Gaussian, median filters, convolution
+
+# Image layout assumptions:
+# - Row-major storage
+# - Row stride = 16 bytes (for 16-wide SIMD)
+# - Padding for boundary conditions
+# - Base address aligned
+
+entry:
+    LI rd=1 imm=0x1000          # Input image base
+    LI rd=2 imm=0x2000          # Output result base
+    LI rd=3 imm=16              # Row stride (image width)
+
+    # Process center pixels (avoiding boundaries for simplicity)
+    # For each output pixel, gather 3x3 neighborhood
+
+    # Setup center pixel indices (e.g., pixels [17,18,19,20,...])
+    # Start at row 1, column 1 (index = stride + 1 = 17)
+    LI rd=4 imm=17              # First center pixel base
+
+    # Generate sequential indices for 16 pixels
+    # [17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+    # Store this pattern in VRF[0] (precomputed or generated)
+    VLOAD space=local addr_context=0 sbase=4 vrf=0 span=16 offset=0
+
+    # ===== Gather 3x3 window =====
+    # Row indexing for stride=16:
+    # Top row:    center - 17 = [-17, -16, -15]
+    # Middle row: center - 1  = [-1,   0,  +1]
+    # Bottom row: center + 15 = [+15, +16, +17]
+
+    # Top-left: index - 17
+    VGATHER space=local addr_context=0 sbase=1 vd=1 vi=0 offset=-17
+
+    # Top-center: index - 16
+    VGATHER space=local addr_context=0 sbase=1 vd=2 vi=0 offset=-16
+
+    # Top-right: index - 15
+    VGATHER space=local addr_context=0 sbase=1 vd=3 vi=0 offset=-15
+
+    # Middle-left: index - 1
+    VGATHER space=local addr_context=0 sbase=1 vd=4 vi=0 offset=-1
+
+    # Center: index + 0
+    VGATHER space=local addr_context=0 sbase=1 vd=5 vi=0 offset=0
+
+    # Middle-right: index + 1
+    VGATHER space=local addr_context=0 sbase=1 vd=6 vi=0 offset=1
+
+    # Bottom-left: index + 15
+    VGATHER space=local addr_context=0 sbase=1 vd=7 vi=0 offset=15
+
+    # Bottom-center: index + 16
+    VGATHER space=local addr_context=0 sbase=1 vd=8 vi=0 offset=16
+
+    # Bottom-right: index + 17
+    VGATHER space=local addr_context=0 sbase=1 vd=9 vi=0 offset=17
+
+    # Now VRF[1..9] contain the 3x3 window for 16 pixels
+    # Each VRF row has 16 lanes, each lane has one tap of its 3x3 window
+
+    # ===== Example: Sobel X gradient =====
+    # Kernel: [-1, 0, +1]
+    #         [-2, 0, +2]
+    #         [-1, 0, +1]
+    #
+    # Gx = -tap0 + tap2 - 2*tap3 + 2*tap5 - tap6 + tap8
+
+    # Use WSUB for signed arithmetic (VRF[1] = top-left, etc.)
+    # Initialize accumulator
+    EXEC_MUL_RI op=mul_u va=1 imm=0 dst_arf=0              # Clear ARF[0] (or use zero VRF)
+
+    # -tap0 (top-left)
+    EXEC_WIDE_RI op=widen_s va=1 shift=0 dst_arf=0         # Sign-extend to ARF
+    # (then negate, or use WSUB with zero)
+
+    # +tap2 (top-right)
+    EXEC_WIDE_RI op=widen_s va=3 shift=0 dst_arf=1
+
+    # Continue accumulation...
+    # (Full implementation would use WADD/WSUB chains or MAC)
+
+    # For demonstration: simple average (Gaussian approximation)
+    # Sum all 9 taps, divide by 9 (approximate with >>3)
+
+    # Sum using MAC chain
+    EXEC_MUL_RI op=mul_u va=1 imm=1 dst_arf=0              # tap0 * 1
+    EXEC_MAC_RI op=mac_u va=2 imm=1 src_arf=0 dst_arf=0   # + tap1
+    EXEC_MAC_RI op=mac_u va=3 imm=1 src_arf=0 dst_arf=0   # + tap2
+    EXEC_MAC_RI op=mac_u va=4 imm=1 src_arf=0 dst_arf=0   # + tap3
+    EXEC_MAC_RI op=mac_u va=5 imm=1 src_arf=0 dst_arf=0   # + tap4
+    EXEC_MAC_RI op=mac_u va=6 imm=1 src_arf=0 dst_arf=0   # + tap5
+    EXEC_MAC_RI op=mac_u va=7 imm=1 src_arf=0 dst_arf=0   # + tap6
+    EXEC_MAC_RI op=mac_u va=8 imm=1 src_arf=0 dst_arf=0   # + tap7
+    EXEC_MAC_RI op=mac_u va=9 imm=1 src_arf=0 dst_arf=0   # + tap8
+
+    # Divide by 16 (approximation) with rounding
+    EXEC_WIDE_RI op=nclip_u arf=0 shift=4 vd=10
+
+    # Store result
+    VSTORE space=local addr_context=0 sbase=2 vrf=10 span=16 offset=0
+
+    END
+
+# Performance analysis:
+# - 9 VGATHER operations: 9 indexed memory reads
+# - 9 MAC operations: 9 cycles (hardware MAC)
+# - 1 NCLIP operation: 1 cycle
+# Total: ~19 core operations + memory latency
+#
+# vs register routing + slide:
+# - Would need per-group slide (NOT SUPPORTED in profile v0)
+# - vsp-algorithm-test-plan.md gap: "broadcast one route payload to all groups"
+#
+# Memory-based approach advantages:
+# 1. Works within profile v0 constraints
+# 2. Handles arbitrary stencil patterns (not just ±1 shifts)
+# 3. Can process non-rectangular neighborhoods
+# 4. Supports stride != power of 2
+#
+# Optimization opportunities:
+# 1. Cache index patterns for repeated use
+# 2. Overlap gather latency with computation from previous window
+# 3. Use double-buffering (gather next window while computing current)
+# 4. Batch process multiple rows to amortize setup cost
+
+# Comparison to vsp-algorithm-test-plan.md Sobel findings:
+# - Original: 4 of 15 micro-ops (27%) were pure data movement via route
+# - Memory-based: 9 gather + 9 compute = 18 ops total (50% data movement)
+# - Tradeoff: Higher data movement ratio BUT achieves profile v0 compliance
+# - With gather latency hiding, effective throughput may be comparable

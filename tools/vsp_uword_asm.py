@@ -43,6 +43,16 @@ ALU_OPS = {
 MUL_OPS = {"mul_u": 0, "mul_s": 1}
 MAC_OPS = {"mac_u": 0, "mac_s": 1}
 
+WIDE_NARROW_OPS = {
+    "widen_u": 0,
+    "widen_s": 1,
+    "rshift_rnd_u": 2,
+    "rshift_rnd_s": 3,
+    "nclip_u": 4,
+    "nclip_s": 5,
+    "nslice": 6,
+}
+
 # These are the ALU functions for which profile v0 exposes HALF/WORD element
 # modes. All other ALU builders are byte-only; RAW remains available when a
 # test intentionally needs an illegal packet.
@@ -735,6 +745,158 @@ def encode_reduce(tokens: list[str], line_number: int) -> list[int]:
     )
 
 
+def encode_wide_narrow(tokens: list[str], immediate_form: bool,
+                       line_number: int) -> list[int]:
+    """Encode format 0x7 wide/narrow conversion operations.
+
+    Supported operations:
+    - WIDEN_U/WIDEN_S: VRF -> ARF widening (8-bit -> 32-bit)
+    - RSHIFT_RND_U/RSHIFT_RND_S: ARF -> ARF rounded right shift
+    - NCLIP_U/NCLIP_S: ARF -> VRF with shift, round, saturate (32-bit -> 8-bit)
+    - NSLICE: ARF -> VRF with shift only, no rounding/saturation
+
+    Register forms (vb=shift source):
+      EXEC_WIDE_RR op=nslice arf=0 vb=1 vd=2
+
+    Immediate forms (imm=shift amount):
+      EXEC_WIDE_RI op=nslice arf=0 shift=8 vd=2
+    """
+    named, positional = split_arguments(tokens, line_number)
+    instruction = f"EXEC_WIDE_{'RI' if immediate_form else 'RR'}"
+    if positional:
+        raise AssemblyError(
+            f"line {line_number}: {instruction} fields must use key=value syntax"
+        )
+
+    op_name = take_named(named, "op", None, line_number).lower()
+    if op_name not in WIDE_NARROW_OPS:
+        raise AssemblyError(
+            f"line {line_number}: unknown wide/narrow op {op_name!r}"
+        )
+    op_code = WIDE_NARROW_OPS[op_name]
+
+    # Determine if this operation reads from ARF or VRF
+    reads_vrf = op_name in {"widen_u", "widen_s"}
+    reads_arf = not reads_vrf
+
+    # Source operand
+    if reads_vrf:
+        va = require_range(
+            "va", parse_integer(take_named(named, "va", None, line_number),
+                                line_number),
+            0, EXEC_VRF_ROWS - 1, line_number,
+        )
+        arf_src = 0  # unused
+    else:
+        arf_src = require_range(
+            "arf", parse_integer(
+                take_named_alias(named, ("arf", "src_arf", "as"), None, line_number),
+                line_number
+            ),
+            0, EXEC_ARF_ROWS - 1, line_number,
+        )
+        va = 0  # encoded in arf_src field
+
+    # Shift operand (vb or immediate)
+    vb = 0
+    extension: int | None = None
+    if immediate_form:
+        shift_text = take_named_alias(
+            named, ("shift", "imm"), None, line_number
+        )
+        shift_val = parse_integer(shift_text, line_number)
+        # Shift amount is 5 bits for 32-bit accumulator (0-31)
+        shift_val = require_range("shift", shift_val, 0, 31, line_number)
+        extension = shift_val & 0xFFFFFFFF
+    else:
+        vb = require_range(
+            "vb", parse_integer(take_named(named, "vb", None, line_number),
+                                line_number),
+            0, EXEC_VRF_ROWS - 1, line_number,
+        )
+
+    # Destination operand
+    writes_vrf = op_name in {"nclip_u", "nclip_s", "nslice"}
+    if writes_vrf:
+        vd = require_range(
+            "vd", parse_integer(take_named(named, "vd", None, line_number),
+                                line_number),
+            0, EXEC_VRF_ROWS - 1, line_number,
+        )
+        arf_dst = 0  # unused
+    else:
+        arf_dst = require_range(
+            "dst_arf", parse_integer(
+                take_named_alias(named, ("dst_arf", "ad"), None, line_number),
+                line_number
+            ),
+            0, EXEC_ARF_ROWS - 1, line_number,
+        )
+        vd = 0  # unused
+
+    # Control fields
+    mask_name = take_named(named, "mask", "none", line_number).lower()
+    if mask_name not in MASK_SELECTORS:
+        raise AssemblyError(
+            f"line {line_number}: unknown mask selector {mask_name!r}"
+        )
+
+    write_bit = parse_boolean(
+        take_named(named, "write", "1", line_number), "write", line_number
+    )
+
+    export_narrow = parse_boolean(
+        take_named(named, "export", "0", line_number), "export", line_number
+    )
+
+    reduce_name = take_named(named, "reduce", "none", line_number).lower()
+    if reduce_name not in REDUCE_SELECTORS:
+        raise AssemblyError(
+            f"line {line_number}: unknown reduction {reduce_name!r}"
+        )
+
+    if named:
+        unknown = ", ".join(sorted(named))
+        raise AssemblyError(
+            f"line {line_number}: unknown {instruction} fields: {unknown}"
+        )
+
+    # Format 0x7 encoding:
+    # [31:28] = 0x7 (format)
+    # [27:25] = op_code (3 bits)
+    # [24:21] = va (VRF source for WIDEN) or [23:21] = arf_src for others
+    # [20:17] = vb (shift source register)
+    # [16:13] = vd (VRF dest) or [15:13] = arf_dst
+    # [12:10] = mask_sel (3 bits)
+    # [9]     = reserved (0)
+    # [8]     = write_bit
+    # [7]     = export_narrow
+    # [6:4]   = reduce_sel (3 bits)
+    # [3:0]   = reserved (0)
+
+    base = 0x7 << 28
+    base |= op_code << 25
+
+    if reads_vrf:
+        base |= va << 21
+    else:
+        base |= arf_src << 21
+
+    base |= vb << 17
+
+    if writes_vrf:
+        base |= vd << 13
+    else:
+        base |= arf_dst << 13
+
+    base |= MASK_SELECTORS[mask_name] << 10
+    base |= write_bit << 8
+    base |= export_narrow << 7
+    base |= REDUCE_SELECTORS[reduce_name] << 4
+
+    return [base] if extension is None else [base, extension]
+
+
 def encode_opaque_record(major: int, tokens: list[str],
                          line_number: int) -> list[int]:
     named, positional = split_arguments(tokens, line_number)
@@ -804,6 +966,10 @@ def encode_statement(statement: str, line_number: int, current_pc: int = 0,
         return encode_multiply(arguments, "mac", False, line_number)
     if operation == "exec_mac_ri":
         return encode_multiply(arguments, "mac", True, line_number)
+    if operation == "exec_wide_rr":
+        return encode_wide_narrow(arguments, False, line_number)
+    if operation == "exec_wide_ri":
+        return encode_wide_narrow(arguments, True, line_number)
     if operation == "exec_reduce":
         return encode_reduce(arguments, line_number)
     if operation in STATE_OPS:

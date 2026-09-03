@@ -77,10 +77,11 @@ entry:
 # 5. Use in-place computation to save memory
 
 # Performance:
-# N-point FFT requires: N*log2(N) complex multiplies
-# For N=64: 64*6 = 384 complex mults = 1536 real mults
-# With hardware MUL: ~6000 instructions
-# With software MUL: ~300,000 instructions (impractical)
+# Radix-2 uses (N/2)*log2(N) butterflies, with at most one general complex
+# multiply per butterfly before trivial-twiddle optimization.
+# For N=64: 32*6 = 192 butterflies <= 768 real multiplies.
+# Instruction/cycle counts remain unmeasured until the conceptual gaps above
+# are replaced by an executable end-to-end VSP program.
 
 # Memory layout:
 # Input: 2*N samples (N real, N imag) in Q8.8 format

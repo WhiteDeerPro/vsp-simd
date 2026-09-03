@@ -4,6 +4,7 @@
 *.fst
 __pycache__/
 *.py[cod]
+/ucli.key
 
 # 本地代理配置可能包含 API 凭据，不进入版本库
 /.claude/
