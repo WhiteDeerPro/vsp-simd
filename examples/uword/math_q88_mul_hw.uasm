@@ -47,7 +47,27 @@ entry:
 
     END
 
-# Status: FUNCTIONAL - NSLICE support added
+# Status: BLOCKED - needs signed Q8.8 semantics definition
+#
+# BLOCKER B: Q8.8 signed multiplication needs:
+# 1. Signed high byte × signed high byte (use MUL_S)
+# 2. Mixed signed/unsigned cross products
+# 3. Proper sign extension and carry handling
+# 4. Rounding/truncation strategy (round-to-nearest? truncate?)
+# 5. Overflow handling (saturate to ±127.996? wrap?)
+#
+# Current issues:
+# - Uses MUL_U for all partial products (incorrect for signed)
+# - No specification of rounding mode
+# - No boundary testing (0, ±1 LSB, ±0.5, ±1.0, -128, max, overflow)
+#
+# Required before FFT integration:
+# 1. Document signed Q8.8 partial product formula
+# 2. Specify rounding and saturation strategy
+# 3. RTL boundary test with known edge cases
+# 4. Compare against behavioral golden (not same implementation)
+#
+# See: issues/open/FFT微码RTL闭环执行缺口-Codex-2026-09-03.md
 #
 # Q8.8 multiplication algorithm:
 # Input: A = a_int + a_frac/256, B = b_int + b_frac/256
@@ -60,9 +80,4 @@ entry:
 #
 # Q8.8 result = bits [23:8] = [result_hi:result_lo]
 #
-# Performance (actual with NSLICE): ~12-14 instructions
-# vs ~100-150 for software implementation
-# Speedup: 8-10x
-#
-# Precision: Exact for representable Q8.8 values
 # Dynamic range: [-128.0, 127.996] with 1/256 precision

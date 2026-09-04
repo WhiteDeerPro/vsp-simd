@@ -114,6 +114,7 @@ module vsp_uword_multi_framer #(
   integer record_index;
   integer copy_index;
   integer shift_index;
+  integer state_index;
   integer required_words;
   integer present_words;
   integer remaining_words;
@@ -392,9 +393,9 @@ module vsp_uword_multi_framer #(
       terminal_pc_q <= '0;
       record_delivery_done_q <= 1'b0;
       protocol_error_q <= 1'b0;
-      for (shift_index = 0; shift_index < BUFFER_WORDS;
-           shift_index = shift_index + 1)
-        word_q[shift_index] <= '0;
+      for (state_index = 0; state_index < BUFFER_WORDS;
+           state_index = state_index + 1)
+        word_q[state_index] <= '0;
     end else begin
       word_count_q <= word_count_d;
       base_pc_q <= base_pc_d;
@@ -406,9 +407,9 @@ module vsp_uword_multi_framer #(
       terminal_pc_q <= terminal_pc_d;
       record_delivery_done_q <= record_delivery_done_d;
       protocol_error_q <= protocol_error_d;
-      for (shift_index = 0; shift_index < BUFFER_WORDS;
-           shift_index = shift_index + 1)
-        word_q[shift_index] <= word_d[shift_index];
+      for (state_index = 0; state_index < BUFFER_WORDS;
+           state_index = state_index + 1)
+        word_q[state_index] <= word_d[state_index];
     end
   end
 

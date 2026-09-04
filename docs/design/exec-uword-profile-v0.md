@@ -112,6 +112,16 @@ Signed/unsigned interpretation and add/subtract variant are format-local.  The
 operation writes one ARF destination.  It does not require the accumulator to
 be encoded as an ordinary third VRF operand.
 
+The engineering assembler exposes this one-word format as:
+
+```text
+EXEC_WADD op=wadd_u|wadd_s|wsub_u|wsub_s \
+  va=<VRF> vb=<VRF> src_arf=<ARF> dst_arf=<ARF> align=<0..31>
+```
+
+`arf`/`as` and `ad` are accepted source/destination aliases. `align` is carried
+in the format-0x8 base word and therefore owns no extension word.
+
 ## Assembler multiply/MAC spellings
 
 The engineering assembler exposes the byte-only multiply formats directly:

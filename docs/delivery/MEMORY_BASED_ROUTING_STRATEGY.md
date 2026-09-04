@@ -193,7 +193,11 @@ EXEC_WIDE_RI op=nclip_u arf=0 shift=4 vd=10
 
 ---
 
-## FFT Issue 1缺口解决进度
+## FFT Issue 1缺口解决进度（历史评估）
+
+> 2026-09-04复验：下列勾选曾高估Q8.8实现状态。旧Q8.8微码仍未完成；
+> 已闭环的是另有明确数值契约的静态BFP8 native-lane FFT，见
+> `docs/workloads/fft64-q7.md`。本节只保留当时的设计思路，不作为验收结论。
 
 更新Issue 1的6个缺口：
 
@@ -204,7 +208,8 @@ EXEC_WIDE_RI op=nclip_u arf=0 shift=4 vd=10
 5. ⚠️ **跨16字节窗口搬运** → VGATHER可跨窗口，但受255字节范围限制
 6. 🔲 **端到端RTL TB** → 需要RTL层支持
 
-**现在可以推进**: 完整的64点FFT微码，使用VGATHER/VSCATTER处理数据移动。
+**当前结论**：VGATHER/VSCATTER足以支持byte索引调度；它已经用于新的静态BFP8
+64点FFT。若继续实现旧Q8.8版本，仍需独立解决16-bit复乘和byte packing。
 
 ---
 

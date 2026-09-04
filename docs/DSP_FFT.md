@@ -4,6 +4,12 @@
 
 本文档描述VSP上的快速傅里叶变换(FFT)实现和数字信号处理(DSP)函数。
 
+> **实现状态（2026-09-04）**：当前真实VSP RTL闭环采用静态BFP8数据
+> （本fixture为`Ein=-2`的signed-int8 mantissa）、Q2.6旋转因子和逐级指数更新，
+> Verilator与VCS均已通过，详见
+> [64点原生lane静态BFP8 FFT](workloads/fft64-q7.md)。本文其余Q8.8表和
+> `fft64_vcs_tb.sv`属于历史fixture/行为参考，不代表Q8.8微码已在VSP RTL执行。
+
 ## FFT算法
 
 ### Radix-2 Decimation-in-Time (DIT)
@@ -146,7 +152,7 @@ W_N^k = e^(-j2πk/N) = cos(2πk/N) - j sin(2πk/N)
 
 ### 信号格式
 
-所有信号使用Q8.8定点格式：
+本节列出的旧通用信号fixture使用Q8.8定点格式：
 - 16位有符号整数
 - 8位整数部分，8位小数部分
 - 范围: -128.0 到 +127.99609375
@@ -203,7 +209,32 @@ difference = compare_results(fft_result, vsp_output)
 
 ## 工具
 
-### VCS 64点FFT自检Demo
+### VSP RTL + RAM/cache 64点FFT
+
+当前可执行profile由`tools/generate_fft64_vsp.py`生成93-word微码、224-word
+SRAM数据镜像、逐级golden和最终golden。程序从`0x1360`加载复制的`Ein=-2`，
+固定六级执行后由EXEC生成`Eout=4`并经D-cache/shared SRAM写回`0x1370`。
+`make test-fft64-vsp`已通过真实PC/I-cache/decode/SIMD/D-cache/shared SRAM
+闭环并生成VCD；`make test-vcs-fft64-vsp`使用相同镜像和RTL，也已在
+VCS O-2018.09-SP2通过并生成VPD。
+
+```bash
+make test-fft64-vsp
+cd build/fft64_vsp
+verdi -ssf fft64_vsp.vcd -nologo
+
+cd ../..
+make test-vcs-fft64-vsp
+make prepare-verdi-fft64-vsp
+make view-verdi-fft64-vsp
+```
+
+完整数值契约、内存地址和当前验证结果见
+[64点原生lane静态BFP8 FFT](workloads/fft64-q7.md)。
+当前结果是bin-8单音端到端smoke，且program/data/golden同源；它不代表
+已完成一般FFT的独立数学验证。
+
+### 旧Q8.8行为级VCS参考Demo
 
 仓库提供一个独立的、可重复运行的SystemVerilog行为级参考TB。它加载现有的
 64点bin-8测试信号、Q8.8旋转因子和bit-reverse表，执行radix-2 DIT FFT，
@@ -223,7 +254,7 @@ PASS fft64_vcs_tb: 132 checks
 该目标为可选目标，需要Synopsys VCS许可证，不加入默认的`make test`。
 默认链接参数包含`-Wl,--no-as-needed`，用于兼容本项目验证环境中的
 VCS O-2018.09与新版GNU ld；可通过`VCS_LDFLAGS=...`覆盖。
-TB验证的是FFT算法和仓库测试数据在VCS/SystemVerilog环境中的一致性；它不执行
+TB只验证FFT算法和旧Q8.8测试数据在VCS/SystemVerilog环境中的一致性；它不执行
 `dsp_fft_radix2.uasm`，也不证明VSP RTL已经形成完整FFT执行闭环。对应的RTL/
 微码闭环缺口记录在`issues/open/FFT微码RTL闭环执行缺口-Codex-2026-09-03.md`。
 

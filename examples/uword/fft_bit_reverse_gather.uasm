@@ -1,6 +1,26 @@
 # FFT 64-point bit-reversal using VGATHER
 # Replaces in-register permutation with memory-based reordering
-# Addresses FFT Issue 1 gap #1: "未遍历64个复数样本"
+#
+# STATUS: INCOMPLETE - 64-byte scalar demo only
+#
+# BLOCKER C: This processes only 64 bytes total (4 passes × 16 bytes).
+# NOT suitable for 64-point Q8.8 complex FFT which requires:
+# - 64 Q8.8 real values = 128 bytes (8 passes)
+# - 64 Q8.8 complex values = 256 bytes (16 passes real+imag, or 8 passes each if separated)
+#
+# Required fixes:
+# 1. Choose FFT complex layout (SoA: real/imag separate, or AoS: interleaved)
+# 2. Generate proper byte-index bit-reversal table for Q8.8 (×2 for 16-bit values)
+# 3. Extend to 8 or 16 passes depending on layout
+# 4. Create independent RTL test: 64 Q8.8 complex input → bit-reversed output, byte-wise compare
+# 5. Only after passing, integrate with FFT butterfly stages
+#
+# Current implementation:
+# - Suitable for 64×8-bit scalar reordering
+# - Demonstrates VGATHER mechanics
+# - NOT a working FFT preprocessing step
+#
+# See: issues/open/FFT微码RTL闭环执行缺口-Codex-2026-09-03.md
 
 entry:
     # Bit-reversal index table for 64-point FFT (6-bit reversal)

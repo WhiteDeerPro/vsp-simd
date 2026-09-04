@@ -1,0 +1,39 @@
+# Executable static BFP8 scale step for one 16-lane block.
+#
+# Numeric contract:
+#   x = signed_int8(mantissa) * 2^(signed_int8(exponent) - 7)
+#   mantissa_out = NCLIP_S(mantissa_in, shift=1)
+#   exponent_out = exponent_in + 1
+#
+# The exponent is replicated into all 16 byte lanes.  Software must validate
+# exponent_in <= 126 so that the signed int8 increment is representable.
+# ADD_SAT_S makes an invalid exponent=127 input deterministic, but saturation
+# at 127 does not constitute a valid static-scale result.
+#
+# Physical/cacheable memory layout (all addresses are byte addresses):
+#   0x1400..0x140f  input signed mantissas, 16 lanes
+#   0x1410..0x141f  input signed exponent E, replicated 16 times
+#   0x1420..0x142f  output signed mantissas, 16 lanes
+#   0x1430..0x143f  output signed exponent E+1, replicated 16 times
+#
+# This range is inside the integration wrapper's 0x1000..0x1fff data aperture
+# and follows the current FFT64 workspace ending at 0x137f.
+# Launch requirement: start_group_mask must be 0xf.  The 16-byte transfers
+# require all four SIMD4 groups; this uword profile has no SET_GMASK operation.
+
+entry:
+    LI rd=1 imm=0x1400
+    LI rd=2 imm=0x1410
+    LI rd=3 imm=0x1420
+    LI rd=4 imm=0x1430
+
+    VLOAD space=physical addr_context=0 sbase=1 vrf=0 span=16 offset=0
+    EXEC_WIDE_RI op=widen_s va=0 shift=0 dst_arf=0
+    EXEC_WIDE_RI op=nclip_s arf=0 shift=1 vd=1
+    VSTORE space=physical addr_context=0 sbase=3 vrf=1 span=16 offset=0
+
+    VLOAD space=physical addr_context=0 sbase=2 vrf=2 span=16 offset=0
+    EXEC_ALU_RI op=add_sat_s mode=byte va=2 vd=3 imm=1
+    VSTORE space=physical addr_context=0 sbase=4 vrf=3 span=16 offset=0
+
+    END

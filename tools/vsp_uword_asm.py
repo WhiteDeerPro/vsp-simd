@@ -53,6 +53,13 @@ WIDE_NARROW_OPS = {
     "nslice": 6,
 }
 
+WIDE_ADDSUB_OPS = {
+    "wadd_u": 0,
+    "wadd_s": 1,
+    "wsub_u": 2,
+    "wsub_s": 3,
+}
+
 # These are the ALU functions for which profile v0 exposes HALF/WORD element
 # modes. All other ALU builders are byte-only; RAW remains available when a
 # test intentionally needs an illegal packet.
@@ -861,6 +868,20 @@ def encode_wide_narrow(tokens: list[str], immediate_form: bool,
             f"line {line_number}: unknown {instruction} fields: {unknown}"
         )
 
+    if not write_bit:
+        if writes_vrf and vd != 0:
+            raise AssemblyError(
+                f"line {line_number}: vd must be zero when write=0"
+            )
+        if not writes_vrf and arf_dst != 0:
+            raise AssemblyError(
+                f"line {line_number}: dst_arf must be zero when write=0"
+            )
+    if export_narrow and not writes_vrf:
+        raise AssemblyError(
+            f"line {line_number}: {op_name} cannot export a narrow result"
+        )
+
     # Format 0x7 encoding:
     # [31:28] = 0x7 (format)
     # [27:25] = op_code (3 bits)
@@ -868,7 +889,7 @@ def encode_wide_narrow(tokens: list[str], immediate_form: bool,
     # [20:17] = vb (shift source register)
     # [16:13] = vd (VRF dest) or [15:13] = arf_dst
     # [12:10] = mask_sel (3 bits)
-    # [9]     = reserved (0)
+    # [9]     = extension_required (1 for RI, 0 for RR)
     # [8]     = write_bit
     # [7]     = export_narrow
     # [6:4]   = reduce_sel (3 bits)
@@ -890,11 +911,100 @@ def encode_wide_narrow(tokens: list[str], immediate_form: bool,
         base |= arf_dst << 13
 
     base |= MASK_SELECTORS[mask_name] << 10
+
+    # Set bit 9 (extension_required) for immediate form
+    if immediate_form:
+        base |= 1 << 9
+
     base |= write_bit << 8
     base |= export_narrow << 7
     base |= REDUCE_SELECTORS[reduce_name] << 4
 
     return [base] if extension is None else [base, extension]
+
+
+def encode_wide_addsub(tokens: list[str], line_number: int) -> list[int]:
+    """Encode format 0x8 three-input wide add/subtract operations.
+
+    The operation is ``ARF + (VA << align) +/- (VB << align)``.  The align
+    amount is carried in the base word, so this family is always one word.
+    """
+    named, positional = split_arguments(tokens, line_number)
+    if positional:
+        raise AssemblyError(
+            f"line {line_number}: EXEC_WADD fields must use key=value syntax"
+        )
+
+    op_name = take_named(named, "op", None, line_number).lower()
+    if op_name not in WIDE_ADDSUB_OPS:
+        raise AssemblyError(
+            f"line {line_number}: unknown wide add/sub op {op_name!r}"
+        )
+
+    va = require_range(
+        "va", parse_integer(take_named(named, "va", None, line_number),
+                            line_number),
+        0, EXEC_VRF_ROWS - 1, line_number,
+    )
+    vb = require_range(
+        "vb", parse_integer(take_named(named, "vb", None, line_number),
+                            line_number),
+        0, EXEC_VRF_ROWS - 1, line_number,
+    )
+    arf_src = require_range(
+        "src_arf", parse_integer(
+            take_named_alias(named, ("src_arf", "arf", "as"), None,
+                             line_number),
+            line_number,
+        ),
+        0, EXEC_ARF_ROWS - 1, line_number,
+    )
+    arf_dst = require_range(
+        "dst_arf", parse_integer(
+            take_named_alias(named, ("dst_arf", "ad"), None, line_number),
+            line_number,
+        ),
+        0, EXEC_ARF_ROWS - 1, line_number,
+    )
+    align = require_range(
+        "align", parse_integer(take_named(named, "align", None, line_number),
+                               line_number),
+        0, 31, line_number,
+    )
+
+    mask_name = take_named(named, "mask", "none", line_number).lower()
+    if mask_name not in MASK_SELECTORS:
+        raise AssemblyError(
+            f"line {line_number}: unknown mask selector {mask_name!r}"
+        )
+    write_arf = parse_boolean(
+        take_named(named, "write", "1", line_number), "write", line_number
+    )
+
+    if named:
+        unknown = ", ".join(sorted(named))
+        raise AssemblyError(
+            f"line {line_number}: unknown EXEC_WADD fields: {unknown}"
+        )
+    if not write_arf and arf_dst != 0:
+        raise AssemblyError(
+            f"line {line_number}: dst_arf must be zero when write=0"
+        )
+
+    # Format 0x8 encoding:
+    # [31:28] = 0x8, [27:26] = op, [25:22] = va, [21:18] = vb
+    # [17:15] = src_arf, [14:12] = dst_arf, [11:9] = mask_sel
+    # [8:4] = align, [3] = write_arf, [2:0] = reserved zero.
+    base = 0x8 << 28
+    base |= WIDE_ADDSUB_OPS[op_name] << 26
+    base |= va << 22
+    base |= vb << 18
+    base |= arf_src << 15
+    base |= arf_dst << 12
+    base |= MASK_SELECTORS[mask_name] << 9
+    base |= align << 4
+    base |= write_arf << 3
+    return [base]
 
 
 def encode_opaque_record(major: int, tokens: list[str],
@@ -970,6 +1080,8 @@ def encode_statement(statement: str, line_number: int, current_pc: int = 0,
         return encode_wide_narrow(arguments, False, line_number)
     if operation == "exec_wide_ri":
         return encode_wide_narrow(arguments, True, line_number)
+    if operation == "exec_wadd":
+        return encode_wide_addsub(arguments, line_number)
     if operation == "exec_reduce":
         return encode_reduce(arguments, line_number)
     if operation in STATE_OPS:

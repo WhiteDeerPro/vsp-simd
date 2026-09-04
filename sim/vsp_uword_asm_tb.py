@@ -107,6 +107,62 @@ def main() -> int:
         0x00000007,
     ]
 
+    wide_narrow = asm.assemble_text(
+        "EXEC_WIDE_RI op=nslice arf=0 shift=0 vd=2\n"
+        "EXEC_WIDE_RI op=nslice arf=0 shift=8 vd=3\n"
+        "EXEC_WIDE_RI op=nslice arf=1 shift=16 vd=4\n"
+        "EXEC_WIDE_RI op=nclip_u arf=0 shift=4 vd=5\n"
+        "EXEC_WIDE_RI op=nclip_s arf=1 shift=8 vd=6\n"
+        "EXEC_WIDE_RR op=nslice arf=2 vb=0 vd=7\n"
+        "EXEC_WIDE_RI op=widen_u va=0 shift=0 dst_arf=3\n"
+        "EXEC_WIDE_RI op=widen_s va=1 shift=2 dst_arf=4\n",
+        0,
+    )
+    wide_words = [word.value for word in wide_narrow.words]
+    assert wide_words == [
+        0x7C004300,
+        0x00000000,
+        0x7C006300,
+        0x00000008,
+        0x7C208300,
+        0x00000010,
+        0x7800A300,
+        0x00000004,
+        0x7A20C300,
+        0x00000008,
+        0x7C40E100,
+        0x70006300,
+        0x00000000,
+        0x72208300,
+        0x00000002,
+    ]
+    # Format 0x7 bit 9 is the packet-length contract shared by the stream
+    # framer and RTL expander: every RI base owns one extension; RR does not.
+    for base_index in (0, 2, 4, 6, 8, 11, 13):
+        assert wide_words[base_index] & (1 << 9)
+    assert not wide_words[10] & (1 << 9)
+
+    wide_boundaries = asm.assemble_text(
+        "EXEC_WIDE_RI op=rshift_rnd_u arf=7 shift=31 dst_arf=7\n"
+        "EXEC_WIDE_RR op=rshift_rnd_s arf=0 vb=15 dst_arf=0\n",
+        0,
+    )
+    assert [word.value for word in wide_boundaries.words] == [
+        0x74E0E300,
+        0x0000001F,
+        0x761E0100,
+    ]
+
+    wide_addsub = asm.assemble_text(
+        "EXEC_WADD op=wadd_s va=3 vb=11 src_arf=0 dst_arf=0 align=6\n"
+        "EXEC_WADD op=wsub_u va=15 vb=0 as=7 ad=6 align=31 mask=m3\n",
+        0,
+    )
+    assert [word.value for word in wide_addsub.words] == [
+        0x84EC0068,
+        0x8BC3E9F8,
+    ]
+
     state_and_memory = asm.assemble_text(
         """
         move: SMOVI rd=1 imm=0x100
@@ -322,6 +378,33 @@ def main() -> int:
     expect_error(
         "EXEC_MAC_RR op=mac_u va=0 vb=1 src_arf=0 as=0"
     )
+    expect_error("EXEC_WIDE_RI op=nslice arf=0 shift=-1 vd=0")
+    expect_error("EXEC_WIDE_RI op=nslice arf=0 shift=32 vd=0")
+    expect_error("EXEC_WIDE_RI op=nslice arf=0 shift=1 vb=0 vd=0")
+    expect_error("EXEC_WIDE_RR op=nslice arf=0 vd=0")
+    expect_error("EXEC_WIDE_RR op=nslice arf=0 vb=16 vd=0")
+    expect_error("EXEC_WIDE_RI op=nslice arf=8 shift=1 vd=0")
+    expect_error("EXEC_WIDE_RI op=nslice arf=0 shift=1 vd=16")
+    expect_error("EXEC_WIDE_RI op=widen_u va=16 shift=1 dst_arf=0")
+    expect_error("EXEC_WIDE_RI op=widen_u va=0 shift=1 dst_arf=8")
+    expect_error(
+        "EXEC_WIDE_RI op=nslice arf=0 shift=1 vd=1 write=0"
+    )
+    expect_error(
+        "EXEC_WIDE_RI op=widen_u va=0 shift=1 dst_arf=1 write=0"
+    )
+    expect_error(
+        "EXEC_WIDE_RI op=widen_u va=0 shift=1 dst_arf=1 export=1"
+    )
+    expect_error("EXEC_WADD op=bad va=0 vb=0 as=0 ad=0 align=0")
+    expect_error("EXEC_WADD op=wadd_s va=16 vb=0 as=0 ad=0 align=0")
+    expect_error("EXEC_WADD op=wadd_s va=0 vb=16 as=0 ad=0 align=0")
+    expect_error("EXEC_WADD op=wadd_s va=0 vb=0 as=8 ad=0 align=0")
+    expect_error("EXEC_WADD op=wadd_s va=0 vb=0 as=0 ad=8 align=0")
+    expect_error("EXEC_WADD op=wadd_s va=0 vb=0 as=0 ad=0 align=32")
+    expect_error(
+        "EXEC_WADD op=wadd_s va=0 vb=0 as=0 ad=1 align=0 write=0"
+    )
     expect_error("SMOVI imm=1")
     expect_error("SMOVI rd=32 imm=1")
     expect_error("SMOVI rd=1 imm=0x100000000")
@@ -382,7 +465,7 @@ def main() -> int:
         raise AssertionError("unaligned base PC unexpectedly accepted")
 
     print(
-        "vsp_uword_asm_tb: exact ALU/MUL/MAC, state, branch, "
+        "vsp_uword_asm_tb: exact ALU/MUL/MAC/WIDE, state, branch, "
         "sequential/indexed MEMORY images and rejection checks passed"
     )
     return 0

@@ -1,6 +1,10 @@
 VERILATOR ?= verilator
 VCS ?= vcs
 VCS_LDFLAGS ?= -Wl,--no-as-needed
+VPD2VCD ?= vpd2vcd
+VFAST ?= vfast
+VERDI ?= verdi
+GRAPHVIZ_NEATO ?= neato
 PYTHON ?= python3
 BUILD_DIR ?= build
 
@@ -12,6 +16,61 @@ VCS_FFT64_FIXTURES := \
 	test_data/fft/fft64_twiddle_cos.hex \
 	test_data/fft/fft64_twiddle_sin.hex \
 	test_data/fft/fft64_bitreverse.hex
+
+FFT64_VSP_GENERATOR := tools/generate_fft64_vsp.py
+FFT64_SPECTRUM_VERIFIER := tools/verify_fft64_spectrum.py
+FFT64_FIXTURE_TB := sim/fft64_fixture_tb.py
+FFT64_SPECTRUM_TB := sim/fft64_spectrum_tb.py
+VSP_BFP_TB := sim/vsp_bfp_tb.py
+VSP_M8E8_TB := sim/vsp_m8e8_tb.py
+FFT64_VSP_ARTIFACT_DIR := $(BUILD_DIR)/fft64_vsp
+FFT64_VSP_PROGRAM := $(FFT64_VSP_ARTIFACT_DIR)/dsp_fft64_q7.hex
+FFT64_VSP_DATA := $(FFT64_VSP_ARTIFACT_DIR)/fft64_q7_data.hex
+FFT64_VSP_GOLDEN := $(FFT64_VSP_ARTIFACT_DIR)/fft64_q7_golden.hex
+FFT64_VSP_OUTPUT := $(FFT64_VSP_ARTIFACT_DIR)/fft64_q7_rtl_output.hex
+FFT64_VSP_VCD := $(FFT64_VSP_ARTIFACT_DIR)/fft64_vsp.vcd
+FFT64_VSP_CSV := $(FFT64_VSP_ARTIFACT_DIR)/fft64_spectrum.csv
+FFT64_VSP_PLOT_PREFIX := $(FFT64_VSP_ARTIFACT_DIR)/fft64_spectrum
+FFT64_VSP_PLOTTER := tools/plot_fft64_graphviz.py
+FFT64_INPUT_PLOTTER := tools/plot_fft64_input_graphviz.py
+FFT64_VSP_OBJ := $(BUILD_DIR)/fft64_vsp_obj_dir
+FFT64_VSP_TB := $(abspath sim/integration/fft64_vsp_memory_system_tb.cpp)
+VCS_FFT64_VSP_TB := $(abspath sim/fft64_vsp_vcs_tb.sv)
+VCS_FFT64_VSP_DIR := $(BUILD_DIR)/vcs_fft64_vsp
+VCS_FFT64_VSP_SIM := $(VCS_FFT64_VSP_DIR)/simv
+VCS_FFT64_VSP_VPD := $(abspath $(VCS_FFT64_VSP_DIR)/fft64_vsp.vpd)
+VCS_FFT64_VSP_VCD := $(abspath $(VCS_FFT64_VSP_DIR)/fft64_vsp_vcs.vcd)
+VCS_FFT64_VSP_FSDB := $(abspath $(VCS_FFT64_VSP_DIR)/fft64_vsp_vcs.fsdb)
+VCS_FFT64_VSP_CSV := $(abspath $(VCS_FFT64_VSP_DIR)/fft64_spectrum.csv)
+VCS_FFT64_VSP_PLOT_PREFIX := $(VCS_FFT64_VSP_DIR)/fft64_spectrum
+VCS_FFT64_VSP_VERDI_SCRIPT := $(abspath sim/verdi_fft64_vsp.tcl)
+
+FFT64_MIXED_ARTIFACT_DIR := $(BUILD_DIR)/fft64_mixed_vsp
+FFT64_MIXED_PROGRAM := $(FFT64_MIXED_ARTIFACT_DIR)/dsp_fft64_q7.hex
+FFT64_MIXED_DATA := $(FFT64_MIXED_ARTIFACT_DIR)/fft64_q7_data.hex
+FFT64_MIXED_GOLDEN := $(FFT64_MIXED_ARTIFACT_DIR)/fft64_q7_golden.hex
+FFT64_MIXED_MANIFEST := $(FFT64_MIXED_ARTIFACT_DIR)/fft64_q7_manifest.json
+FFT64_MIXED_INPUT_CSV := $(FFT64_MIXED_ARTIFACT_DIR)/fft64_input.csv
+FFT64_MIXED_OUTPUT := $(FFT64_MIXED_ARTIFACT_DIR)/fft64_mixed_rtl_output.hex
+FFT64_MIXED_VCD := $(FFT64_MIXED_ARTIFACT_DIR)/fft64_mixed_vsp.vcd
+FFT64_MIXED_CSV := $(FFT64_MIXED_ARTIFACT_DIR)/fft64_mixed_spectrum.csv
+FFT64_MIXED_PLOT_PREFIX := $(FFT64_MIXED_ARTIFACT_DIR)/fft64_mixed_spectrum
+FFT64_MIXED_TIME_PLOT_PREFIX := \
+	$(FFT64_MIXED_ARTIFACT_DIR)/fft64_input_time_domain
+FFT64_MIXED_DFT_CSV := $(FFT64_MIXED_ARTIFACT_DIR)/fft64_dft_reference.csv
+FFT64_MIXED_COMPARE_CSV := $(FFT64_MIXED_ARTIFACT_DIR)/fft64_spectrum_comparison.csv
+FFT64_MIXED_METRICS := $(FFT64_MIXED_ARTIFACT_DIR)/fft64_spectrum_metrics.json
+
+VCS_FFT64_MIXED_DIR := $(BUILD_DIR)/vcs_fft64_mixed_vsp
+VCS_FFT64_MIXED_SIM := $(VCS_FFT64_MIXED_DIR)/simv
+VCS_FFT64_MIXED_VPD := $(abspath $(VCS_FFT64_MIXED_DIR)/fft64_mixed_vsp.vpd)
+VCS_FFT64_MIXED_VCD := $(abspath $(VCS_FFT64_MIXED_DIR)/fft64_mixed_vsp_vcs.vcd)
+VCS_FFT64_MIXED_FSDB := $(abspath $(VCS_FFT64_MIXED_DIR)/fft64_mixed_vsp_vcs.fsdb)
+VCS_FFT64_MIXED_CSV := $(abspath $(VCS_FFT64_MIXED_DIR)/fft64_mixed_spectrum.csv)
+VCS_FFT64_MIXED_PLOT_PREFIX := $(VCS_FFT64_MIXED_DIR)/fft64_mixed_spectrum
+VCS_FFT64_MIXED_DFT_CSV := $(VCS_FFT64_MIXED_DIR)/fft64_dft_reference.csv
+VCS_FFT64_MIXED_COMPARE_CSV := $(VCS_FFT64_MIXED_DIR)/fft64_spectrum_comparison.csv
+VCS_FFT64_MIXED_METRICS := $(VCS_FFT64_MIXED_DIR)/fft64_spectrum_metrics.json
 
 include rtl/files.mk
 include rtl/integration/memory_ip_files.mk
@@ -296,7 +355,17 @@ FOUR_PASS_GATHER_ENGINE_TB := \
 MUL32_MICRO_TB := sim/mul32_microcode_tb.cpp
 MUL32_MICRO_BIN := $(BUILD_DIR)/mul32_microcode_tb
 
-.PHONY: all lint test test-vcs-fft64 test-vsp-exec-uword-expander \
+.PHONY: all lint test test-vcs-fft64 generate-fft64-vsp test-vsp-bfp \
+	test-vsp-m8e8 \
+	test-fft64-vsp plot-fft64-vsp plot-vcs-fft64-vsp \
+	test-vcs-fft64-vsp prepare-verdi-fft64-vsp view-verdi-fft64-vsp \
+	generate-fft64-mixed-vsp test-fft64-fixtures test-fft64-spectrum \
+	test-fft64-mixed-vsp verify-fft64-mixed-vsp \
+	plot-fft64-mixed-time-domain plot-fft64-mixed-vsp \
+	test-vcs-fft64-mixed-vsp verify-vcs-fft64-mixed-vsp \
+	plot-vcs-fft64-mixed-vsp compare-fft64-mixed-vsp \
+	prepare-verdi-fft64-mixed-vsp view-verdi-fft64-mixed-vsp \
+	test-vsp-exec-uword-expander \
 	test-vsp-uword-predecoder test-vsp-uword-asm \
 	test-vsp-uword-bundle-assembler \
 	test-vsp-uword-multi-framer \
@@ -339,6 +408,203 @@ $(VCS_FFT64_SIM): $(VCS_FFT64_TB) $(VCS_FFT64_FIXTURES) Makefile
 # the default Verilator regression.
 test-vcs-fft64: $(VCS_FFT64_SIM)
 	$(VCS_FFT64_SIM) -l $(VCS_FFT64_DIR)/run.log
+
+generate-fft64-vsp:
+	$(PYTHON) $(FFT64_VSP_GENERATOR) --output-dir $(FFT64_VSP_ARTIFACT_DIR)
+
+generate-fft64-mixed-vsp:
+	$(PYTHON) $(FFT64_VSP_GENERATOR) --waveform mixed \
+		--output-dir $(FFT64_MIXED_ARTIFACT_DIR)
+
+test-fft64-fixtures:
+	$(PYTHON) $(FFT64_FIXTURE_TB)
+
+test-fft64-spectrum:
+	$(PYTHON) $(FFT64_SPECTRUM_TB)
+
+test-vsp-bfp:
+	$(PYTHON) $(VSP_BFP_TB)
+
+test-vsp-m8e8:
+	$(PYTHON) $(VSP_M8E8_TB)
+
+$(FFT64_VSP_OBJ)/V$(VSP_UWORD_MEMORY_SYSTEM_TEST_TOP): \
+		$(VSP_UWORD_MEMORY_SYSTEM_TEST_RTL) $(FFT64_VSP_TB) \
+		$(BUILD_META) $(VSP_MEMORY_IP_LOCK) | check-memory-ip-lock $(BUILD_DIR)
+	$(VERILATOR) -Wall -Wno-fatal --assert --trace --trace-depth 4 \
+		--cc --exe --top-module $(VSP_UWORD_MEMORY_SYSTEM_TEST_TOP) \
+		--Mdir $(FFT64_VSP_OBJ) \
+		$(VSP_UWORD_MEMORY_SYSTEM_TEST_RTL) $(FFT64_VSP_TB)
+	$(MAKE) -C $(FFT64_VSP_OBJ) \
+		-f V$(VSP_UWORD_MEMORY_SYSTEM_TEST_TOP).mk
+
+test-fft64-vsp: test-vsp-bfp generate-fft64-vsp check-memory-ip-lock \
+		$(FFT64_VSP_OBJ)/V$(VSP_UWORD_MEMORY_SYSTEM_TEST_TOP)
+	$(FFT64_VSP_OBJ)/V$(VSP_UWORD_MEMORY_SYSTEM_TEST_TOP) \
+		$(FFT64_VSP_PROGRAM) $(FFT64_VSP_DATA) $(FFT64_VSP_GOLDEN) \
+		$(FFT64_VSP_OUTPUT) $(FFT64_VSP_VCD) $(FFT64_VSP_CSV) 1 8
+
+plot-fft64-vsp: test-fft64-vsp
+	$(PYTHON) $(FFT64_VSP_PLOTTER) $(FFT64_VSP_CSV) \
+		--output-prefix $(FFT64_VSP_PLOT_PREFIX) \
+		--title "FFT64 static-BFP8 spectrum (Verilator)" \
+		--neato $(GRAPHVIZ_NEATO)
+
+test-fft64-mixed-vsp: test-vsp-bfp test-fft64-fixtures \
+		generate-fft64-mixed-vsp check-memory-ip-lock \
+		$(FFT64_VSP_OBJ)/V$(VSP_UWORD_MEMORY_SYSTEM_TEST_TOP)
+	$(FFT64_VSP_OBJ)/V$(VSP_UWORD_MEMORY_SYSTEM_TEST_TOP) \
+		$(FFT64_MIXED_PROGRAM) $(FFT64_MIXED_DATA) \
+		$(FFT64_MIXED_GOLDEN) $(FFT64_MIXED_OUTPUT) \
+		$(FFT64_MIXED_VCD) $(FFT64_MIXED_CSV) 64 127
+
+verify-fft64-mixed-vsp: test-fft64-spectrum test-fft64-mixed-vsp
+	$(PYTHON) $(FFT64_SPECTRUM_VERIFIER) \
+		$(FFT64_MIXED_INPUT_CSV) $(FFT64_MIXED_CSV) \
+		--input-code-denominator 127 \
+		--manifest $(FFT64_MIXED_MANIFEST) \
+		--reference-csv $(FFT64_MIXED_DFT_CSV) \
+		--comparison-csv $(FFT64_MIXED_COMPARE_CSV) \
+		--metrics-json $(FFT64_MIXED_METRICS)
+
+plot-fft64-mixed-time-domain: generate-fft64-mixed-vsp
+	$(PYTHON) $(FFT64_INPUT_PLOTTER) $(FFT64_MIXED_INPUT_CSV) \
+		--input-code-denominator 127 \
+		--output-prefix $(FFT64_MIXED_TIME_PLOT_PREFIX) \
+		--title "FFT64 q/127 three-tone input waveform" \
+		--neato $(GRAPHVIZ_NEATO)
+
+plot-fft64-mixed-vsp: verify-fft64-mixed-vsp plot-fft64-mixed-time-domain
+	$(PYTHON) $(FFT64_VSP_PLOTTER) $(FFT64_MIXED_CSV) \
+		--view components \
+		--output-prefix $(FFT64_MIXED_PLOT_PREFIX)_components \
+		--title "FFT64 three-tone spectrum components (Verilator)" \
+		--neato $(GRAPHVIZ_NEATO)
+	$(PYTHON) $(FFT64_VSP_PLOTTER) $(FFT64_MIXED_CSV) \
+		--view one-sided-amplitude \
+		--output-prefix $(FFT64_MIXED_PLOT_PREFIX)_one_sided_amplitude \
+		--title "FFT64 three-tone one-sided amplitude (Verilator)" \
+		--neato $(GRAPHVIZ_NEATO)
+	$(PYTHON) $(FFT64_VSP_PLOTTER) $(FFT64_MIXED_CSV) \
+		--view relative-db \
+		--output-prefix $(FFT64_MIXED_PLOT_PREFIX)_relative_db \
+		--title "FFT64 three-tone relative spectrum (Verilator)" \
+		--neato $(GRAPHVIZ_NEATO)
+
+$(VCS_FFT64_VSP_SIM): $(VSP_UWORD_MEMORY_SYSTEM_TEST_RTL) \
+		$(VCS_FFT64_VSP_TB) $(BUILD_META) $(VSP_MEMORY_IP_LOCK)
+	mkdir -p $(VCS_FFT64_VSP_DIR)
+	cd $(VCS_FFT64_VSP_DIR) && $(VCS) -full64 -sverilog \
+		-timescale=1ns/1ps -top fft64_vsp_vcs_tb \
+		+define+FFT64_VCS_WAVE -debug_access+all -kdb \
+		-LDFLAGS $(VCS_LDFLAGS) \
+		-Mdir=$(abspath $(VCS_FFT64_VSP_DIR)/csrc) -l compile.log \
+		-o $(abspath $@) $(abspath $(VSP_UWORD_MEMORY_SYSTEM_TEST_RTL)) \
+		$(VCS_FFT64_VSP_TB)
+
+$(VCS_FFT64_MIXED_SIM): $(VSP_UWORD_MEMORY_SYSTEM_TEST_RTL) \
+		$(VCS_FFT64_VSP_TB) $(BUILD_META) $(VSP_MEMORY_IP_LOCK)
+	mkdir -p $(VCS_FFT64_MIXED_DIR)
+	cd $(VCS_FFT64_MIXED_DIR) && $(VCS) -full64 -sverilog \
+		-timescale=1ns/1ps -top fft64_vsp_vcs_tb \
+		+define+FFT64_VCS_WAVE -debug_access+all -kdb \
+		-LDFLAGS $(VCS_LDFLAGS) \
+		-Mdir=$(abspath $(VCS_FFT64_MIXED_DIR)/csrc) -l compile.log \
+		-o $(abspath $@) $(abspath $(VSP_UWORD_MEMORY_SYSTEM_TEST_RTL)) \
+		$(VCS_FFT64_VSP_TB)
+
+# Optional licensed run.  The same generated program/data/golden files are
+# installed through the backing SRAM sideband before normal I/D-cache traffic.
+test-vcs-fft64-vsp: test-vsp-bfp generate-fft64-vsp check-memory-ip-lock \
+		$(VCS_FFT64_VSP_SIM)
+	cd $(VCS_FFT64_VSP_DIR) && ./simv \
+		+PROGRAM_HEX=$(abspath $(FFT64_VSP_PROGRAM)) \
+		+DATA_HEX=$(abspath $(FFT64_VSP_DATA)) \
+		+GOLDEN_HEX=$(abspath $(FFT64_VSP_GOLDEN)) \
+		+OUTPUT_HEX=$(abspath $(VCS_FFT64_VSP_DIR)/fft64_q7_vcs_output.hex) \
+		+CSV_FILE=$(VCS_FFT64_VSP_CSV) \
+		+SCALE_NUM=1 +SCALE_DEN=8 \
+		+WAVE_FILE=$(VCS_FFT64_VSP_VPD) -l run.log
+
+test-vcs-fft64-mixed-vsp: test-vsp-bfp test-fft64-fixtures \
+		generate-fft64-mixed-vsp check-memory-ip-lock \
+		$(VCS_FFT64_MIXED_SIM)
+	cd $(VCS_FFT64_MIXED_DIR) && ./simv \
+		+PROGRAM_HEX=$(abspath $(FFT64_MIXED_PROGRAM)) \
+		+DATA_HEX=$(abspath $(FFT64_MIXED_DATA)) \
+		+GOLDEN_HEX=$(abspath $(FFT64_MIXED_GOLDEN)) \
+		+OUTPUT_HEX=$(abspath $(VCS_FFT64_MIXED_DIR)/fft64_mixed_vcs_output.hex) \
+		+CSV_FILE=$(VCS_FFT64_MIXED_CSV) \
+		+SCALE_NUM=64 +SCALE_DEN=127 \
+		+WAVE_FILE=$(VCS_FFT64_MIXED_VPD) -l run.log
+
+verify-vcs-fft64-mixed-vsp: test-fft64-spectrum test-vcs-fft64-mixed-vsp
+	$(PYTHON) $(FFT64_SPECTRUM_VERIFIER) \
+		$(FFT64_MIXED_INPUT_CSV) $(VCS_FFT64_MIXED_CSV) \
+		--input-code-denominator 127 \
+		--manifest $(FFT64_MIXED_MANIFEST) \
+		--reference-csv $(VCS_FFT64_MIXED_DFT_CSV) \
+		--comparison-csv $(VCS_FFT64_MIXED_COMPARE_CSV) \
+		--metrics-json $(VCS_FFT64_MIXED_METRICS)
+
+compare-fft64-mixed-vsp: verify-fft64-mixed-vsp verify-vcs-fft64-mixed-vsp
+	cmp $(FFT64_MIXED_OUTPUT) \
+		$(VCS_FFT64_MIXED_DIR)/fft64_mixed_vcs_output.hex
+	cmp $(FFT64_MIXED_CSV) $(VCS_FFT64_MIXED_CSV)
+
+plot-vcs-fft64-vsp: test-vcs-fft64-vsp
+	$(PYTHON) $(FFT64_VSP_PLOTTER) $(VCS_FFT64_VSP_CSV) \
+		--output-prefix $(VCS_FFT64_VSP_PLOT_PREFIX) \
+		--title "FFT64 static-BFP8 spectrum (VCS)" \
+		--neato $(GRAPHVIZ_NEATO)
+
+plot-vcs-fft64-mixed-vsp: verify-vcs-fft64-mixed-vsp \
+		plot-fft64-mixed-time-domain
+	$(PYTHON) $(FFT64_VSP_PLOTTER) $(VCS_FFT64_MIXED_CSV) \
+		--view components \
+		--output-prefix $(VCS_FFT64_MIXED_PLOT_PREFIX)_components \
+		--title "FFT64 three-tone spectrum components (VCS)" \
+		--neato $(GRAPHVIZ_NEATO)
+	$(PYTHON) $(FFT64_VSP_PLOTTER) $(VCS_FFT64_MIXED_CSV) \
+		--view one-sided-amplitude \
+		--output-prefix $(VCS_FFT64_MIXED_PLOT_PREFIX)_one_sided_amplitude \
+		--title "FFT64 three-tone one-sided amplitude (VCS)" \
+		--neato $(GRAPHVIZ_NEATO)
+	$(PYTHON) $(FFT64_VSP_PLOTTER) $(VCS_FFT64_MIXED_CSV) \
+		--view relative-db \
+		--output-prefix $(VCS_FFT64_MIXED_PLOT_PREFIX)_relative_db \
+		--title "FFT64 three-tone relative spectrum (VCS)" \
+		--neato $(GRAPHVIZ_NEATO)
+
+# Convert the VCS VPD into an FSDB that Verdi can open without an interactive
+# VCD conversion prompt.  Run test-vcs-fft64-vsp first to create the VPD.
+prepare-verdi-fft64-vsp:
+	@test -f $(VCS_FFT64_VSP_VPD) || { \
+		echo "missing $(VCS_FFT64_VSP_VPD); run make test-vcs-fft64-vsp first" >&2; \
+		exit 1; \
+	}
+	cd $(VCS_FFT64_VSP_DIR) && $(VPD2VCD) fft64_vsp.vpd fft64_vsp_vcs.vcd
+	cd $(VCS_FFT64_VSP_DIR) && $(VFAST) fft64_vsp_vcs.vcd \
+		-o fft64_vsp_vcs.fsdb
+
+view-verdi-fft64-vsp: prepare-verdi-fft64-vsp
+	cd $(VCS_FFT64_VSP_DIR) && $(VERDI) -undockWin -dbdir simv.daidir \
+		-ssf fft64_vsp_vcs.fsdb -play $(VCS_FFT64_VSP_VERDI_SCRIPT) -nologo
+
+prepare-verdi-fft64-mixed-vsp:
+	@test -f $(VCS_FFT64_MIXED_VPD) || { \
+		echo "missing $(VCS_FFT64_MIXED_VPD); run make test-vcs-fft64-mixed-vsp first" >&2; \
+		exit 1; \
+	}
+	cd $(VCS_FFT64_MIXED_DIR) && $(VPD2VCD) fft64_mixed_vsp.vpd \
+		fft64_mixed_vsp_vcs.vcd
+	cd $(VCS_FFT64_MIXED_DIR) && $(VFAST) fft64_mixed_vsp_vcs.vcd \
+		-o fft64_mixed_vsp_vcs.fsdb
+
+view-verdi-fft64-mixed-vsp: prepare-verdi-fft64-mixed-vsp
+	cd $(VCS_FFT64_MIXED_DIR) && $(VERDI) -undockWin -dbdir simv.daidir \
+		-ssf fft64_mixed_vsp_vcs.fsdb \
+		-play $(VCS_FFT64_VSP_VERDI_SCRIPT) -nologo
 
 lint:
 	$(VERILATOR) --lint-only -Wall -Wno-fatal --top-module $(TOP) $(RTL)
@@ -1392,6 +1658,8 @@ test: $(OBJ_DIR)/V$(TOP) \
 	$(VSP_UWORD_MULTI_FRAMER_OBJ)/V$(VSP_UWORD_MULTI_FRAMER_TOP)
 	$(VSP_UWORD_PROGRAM_SOURCE_OBJ)/V$(VSP_UWORD_PROGRAM_SOURCE_TOP)
 	$(PYTHON) $(VSP_UWORD_ASM_TB)
+	$(PYTHON) $(VSP_BFP_TB)
+	$(PYTHON) $(VSP_M8E8_TB)
 	$(VSP_UWORD_PROGRAM_FRONTEND_OBJ)/V$(VSP_UWORD_PROGRAM_FRONTEND_TOP) \
 		$(VSP_UWORD_PC_HEX)
 	$(VSP_UWORD_CLUSTER_PROGRAM_OBJ)/V$(VSP_UWORD_CLUSTER_PROGRAM_TOP) \

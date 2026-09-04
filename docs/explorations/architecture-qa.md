@@ -10,6 +10,13 @@
 > 改用 MEMORY `INDEX_U8` gather/scatter。与此冲突的旧问答只保留为推理历史，当前事实
 > 以[术语表](../architecture/terminology.md)和
 > [current integration](../architecture/current-integration.md)为准。
+>
+> **数值格式状态更新（2026-09-04）**：旧`math_fp16_add.uasm`是不可执行的
+> S1E7F8概念稿，已经从验证构建排除；真正的BF16（S1E8F7）尚未实现。当前已经
+> 执行并验证的是静态BFP8 profile：FFT64从SRAM装载复制的`Ein=-2`，在EXEC中更新
+> 为`Eout=4`，再经D-cache写回SRAM。动态指数选择仍是开放问题。详见
+> [BFP8块浮点数值契约](../math/BLOCK_FLOATING.md)和
+> [动态块浮点与BF16执行缺口](../../issues/open/动态块浮点与BF16执行缺口-Codex-2026-09-04.md)。
 
 ## 如何阅读
 
@@ -201,8 +208,22 @@ trace 为证据，而不是继续为行为 testbench 增加假想 stall。
 
 ## AQ-011：拟浮点和 64-bit 算术处于什么状态？
 
-**拟浮点 `[候选]`**：尾数 group 与指数 group 协同、补码、允许非规格化并弱化
-IEEE-754 特殊值，是一个探索方向；目前没有格式、舍入、异常或同步协议 RTL。
+**静态BFP8 `[RTL事实][负载证据]`**：当前格式为signed int8尾数与共享signed int8
+指数，`x=m*2^(E-7)`。FFT64使用固定的六级缩放计划；程序通过physical VLOAD从
+SRAM `0x1360`读取16份`Ein=-2`，由EXEC byte add计算`Eout=4`，再由physical
+VSTORE经过D-cache写到SRAM `0x1370`。memory-system回归同时检查尾数FFT结果和
+写回指数。这证明静态指数计划能够走通现有执行/存储路径，不证明数据相关的指数
+选择已经实现。
+
+**历史拟浮点方案 `[候选]`**：尾数group与指数group协同、补码、允许非规格化并
+弱化IEEE-754特殊值，是早期动态方案探索；该候选仍缺少跨组headroom归约、动态
+shift决策、指数同步、异常和溢出协议。其开放条件由
+[动态块浮点与BF16执行缺口](../../issues/open/动态块浮点与BF16执行缺口-Codex-2026-09-04.md)
+追踪。
+
+**BF16 `[开放问题]`**：真正BF16是S1E8F7。当前没有逐元素解包、指数对齐、有效数
+运算、规格化、舍入或特殊值传播实现；历史`math_fp16_add.uasm`不能执行且已从
+验证构建排除。静态BFP8不是BF16实现，二者不能互相作为功能证据。
 
 **64-bit `[开放问题]`**：当前首先需要回答负载是否需要 64-bit 运算；双 WORD 微码
 或专用路径只是后续实现选项，不预先假定需求成立。

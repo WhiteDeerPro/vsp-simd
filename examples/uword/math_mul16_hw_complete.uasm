@@ -69,15 +69,24 @@ entry:
 
     END
 
-# Status: FUNCTIONAL - NSLICE support added to assembler
+# Status: BLOCKED - needs byte-lane layout decision
 #
-# Performance (actual with NSLICE):
-# - 4 byte extractions: 4 ops
-# - 4 MUL/MAC operations: 4 ops
-# - 6 NSLICE operations: 6 ops
-# - 4 ADD/PASS operations: 4 ops
-# Total: ~18 instructions vs 150-200 for software
-# Speedup: 8-11x
+# BLOCKER B: This implementation assumes 16-bit word semantics which do not exist.
+# VSP is byte-lane SIMD. Issues:
+# 1. SHR_U mode=byte imm=8 only uses low 3 bits (shift 0, not 8)
+# 2. AND mode=byte imm=0xff is identity on 8-bit lanes
+# 3. Signed Q8.8 needs mixed signed/unsigned partial products
+# 4. Result bytes not packed into storable layout
 #
-# Note: This is a simplified carry handling. Full precision 32-bit multiply
-# requires proper carry propagation through all partial product additions.
+# Required fixes:
+# 1. Choose SoA (separate hi/lo arrays) or AoS (gather/scatter interleave) layout
+# 2. Implement proper carry propagation for 16×16
+# 3. Use explicit byte extraction via NSLICE instead of shift/mask
+# 4. Pack result with VSCATTER or byte-wise stores
+#
+# See: issues/open/FFT微码RTL闭环执行缺口-Codex-2026-09-03.md
+#
+# This file remains as algorithmic reference but cannot claim:
+# - "FUNCTIONAL" status
+# - "Q8.8 exact" precision
+# - Measured speedup vs software

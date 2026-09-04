@@ -52,12 +52,16 @@ docs/
 - `workloads/sobel3x3.md` - Sobel边缘检测
 - `workloads/gaussian3x3-separable.md` - 可分离高斯
 - `workloads/median3x3.md` - 中值滤波
+- `workloads/fft64-q7.md` - 64点静态BFP8 FFT、RAM/cache闭环与频谱绘图
+- `workloads/fft64-mixed-s8.md` - 64点q/127三音FFT、独立DFT与Verdi/Graphviz闭环
 
 ## 数学库文档
 
 ### 核心文档
 - `math/MATH_LIBRARY.md` - 数学库完整文档
-- `math/math_library_format.md` - 数据格式定义 (Q8.8, BF16)
+- `math/math_library_format.md` - 数据格式与实现边界 (Q8.8, BFP8, BF16)
+- `math/BLOCK_FLOATING.md` - 当前静态BFP8数值契约
+- `math/M8E8.md` - M8E8逐元素补码浮点oracle与SoA ABI
 - `math/MULTIPLIER_GAP_ANALYSIS.md` - 乘法器资源分析
 
 ### 超越函数
@@ -139,6 +143,8 @@ docs/
 
 ## 最近更新
 
+- **2026-09-04**: 增加q/127三音FFT、独立DFT、Graphviz多视图及Verdi闭环
+- **2026-09-04**: 增加静态BFP8 FFT闭环、Graphviz频谱绘图与M8E8数值契约
 - **2026-09-03**: 重组文档结构，创建math/和guides/目录
 - **2026-09-03**: 问题追踪移至根目录
 - **2026-09-03**: 添加超越函数文档
@@ -161,5 +167,5 @@ docs/
 
 ---
 
-**文档版本**: 2.1  
-**最后更新**: 2026-09-03
+**文档版本**: 2.2
+**最后更新**: 2026-09-04

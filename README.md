@@ -169,12 +169,17 @@ docs/               architecture, design, verification and workload notes
 ## Build and verification
 
 Requirements are Verilator, GNU Make and a C++17 compiler.  Graphviz is only
-needed to regenerate diagrams.
+needed to regenerate diagrams or render FFT spectrum plots; the plotting path
+uses Graphviz `neato` directly and does not require Matplotlib or NumPy.
 
 ```bash
 make lint
 make test
+make test-vsp-bfp test-vsp-m8e8
 ```
+
+`test-vsp-m8e8`验证逐元素8-bit补码M、8-bit补码E的精确数值oracle和SoA ABI；
+它不是M8E8 RTL/微码已经完成的声明。
 
 Focused control/memory tests:
 
@@ -196,6 +201,42 @@ make lint-vsp-uword-cached-program test-vsp-uword-cached-program
 make lint-ifetch-product-integration lint-vsp-uword-memory-system
 make test-vsp-uword-memory-system
 ```
+
+64点FFT有独立的真实RTL/memory-system回归。它会生成静态BFP8微码和SRAM镜像，
+通过backing初始化端口安装镜像，再经正常I-cache/D-cache路径执行；输入指数从
+SRAM加载，输出指数也由EXEC计算并写回SRAM：
+
+```bash
+make test-fft64-vsp          # Verilator，自检并生成 build/fft64_vsp/fft64_vsp.vcd
+make test-vcs-fft64-vsp      # VCS，自检并生成 build/vcs_fft64_vsp/fft64_vsp.vpd
+make plot-fft64-vsp          # Verilator结果 -> CSV/DOT/SVG/PNG
+make plot-vcs-fft64-vsp      # VCS结果 -> CSV/DOT/SVG/PNG
+make prepare-verdi-fft64-vsp # VPD -> VCD -> FSDB
+make view-verdi-fft64-vsp    # 在nWave中预置FFT/cache/RAM/频谱扫描信号
+
+# 三余弦混合波：q/127输入、独立DFT校验、时域图及三种频谱视图
+make test-fft64-mixed-vsp
+make verify-fft64-mixed-vsp
+make plot-fft64-mixed-time-domain # 只生成输入时域DOT/SVG/PNG
+make plot-fft64-mixed-vsp        # 同时生成时域图和三种频谱图
+make test-vcs-fft64-mixed-vsp
+make plot-vcs-fft64-mixed-vsp
+make compare-fft64-mixed-vsp
+make view-verdi-fft64-mixed-vsp
+```
+
+绘图目标调用Graphviz `neato -n2`生成CSV/DOT/SVG/PNG；混合波导出64点输入时域
+波形，以及复分量、单边幅度和相对dB三种频谱视图，无需安装Matplotlib。VCS testbench会在workload完成
+且memory system静默后自动逐周期扫描
+64个bin并写CSV；Verdi预置脚本同时暴露`real`观察信号和Q16.16整数观察信号，
+因此仿真结束后的查看与绘图均不需要手工控制testbench。
+
+算法、内存布局和查看波形命令见
+[64点原生lane静态BFP8 FFT](docs/workloads/fft64-q7.md)；新增的
+[64点q/127三音混合FFT](docs/workloads/fft64-mixed-s8.md)使用5/13/23号频点，
+并由直接`O(N^2)` DFT独立校验。2026-09-04的Verilator与VCS实测均已通过，
+64个输出字节和频谱CSV在两套仿真器间逐字节一致。VCS仍是需要Synopsys许可证的
+可选回归。
 
 See [Memory subsystem integration](docs/integration/memory-subsystem.md) for
 the exact boundary, dependency baseline and remaining product-level work.
@@ -221,5 +262,7 @@ The clean target refuses broad unsafe paths.
 - [Cluster control](docs/design/cluster-control.md)
 - [Instruction delivery](docs/design/instruction-delivery.md)
 - [Data movement](docs/design/data-movement.md)
+- [64-point native-lane static-BFP8 FFT](docs/workloads/fft64-q7.md)
+- [64-point q/127 three-tone FFT](docs/workloads/fft64-mixed-s8.md)
 - [Development roadmap](docs/design/development-roadmap.md)
 - [Verification harness](docs/verification/harness.md)

@@ -3,7 +3,15 @@
 **日期**: 2026-09-03  
 **实施者**: Claude (汇编/软件层)  
 **Issue**: 数学库硬件加速-Claude-2026-09-03.md  
-**状态**: 阶段1-2完成，阶段3-4待定
+**状态**: 历史阶段回报；以对应issue的2026-09-04复验结论为准
+
+> **复验更正**：本文记录的是汇编层提案和估算，不是完整RTL验收报告。
+> `math_mul16_hw_complete.uasm`与`math_q88_mul_hw.uasm`仍受byte-lane拆包、
+> signed部分积、进位及回包问题阻塞；“精确”和8-100倍提速声明没有同条件RTL
+> benchmark支持。当前已实证的是原生8-bit `MUL/MAC/WADD/NCLIP`组合在
+> 静态BFP8 FFT（当前fixture为`Ein=-2`、`Eout=4`）中的端到端正确性，
+> 不能外推为16-bit/Q8.8库已经完成。权威状态见
+> `issues/in-progress/数学库硬件加速-Claude-2026-09-03.md`。
 
 ---
 

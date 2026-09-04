@@ -27,4 +27,4 @@ entry:
 # Expected encodings:
 # EXEC_WIDE_RI op=nslice arf=0 shift=8 vd=3
 #   -> [31:28]=0x7, [27:25]=6 (NSLICE), [23:21]=0 (arf), [16:13]=3 (vd),
-#      [8]=1 (write), extension=8 (shift)
+#      [9]=1 (extension required), [8]=1 (write), extension=8 (shift)
