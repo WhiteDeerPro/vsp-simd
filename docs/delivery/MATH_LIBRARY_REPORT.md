@@ -5,8 +5,8 @@
 > `build_math_library.sh`的验证构建中排除。真正的BF16格式是S1E8F7，VSP目前没有
 > BF16实现。当前可执行并经过数值/RTL路径验证的是静态BFP8：64点FFT从SRAM装载
 > 复制的`Ein=-2`，由EXEC计算`Eout=4`，再经D-cache写回SRAM。数据相关的动态指数
-> 选择仍未实现。现行契约见[BFP8块浮点数值契约](../math/BLOCK_FLOATING.md)，后续
-> RTL与ABI缺口见[动态块浮点与BF16执行缺口](../../issues/open/动态块浮点与BF16执行缺口-Codex-2026-09-04.md)。
+> 选择仍未实现。现行契约及后续RTL与ABI边界见
+> [BFP8块浮点数值契约](../math/BLOCK_FLOATING.md)。
 > 另有逐元素M8E8候选格式完成了精确数值oracle和SoA ABI，但尚无RTL/微码执行，
 > 详见[M8E8数值契约](../math/M8E8.md)。
 

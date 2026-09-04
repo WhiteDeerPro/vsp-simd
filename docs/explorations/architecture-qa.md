@@ -14,9 +14,8 @@
 > **数值格式状态更新（2026-09-04）**：旧`math_fp16_add.uasm`是不可执行的
 > S1E7F8概念稿，已经从验证构建排除；真正的BF16（S1E8F7）尚未实现。当前已经
 > 执行并验证的是静态BFP8 profile：FFT64从SRAM装载复制的`Ein=-2`，在EXEC中更新
-> 为`Eout=4`，再经D-cache写回SRAM。动态指数选择仍是开放问题。详见
-> [BFP8块浮点数值契约](../math/BLOCK_FLOATING.md)和
-> [动态块浮点与BF16执行缺口](../../issues/open/动态块浮点与BF16执行缺口-Codex-2026-09-04.md)。
+> 为`Eout=4`，再经D-cache写回SRAM。动态指数选择仍是开放问题，当前边界详见
+> [BFP8块浮点数值契约](../math/BLOCK_FLOATING.md)。
 
 ## 如何阅读
 
@@ -217,9 +216,7 @@ VSTORE经过D-cache写到SRAM `0x1370`。memory-system回归同时检查尾数FF
 
 **历史拟浮点方案 `[候选]`**：尾数group与指数group协同、补码、允许非规格化并
 弱化IEEE-754特殊值，是早期动态方案探索；该候选仍缺少跨组headroom归约、动态
-shift决策、指数同步、异常和溢出协议。其开放条件由
-[动态块浮点与BF16执行缺口](../../issues/open/动态块浮点与BF16执行缺口-Codex-2026-09-04.md)
-追踪。
+shift决策、指数同步、异常和溢出协议。
 
 **BF16 `[开放问题]`**：真正BF16是S1E8F7。当前没有逐元素解包、指数对齐、有效数
 运算、规格化、舍入或特殊值传播实现；历史`math_fp16_add.uasm`不能执行且已从

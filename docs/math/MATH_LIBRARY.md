@@ -155,9 +155,7 @@ mantissa/exponent分离的SoA内存ABI，已由精确有理数oracle和穷举回
 [M8E8逐元素补码浮点数值契约](M8E8.md)。
 
 当前完成范围仅是软件数值oracle与ABI：尚无M8E8 RTL运算单元、汇编/微码、状态位
-归并或RAM/cache仿真闭环，不得标记为硬件可用。执行实现由
-[`M8E8补码浮点执行`](../../issues/in-progress/M8E8补码浮点执行-Codex-2026-09-04.md)
-跟踪。
+归并或RAM/cache仿真闭环，不得标记为硬件可用；这些执行环节仍待后续实现。
 
 #### 3.3 标准bfloat16：未实现
 
@@ -168,9 +166,7 @@ mantissa/exponent分离的SoA内存ABI，已由精确有理数oracle和穷举回
 `math_fp16_add.uasm`保留了早期`[S|EEEEEEE|FFFFFFFF]`算法轮廓。它明确省略
 条件指数对齐、符号和特殊值处理，并且其byte-mode `shift=8`不能跨lane提取高
 字节，8位尾数加法也不能保存进位。该文件没有数值golden或RTL/VCS回归，不能列为
-FP16/BF16实现。动态BFP和BF16所需增量由
-[`动态块浮点与BF16执行缺口`](../../issues/open/动态块浮点与BF16执行缺口-Codex-2026-09-04.md)
-追踪。
+FP16/BF16实现。动态BFP和BF16所需的RTL、ABI与验证增量仍未实现。
 
 ### 4. 高级运算
 

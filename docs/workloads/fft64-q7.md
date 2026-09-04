@@ -161,5 +161,4 @@ byte拆包、signed 16x16复乘、进位和回包契约，不能直接替换本�
 直接`O(N^2)` DFT补足多频点独立数学检查；随机、极值和动态缩放向量仍未覆盖。
 
 动态BFP和真正BF16的范围及剩余工作见
-[块浮点数值契约](../math/BLOCK_FLOATING.md)和
-[动态块浮点与BF16执行缺口](../../issues/open/动态块浮点与BF16执行缺口-Codex-2026-09-04.md)。
+[块浮点数值契约](../math/BLOCK_FLOATING.md)。

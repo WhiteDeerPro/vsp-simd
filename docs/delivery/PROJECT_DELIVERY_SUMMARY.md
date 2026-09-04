@@ -4,9 +4,8 @@
 > 交付快照，但旧`math_fp16_add.uasm`只是不可执行概念稿，且已从数学库验证构建
 > 排除；遗留`.hex/.lst/.json`不构成功能证据。真正BF16为S1E8F7，当前尚未实现。
 > 现在可执行并验证的是静态BFP8：FFT64从SRAM装载复制的`Ein=-2`，通过EXEC得到
-> `Eout=4`，并经D-cache写回SRAM；动态指数选择仍是开放工作。详见
-> [BFP8块浮点数值契约](../math/BLOCK_FLOATING.md)及
-> [动态块浮点与BF16执行缺口](../../issues/open/动态块浮点与BF16执行缺口-Codex-2026-09-04.md)。
+> `Eout=4`，并经D-cache写回SRAM；动态指数选择仍是开放工作。当前边界详见
+> [BFP8块浮点数值契约](../math/BLOCK_FLOATING.md)。
 
 ## 交付内容概览
 
