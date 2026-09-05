@@ -270,6 +270,18 @@ digraph vsp_current_integration {
   management_lane -> icache [dir=both, label="I-cache maint"];
   management_lane -> physical_fabric [dir=both, label="drain"];
 
+  host_mmio [
+    label="vsp_host_control (passive MMIO target)\nlaunch + MMU + maintenance ownership\nfrozen job/fault results + IRQ\ninside vsp_mmio_system_wrapper",
+    fillcolor="#ecf8ef",
+    color="#4e8f62"
+  ];
+  host_mmio -> launch [label="START snapshot"];
+  host_mmio -> management_lane [dir=both, label="maintenance command/result"];
+  host_mmio -> dmem_policy [dir=both, label="MMU configuration"];
+  strict_controller -> host_mmio [color="#8056a6", label="ordered completion"];
+  pc_source -> host_mmio [color="#8056a6", label="terminal status"];
+  ifetch_bridge -> host_mmio [color="#8056a6", label="current-path fault"];
+
   subgraph cluster_experimental {
     label="Independent experimental RTL (not connected to product PC/path)";
     color="#c59a3a";
@@ -304,7 +316,7 @@ digraph vsp_current_integration {
   }
 
   control_gap [
-    label="not closed in product path:\nCSR/MMIO fault mapping, SoC lower decode/bus, DMA/coherence,\nLSU-barrier policy bridge, scalar L/S, CALL/RET,\nreduction-to-state, branch prediction, multi-PC",
+    label="not closed in product path:\nSoC lower decode/bus, DMA/coherence,\nLSU-barrier policy bridge, scalar L/S, CALL/RET,\nreduction-to-state, branch prediction, multi-PC",
     shape=note,
     style="filled,dashed",
     fillcolor="#fff0f0",

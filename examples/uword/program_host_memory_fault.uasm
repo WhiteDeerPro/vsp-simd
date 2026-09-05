@@ -1,0 +1,5 @@
+# Host ABI regression: a failed MEMORY action is followed by a legal END.
+# The host must report DONE plus ERROR, with the failed action's metadata.
+LI rd=1 imm=0x2000
+VLOAD space=physical addr_context=0 sbase=1 vrf=0 span=16 offset=0
+END

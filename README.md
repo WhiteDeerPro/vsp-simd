@@ -149,8 +149,11 @@ physical diagnostic and launch address metadata.  A committed redirect can
 revoke speculative fault state.  Sv32 fetch, warm iTLB reuse, fault attribution
 and recovery are covered by the combined regression; see the
 [IFetch fault contract](docs/integration/memory-subsystem.md#ifetch-fault-contract).
-AXI/NoC, DMA, SoC target decode and CSR/MMIO diagnostic mapping remain external
-integration work.
+`vsp_mmio_system_wrapper` adds a passive host register target for launch,
+MMU configuration, maintenance, frozen completion/fault results and IRQ. The
+[host MMIO ABI](docs/integration/host-mmio.md) defines the 4 KiB aperture;
+program/data traffic still uses the active ordered lower port. AXI/NoC, DMA,
+DRAM control and SoC lower-target decode remain external integration work.
 
 ## Repository layout
 

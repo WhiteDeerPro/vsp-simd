@@ -162,8 +162,9 @@ profile-v0 encoded EXEC → `VSTORE` → `CONTROL.END`，包括
 physical SRAM。combined wrapper 的独立动态回归也已从同一个 ordered lower SRAM 取 program
 image 并运行 PHYSICAL I+D branch loop，覆盖 startup quarantine、maintenance interlock、
 MMU-config serialization、host `FENCE_I` 与重跑；同一回归现已加入真实两级 Sv32 I-fetch、
-warm iTLB、详细故障归因和修复重跑。host RTL 诊断已导出，完整产品的 outstanding-miss
-redirect 交错和 CSR/MMIO 映射仍待完成。这些都不表示最终 MEMORY ISA 或完整 sequencer 已完成。当前工作先保持
+warm iTLB、详细故障归因和修复重跑。[host MMIO](../integration/host-mmio.md) 已接入
+启动、MMU/维护、冻结结果/故障与 IRQ；完整产品的 outstanding-miss redirect 交错仍待验证。
+这些都不表示最终 MEMORY ISA 或完整 sequencer 已完成。当前工作先保持
 单 PC、单 issue slot、global single-active 基线，补齐 4-group/16-byte 和
 16-group/64-byte indexed-memory 程序，并实现 loop/redirect 的明确 flush 语义；只有
 trace 表明 action admission 是瓶颈时，才研究 dependency window、动态

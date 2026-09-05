@@ -86,9 +86,11 @@ alignment and redirect qualification; full product-program redirect during an
 outstanding I-cache miss remains separate work.  The detailed host RTL ports
 and their revocable active-program state are specified in the
 [IFetch fault contract](../integration/memory-subsystem.md#ifetch-fault-contract).
-These tests do not establish an external SoC bus, real MMIO target, DMA or
-CSR/MMIO diagnostic mapping, a target-process frequency/PPA point, multiple
-outstanding memory-engine beats, or a final public uword ISA.
+The separate [host MMIO integration](../integration/host-mmio.md) supplies the
+passive control target and frozen diagnostic registers around that memory system.
+These tests do not establish an external SoC bus, downstream DEVICE target, DMA,
+a target-process frequency/PPA point, multiple outstanding memory-engine beats,
+or a final public uword ISA.
 
 ## Synthesis smoke
 

@@ -34,8 +34,10 @@ docs/
 - `architecture/routing.md` - 路由架构
 
 ### 内存系统
+
 - `architecture/memory-hierarchy.md` - 内存层次
 - `integration/memory-subsystem.md` - 内存子系统集成
+- [integration/host-mmio.md](integration/host-mmio.md) - 被动主机控制口、任务结果、MMU/维护与IRQ寄存器ABI
 
 ## 设计文档
 
@@ -143,6 +145,7 @@ docs/
 
 ## 最近更新
 
+- **2026-09-05**: 接入被动host MMIO控制与冻结结果/故障寄存器；AXI与SoC下级目标仍为外部边界
 - **2026-09-04**: 增加q/127三音FFT、独立DFT、Graphviz多视图及Verdi闭环
 - **2026-09-04**: 增加静态BFP8 FFT闭环、Graphviz频谱绘图与M8E8数值契约
 - **2026-09-03**: 重组文档结构，创建math/和guides/目录
@@ -168,4 +171,4 @@ docs/
 ---
 
 **文档版本**: 2.2
-**最后更新**: 2026-09-04
+**最后更新**: 2026-09-05

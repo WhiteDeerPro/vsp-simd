@@ -246,8 +246,8 @@ iTLB/I-cache、context/PTE/region/lower fault 归因及修复重跑。真实 SoC
 
 当前 product path 已集成 local SRAM、I/D cache/MMU adapter 与 lower-width cache/fabric
 转换；DMA、SoC target/bus 和系统级 ingress/capture FIFO 仍未集成。详细 IFetch fault
-metadata 已与 source response 对齐并导出到 host RTL 诊断端口，CSR/MMIO 软件映射仍待
-定义；有效路径资格与 redirect 撤销规则见
+metadata 已与 source response 对齐，并通过 [host MMIO](../integration/host-mmio.md) 在
+程序终止且 system quiescent 后发布冻结快照；有效路径资格与 redirect 撤销规则见
 [IFetch fault 合同](../integration/memory-subsystem.md#ifetch-fault-contract)。
 `dmem_*` 继续作为 engine 与产品内存子系统间的 effective-address 逻辑边界。ping-pong、计算/搬运重叠、
 多 outstanding、二维地址和一致性在真实 trace 与 SoC 边界出现后再评估。

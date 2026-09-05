@@ -175,6 +175,16 @@ VSP_UWORD_MEMORY_SYSTEM_TB := \
 VSP_UWORD_MEMORY_SYSTEM_TEST_RTL := \
 	$(VSP_UWORD_MEMORY_SYSTEM_WRAPPER_RTL) \
 	$(VSP_UWORD_MEMORY_SYSTEM_TB_TOP)
+VSP_HOST_CONTROL_TEST_TOP := vsp_host_control_tb_top
+VSP_HOST_CONTROL_OBJ := $(BUILD_DIR)/vsp_host_control_obj_dir
+VSP_HOST_CONTROL_TB := $(abspath sim/integration/vsp_host_control_tb.cpp)
+VSP_HOST_CONTROL_TEST_RTL := $(VSP_HOST_CONTROL_RTL) \
+	$(abspath sim/integration/vsp_host_control_tb_top.sv)
+VSP_MMIO_SYSTEM_TEST_TOP := vsp_mmio_system_tb_top
+VSP_MMIO_SYSTEM_OBJ := $(BUILD_DIR)/vsp_mmio_system_obj_dir
+VSP_MMIO_SYSTEM_TB := $(abspath sim/integration/vsp_mmio_system_tb.cpp)
+VSP_MMIO_SYSTEM_TEST_RTL := $(VSP_MMIO_SYSTEM_WRAPPER_RTL) \
+	$(abspath sim/integration/vsp_mmio_system_tb_top.sv)
 VSP_UNCACHED_DEVICE_MERGE_TEST_TOP := \
 	vsp_uncached_device_merge_tb_top
 VSP_UNCACHED_DEVICE_MERGE_OBJ := \
@@ -253,6 +263,8 @@ VSP_UWORD_PHYSICAL_MEMORY_SOURCE := \
 	examples/uword/program_vector_memory_physical.uasm
 VSP_UWORD_PHYSICAL_MEMORY_HEX := \
 	$(BUILD_DIR)/program_vector_memory_physical.hex
+VSP_HOST_MEMORY_FAULT_SOURCE := examples/uword/program_host_memory_fault.uasm
+VSP_HOST_MEMORY_FAULT_HEX := $(BUILD_DIR)/program_host_memory_fault.hex
 CLUSTER_RESULT_COLLECTOR_TOP := simd_cluster_result_collector
 CLUSTER_RESULT_COLLECTOR_OBJ := $(BUILD_DIR)/cluster_result_collector_obj_dir
 CLUSTER_RESULT_COLLECTOR_TB  := $(abspath sim/simd_cluster_result_collector_tb.cpp)
@@ -384,6 +396,8 @@ MUL32_MICRO_BIN := $(BUILD_DIR)/mul32_microcode_tb
 	lint-memory-product-integration test-memory-product-integration \
 	lint-ifetch-product-integration lint-vsp-uword-memory-system \
 	test-vsp-uword-memory-system test-vsp-ifetch-fault \
+	lint-vsp-host-control test-vsp-host-control \
+	lint-vsp-mmio-system test-vsp-mmio-system \
 	test-vsp-uncached-device-merge \
 	lint-vsp-uword-cached-program test-vsp-uword-cached-program \
 	test-vsp-memory-uword-decoder test-vsp-control-uword-decoder \
@@ -1026,6 +1040,11 @@ $(VSP_UWORD_PHYSICAL_MEMORY_HEX): $(VSP_UWORD_ASM_TOOL) \
 	$(PYTHON) $(VSP_UWORD_ASM_TOOL) $(VSP_UWORD_PHYSICAL_MEMORY_SOURCE) \
 		-o $@ --base-pc 0x20
 
+$(VSP_HOST_MEMORY_FAULT_HEX): $(VSP_UWORD_ASM_TOOL) \
+		$(VSP_HOST_MEMORY_FAULT_SOURCE) $(BUILD_META) | $(BUILD_DIR)
+	$(PYTHON) $(VSP_UWORD_ASM_TOOL) $(VSP_HOST_MEMORY_FAULT_SOURCE) \
+		-o $@ --base-pc 0x200
+
 $(VSP_UWORD_CLUSTER_PROGRAM_OBJ)/V$(VSP_UWORD_CLUSTER_PROGRAM_TOP): \
 		$(VSP_UWORD_CLUSTER_PROGRAM_WRAPPER_RTL) \
 		$(VSP_UWORD_CLUSTER_PROGRAM_TB) $(BUILD_META) | $(BUILD_DIR)
@@ -1112,6 +1131,47 @@ lint-vsp-uword-cached-program: check-memory-ip-lock
 	$(VERILATOR) --lint-only -Wall -Wno-fatal --assert \
 		--top-module $(VSP_UWORD_CACHED_PROGRAM_TOP) \
 		$(VSP_UWORD_CACHED_PROGRAM_WRAPPER_RTL)
+
+lint-vsp-host-control: check-memory-ip-lock
+	$(VERILATOR) --lint-only -Wall -Wno-fatal --assert \
+		--top-module vsp_host_control $(VSP_HOST_CONTROL_RTL)
+	$(VERILATOR) --lint-only -Wall -Wno-fatal --assert \
+		--top-module vsp_host_control \
+		-GGROUP_COUNT=16 -GPADDR_W=32 -GTAG_W=4 -GASID_W=4 \
+		$(VSP_HOST_CONTROL_RTL)
+
+lint-vsp-mmio-system: check-memory-ip-lock
+	$(VERILATOR) --lint-only -Wall -Wno-fatal --assert \
+		--top-module vsp_mmio_system_wrapper $(VSP_MMIO_SYSTEM_WRAPPER_RTL)
+	$(VERILATOR) --lint-only -Wall -Wno-fatal --assert \
+		--top-module vsp_mmio_system_wrapper -GGROUP_COUNT=16 -GPADDR_W=32 \
+		$(VSP_MMIO_SYSTEM_WRAPPER_RTL)
+
+$(VSP_HOST_CONTROL_OBJ)/V$(VSP_HOST_CONTROL_TEST_TOP): \
+		$(VSP_HOST_CONTROL_TEST_RTL) $(VSP_HOST_CONTROL_TB) \
+		$(BUILD_META) $(VSP_MEMORY_IP_LOCK) | check-memory-ip-lock $(BUILD_DIR)
+	$(VERILATOR) -Wall -Wno-fatal --assert --cc --exe \
+		--top-module $(VSP_HOST_CONTROL_TEST_TOP) --Mdir $(VSP_HOST_CONTROL_OBJ) \
+		$(VSP_HOST_CONTROL_TEST_RTL) $(VSP_HOST_CONTROL_TB)
+	$(MAKE) -C $(VSP_HOST_CONTROL_OBJ) -f V$(VSP_HOST_CONTROL_TEST_TOP).mk
+
+test-vsp-host-control: check-memory-ip-lock \
+		$(VSP_HOST_CONTROL_OBJ)/V$(VSP_HOST_CONTROL_TEST_TOP)
+	$(VSP_HOST_CONTROL_OBJ)/V$(VSP_HOST_CONTROL_TEST_TOP)
+
+$(VSP_MMIO_SYSTEM_OBJ)/V$(VSP_MMIO_SYSTEM_TEST_TOP): \
+		$(VSP_MMIO_SYSTEM_TEST_RTL) $(VSP_MMIO_SYSTEM_TB) \
+		$(BUILD_META) $(VSP_MEMORY_IP_LOCK) | check-memory-ip-lock $(BUILD_DIR)
+	$(VERILATOR) -Wall -Wno-fatal --assert --cc --exe \
+		--top-module $(VSP_MMIO_SYSTEM_TEST_TOP) --Mdir $(VSP_MMIO_SYSTEM_OBJ) \
+		$(VSP_MMIO_SYSTEM_TEST_RTL) $(VSP_MMIO_SYSTEM_TB)
+	$(MAKE) -C $(VSP_MMIO_SYSTEM_OBJ) -f V$(VSP_MMIO_SYSTEM_TEST_TOP).mk
+
+test-vsp-mmio-system: check-memory-ip-lock \
+		$(VSP_UWORD_PHYSICAL_MEMORY_HEX) $(VSP_HOST_MEMORY_FAULT_HEX) \
+		$(VSP_MMIO_SYSTEM_OBJ)/V$(VSP_MMIO_SYSTEM_TEST_TOP)
+	$(VSP_MMIO_SYSTEM_OBJ)/V$(VSP_MMIO_SYSTEM_TEST_TOP) \
+		$(VSP_UWORD_PHYSICAL_MEMORY_HEX) $(VSP_HOST_MEMORY_FAULT_HEX)
 
 $(VSP_DMEM_CACHED_FABRIC_OBJ)/V$(VSP_DMEM_CACHED_FABRIC_TEST_TOP): \
 		$(VSP_DMEM_CACHED_FABRIC_TEST_RTL) \

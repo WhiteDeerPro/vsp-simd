@@ -2,9 +2,9 @@
 
 > 状态：逻辑端口和仿真合同已形成；combined product RTL 已把 external IFetch/I-cache 与
 > D-side LSU/cache/local/uncached-device 接入共享 MMU/PTW 和 physical fabric，并以 ordered
-> lower port 结束。精确 IFetch 诊断已输出到 host RTL 端口；外部 SoC target/bus、DMA、
-> 一致性策略和 CSR/MMIO 诊断映射仍是后续集成项。本页描述分层，不固定 cache 容量、
-> 行宽或替换算法。
+> lower port 结束。[host MMIO](../integration/host-mmio.md) 已提供被动控制口与冻结结果/
+> IFetch 诊断寄存器；外部 SoC target/bus、DMA 与一致性策略仍是后续集成项。本页描述
+> 分层，不固定 cache 容量、行宽或替换算法。
 
 ![I-side / D-side 预期分层](memory-hierarchy.svg)
 
@@ -128,7 +128,7 @@ strict program wrapper 已把 CONTROL-state decoder、两词 MEMORY decoder、st
 ## 6. 后续实现顺序
 
 1. 在已有 combined I/D 的 Sv32/fault/recovery 回归上增加完整程序的
-   redirect-during-outstanding-miss 交错，并为 host fault ports 定义 CSR/MMIO 软件映射；
+   redirect-during-outstanding-miss 交错；
 2. 给 generic ordered lower port 接入真实 SoC target decode/bus，并覆盖 RAM/MMIO fault、
    response 背压、reset epoch 与 quiescence；
 3. 实现 LSU barrier 到已经接线的 global I/D cache、TLB 与 fabric maintenance 的 policy

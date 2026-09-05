@@ -77,8 +77,8 @@ These are current design choices, not incidental test values:
 - no thread-like slot behavior;
 - behavioral-fetch wrapper 与 external-IFetch combined wrapper 均保留；后者已接入
   shared MMU/PTW、独立 I/D cache/region 和 physical fabric，但 DMA、AXI/NoC、真实 SoC
-  target decode 及 CSR/MMIO fault-register mapping 仍不在当前闭环中；host RTL 端口已
-  导出有效路径的 IFetch 诊断，程序 active 时可被 committed redirect 撤销；
+  target decode 仍不在当前闭环中；被动 host MMIO 已接入启动、MMU/维护和冻结故障结果，
+  原始 IFetch 诊断在程序 active 时仍可被 committed redirect 撤销；
 - no branch prediction or exception machinery.
 
 Experimental Bênes/Omega/crossbar, wide gather, route rendezvous and route-wave
@@ -125,9 +125,10 @@ fetch, warm iTLB/I-cache reuse, seven context/PTE/region/lower fault cases and
 repair followed by restart.  Full product-program redirect during an outstanding
 I-cache miss remains to be verified.  Host IFetch diagnosis has an explicit
 [fault contract](../integration/memory-subsystem.md#ifetch-fault-contract);
-CSR/MMIO mapping, external SoC target decode/bus adaptation and the LSU-barrier
-to global-maintenance policy bridge remain.  AXI, DMA and coherence are not
-implemented by this milestone.  Before exposing the uword stream to untrusted
+the [host MMIO ABI](../integration/host-mmio.md) now maps launch, management,
+frozen job/fault results and IRQ. External SoC target decode/bus adaptation and
+the LSU-barrier to global-maintenance policy bridge remain. AXI, DMA and
+coherence are not implemented by this milestone. Before exposing the uword stream to untrusted
 software, resolve direct-LOCAL address representation, PHYSICAL/address-context
 authority and real DEVICE/MMIO semantics.
 

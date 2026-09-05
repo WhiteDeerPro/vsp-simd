@@ -36,8 +36,11 @@ launch(start_pc,end_pc,context,group_mask,tag_seed,
 原有 `vsp_uword_cached_program_wrapper` 仍从 behavioral control store 取指，用于已有 D-side
 动态回归。新的 `vsp_uword_memory_system_wrapper` 静态选择 external provider，并实例化
 request bridge、共享 iMMU client、独立 I-region router 和 I-cache；它不是两个取指源的
-运行时 mux。最后一个 lower port 仍需外部 SoC bus/target adapter，因此这些 RTL 接线不表示
-AXI/NoC、DMA、真实 RAM/MMIO target 或 coherence 已经实现。
+运行时 mux。`vsp_mmio_system_wrapper` 在其外组合 `vsp_host_control`，以被动 MMIO
+寄存器提交 launch、MMU 和 maintenance，自动消费完成并发布冻结结果与 IRQ；详见
+[host MMIO ABI](../integration/host-mmio.md)。最后一个主动 lower port 仍需外部 SoC
+bus/target adapter；AXI/NoC、DMA、DRAM controller、下级 RAM/DEVICE target 和 coherence
+仍由外部集成。
 
 uword 路径目前可执行：
 
@@ -305,6 +308,7 @@ RAM 与具有副作用的 MMIO target。另一个现有接口不对称是顶层
 `protocol_error_clear_i` 不能清除 reset-only sticky 的外部 I/D cache adapter error；aggregate
 可能在 clear 后继续为高，不能把它当作统一 clear-all 操作。IFetch cause/eaddr/paddr
 现已与 bridge source response 对齐，并由 host RTL 端口记录有效路径上的首个已消费
-fault；程序 active 时该记录仍可被 committed redirect 撤销。CSR/MMIO 软件诊断映射尚未
-接入，详细资格与读取时点见
+fault；程序 active 时该记录仍可被 committed redirect 撤销。host MMIO 控制器在终止且
+system quiescent 后才冻结该记录，软件通过 RESULT_STATUS、IFETCH_* 和独立 IRQ pending
+读取与确认结果，见 [host MMIO ABI](../integration/host-mmio.md)。底层详细资格见
 [IFetch fault 合同](../integration/memory-subsystem.md#ifetch-fault-contract)。

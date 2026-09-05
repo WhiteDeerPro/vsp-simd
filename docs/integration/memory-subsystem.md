@@ -3,8 +3,8 @@
 > 状态：D-side 产品路径及 I-side 产品组合 RTL 已闭合到同一个通用有序物理下级端口，
 > 2026-09-05。本页区分已经存在的接线、动态回归范围和仍由 SoC 集成承担的边界。
 > I/D 同顶层回归已扩展到 Sv32 translated fetch、故障归因和修复重跑；host RTL 端口
-> 导出有效路径上的首个已消费 IFetch fault。CSR/MMIO 诊断映射、外部总线与 SoC target
-> 仍未接入。
+> 导出有效路径上的首个已消费 IFetch fault。被动 [host MMIO](host-mmio.md) 已接入
+> 启动、MMU/维护、冻结结果/诊断和 IRQ；外部总线与 SoC 下级 target 仍未接入。
 
 ## 1. 当前集成范围
 
@@ -12,6 +12,11 @@
 `vsp_uword_cached_program_wrapper` 继续使用 behavioral control store，供现有 D-side 程序
 回归；`vsp_uword_memory_system_wrapper` 静态选择 external IFetch provider，把 I/D 两侧接入
 同一个 memory system。两种 provider 不会在运行时切换。
+
+`vsp_mmio_system_wrapper` 在 combined wrapper 外接入 `vsp_host_control`，作为 host 的
+被动寄存器目标，并独占 launch、MMU 和 maintenance 接缝。其 4 KiB aperture 保存控制
+与结果；批量程序/数据仍由以下主动 ordered lower port 访问共享内存，详见
+[host MMIO ABI](host-mmio.md)。
 
 ```text
                          strict uword program path
@@ -86,7 +91,8 @@ wrapper 上游保持现有 blocking VSP beat：
 和 fabric 位于外层 cached/fabric wrapper。UNCACHED 与 DEVICE 在 region policy 以上保持
 两个逻辑类别，在进入同一个 fixed-beat master 前由 VSP-owned merge 仲裁。merge 在 request
 handshake 时锁存 response owner，不能根据后续 live valid 猜测返回方。两类请求最终都由
-下级物理地址译码区分普通存储与 MMIO；当前 wrapper 本身没有真实 MMIO target。
+下级物理地址译码区分普通存储与 DEVICE target；当前 lower port 下方没有产品 target
+decode。独立的 host MMIO aperture 是被动控制目标，不在这条主动数据请求路径上。
 
 cached/fabric wrapper 同时暴露 MMU 配置、双 TLB 协同 invalidate、直接 D-cache
 maintenance、fabric drain、LSU barrier-policy 接缝和组件诊断。其中 PTW 端口已经在内部
@@ -97,7 +103,8 @@ memory-system wrapper 使用。共享 MMU 只负责 instruction translation；�
 完成 final-physical execute/endpoint 检查，随后只读 I-cache 形成 native lower transaction。
 I-side wrapper 在 bridge 的 source response 边界保留 cause/eaddr/paddr sideband，并由
 memory-system wrapper 记录首个已消费且未被 redirect 撤销的故障。既有 program source
-继续使用一位 transport fault 结束当前 fetch；host 通过独立 RTL 诊断端口读取详细记录。
+继续使用一位 transport fault 结束当前 fetch；独立 RTL 诊断端口将详细记录交给 host
+MMIO 控制器，在终止且 system quiescent 后发布冻结快照。
 完整资格、地址和清除合同见[第 5 节](#ifetch-fault-contract)。
 
 ## 2. 首版产品参数
@@ -268,8 +275,8 @@ checks、163 cycles。它验证 wrapper 的 sideband 对齐与资格，不重做
 
 上述完整程序的新 redirect 场景发生在 PTW fault 已被 source 消费之后，client 定向测试
 使用可控 MMU response；二者都没有覆盖完整产品程序在 outstanding I-cache miss 期间
-redirect 的交错，也未覆盖真实 MMIO target 或外部 AXI/NoC backpressure。CSR/MMIO
-fault-register 映射尚未实现；当前详细诊断的产品边界是 host RTL 端口。
+redirect 的交错，也未覆盖下级 DEVICE target 或外部 AXI/NoC backpressure。被动控制口的
+结果与 fault-register 映射由独立 [host MMIO 组合](host-mmio.md) 提供。
 
 ## 5. Product I-side 接线
 
@@ -359,8 +366,8 @@ IFetch/MMU/fabric 子模块本身没有发生协议错误。新的详细记录�
 
 故障后可等路径 quiescent，修复 context/PTE，完成必要维护，再正常 launch。cfg 写入
 不自动 invalidate TLB；修改 PTE 权限或映射必须执行统一 TLB invalidate，或包含该步骤的
-host `FENCE_I`。CSR/MMIO register mapping、host driver ABI 与更完整异常策略仍由后续
-SoC/软件集成定义。
+host `FENCE_I`。[host MMIO ABI](host-mmio.md) 定义结果读取、ACK_RESULT、维护与重新
+START 的寄存器序列；OS driver、总线适配和更完整异常策略仍由后续 SoC/软件集成定义。
 
 ## 6. I-side admission 与 quiesce 规则
 
@@ -501,17 +508,16 @@ invalidate 边界。
    表示“一次有错误但已结束的运行”。当前没有 trap/redirect，也不能由程序读取 fault 后
    分支。该行为适合作为 host-observed bring-up policy，进入不可信或可恢复执行模型前需要
    决定是否改为 fail-stop、异常入口或显式状态查询。
-7. **IFetch 诊断的软件映射。** cause/eaddr/paddr 与 launch address-space/context 已由 host
-   RTL 端口导出，并遵守[有效路径与 redirect 合同](#ifetch-fault-contract)。CSR/MMIO
-   映射、driver 读取/重启 ABI、异常入口和完整产品的 outstanding-miss redirect 验证仍待
-   后续集成；不能把 host wire 等同于已经存在的软件寄存器。
+7. **IFetch 诊断与异常边界。** cause/eaddr/paddr 与 launch address-space/context 遵守
+   [有效路径与 redirect 合同](#ifetch-fault-contract)，并在 host MMIO 的冻结 IFETCH_*
+   寄存器中发布。寄存器读取/确认/重启合同见 [host MMIO ABI](host-mmio.md)；OS driver、
+   异常入口和完整产品的 outstanding-miss redirect 验证仍待后续集成。
 
 ## 10. 后续闭环顺序
 
 1. 当 sibling IP 改动时继续维护明确的外部源码闭包、content lock 和已有 D-side 回归。
 2. 在已有 Sv32/fault/recovery combined I/D 回归上继续补完整产品程序的 redirect during
-   an outstanding I-cache miss 和更有针对性的 I/D fabric 竞争；为现有 host IFetch
-   diagnosis ports 定义 CSR/MMIO 映射及软件读取/重启 ABI。
+   an outstanding I-cache miss 和更有针对性的 I/D fabric 竞争。
 3. 为 generic ordered lower port 接入具体 SoC target decode/bus adapter，并验证 RAM 与 MMIO
    fault、store acknowledgement、reset epoch 和 `lower_quiescent`。
 4. 定义 LSU barrier 到现有 global maintenance command 的 policy bridge；在此之前继续只
