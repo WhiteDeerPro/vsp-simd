@@ -34,6 +34,16 @@ module vsp_uword_memory_system_wrapper_tb_top #(
   output logic                                      program_halted_o,
   output logic [31:0]                               program_terminal_pc_o,
 
+  output logic                                      ifetch_fault_valid_o,
+  output logic [vsp_mem_common_pkg::VSP_MEM_FAULT_W-1:0]
+                                                     ifetch_fault_cause_o,
+  output logic [31:0]                               ifetch_fault_eaddr_o,
+  output logic [PADDR_W-1:0]                        ifetch_fault_paddr_o,
+  output logic [vsp_mem_common_pkg::VSP_MEM_ADDR_SPACE_W-1:0]
+                                                     ifetch_fault_addr_space_o,
+  output logic [vsp_ifetch_adapter_pkg::VSP_IFETCH_CONTEXT_W-1:0]
+                                                     ifetch_fault_addr_context_o,
+
   output logic                                      action_cpl_valid_o,
   input  logic                                      action_cpl_ready_i,
   output logic [vsp_action_pkg::VSP_ACTION_CLASS_W-1:0]
@@ -132,6 +142,7 @@ module vsp_uword_memory_system_wrapper_tb_top #(
   output logic [31:0]                               lower_req_count_o,
   output logic [31:0]                               lower_read_req_count_o,
   output logic [31:0]                               lower_write_req_count_o,
+  output logic [31:0]                               page_table_read_count_o,
   output logic [31:0]                               lower_rsp_count_o
 );
   import vsp_mem_common_pkg::*;
@@ -140,10 +151,11 @@ module vsp_uword_memory_system_wrapper_tb_top #(
   localparam logic [PADDR_W-1:0] REGION_PAGE_MASK =
       {PADDR_W{1'b1}} & ~PADDR_W'(12'hfff);
   localparam logic [REGION_COUNT*PADDR_W-1:0] STATIC_REGION_BASE = {
-    PADDR_W'(0), PADDR_W'(0), PADDR_W'(32'h0000_1000), PADDR_W'(0)
+    PADDR_W'(0), PADDR_W'(32'h0000_4000),
+    PADDR_W'(32'h0000_1000), PADDR_W'(0)
   };
   localparam logic [REGION_COUNT*PADDR_W-1:0] STATIC_REGION_MASK = {
-    PADDR_W'(0), PADDR_W'(0), REGION_PAGE_MASK, REGION_PAGE_MASK
+    PADDR_W'(0), REGION_PAGE_MASK, REGION_PAGE_MASK, REGION_PAGE_MASK
   };
   localparam logic [REGION_COUNT*VSP_MEM_ENDPOINT_W-1:0]
       STATIC_REGION_ENDPOINT = {
@@ -172,6 +184,7 @@ module vsp_uword_memory_system_wrapper_tb_top #(
       lower_req_count_o <= '0;
       lower_read_req_count_o <= '0;
       lower_write_req_count_o <= '0;
+      page_table_read_count_o <= '0;
       lower_rsp_count_o <= '0;
     end else begin
       if (lower_req_valid && lower_req_ready) begin
@@ -180,6 +193,11 @@ module vsp_uword_memory_system_wrapper_tb_top #(
           lower_write_req_count_o <= lower_write_req_count_o + 32'd1;
         else
           lower_read_req_count_o <= lower_read_req_count_o + 32'd1;
+        // The two page-table pages have no executable/data-region mapping;
+        // only the PTW's already-physical lower client accesses them here.
+        if (!lower_req_write && lower_req_paddr >= PADDR_W'(32'h2000) &&
+            lower_req_paddr < PADDR_W'(32'h4000))
+          page_table_read_count_o <= page_table_read_count_o + 32'd1;
       end
       if (lower_rsp_valid && lower_rsp_ready)
         lower_rsp_count_o <= lower_rsp_count_o + 32'd1;
@@ -214,14 +232,14 @@ module vsp_uword_memory_system_wrapper_tb_top #(
     .TLB_EPOCH_W(8),
     .REGION_COUNT(REGION_COUNT),
     .REGION_INDEX_W(2),
-    .REGION_ENABLE(4'b0011),
+    .REGION_ENABLE(4'b0111),
     .REGION_BASE(STATIC_REGION_BASE),
     .REGION_MASK(STATIC_REGION_MASK),
     .REGION_ENDPOINT(STATIC_REGION_ENDPOINT),
     .REGION_READ_OK(4'b0010),
     .REGION_WRITE_OK(4'b0010),
-    .REGION_EXECUTE_OK(4'b0001),
-    .REGION_IDEMPOTENT(4'b0011),
+    .REGION_EXECUTE_OK(4'b0101),
+    .REGION_IDEMPOTENT(4'b0111),
     .LOWER_DATA_W(LOWER_DATA_W),
     .DCACHE_LINE_BYTES(32),
     .DCACHE_SET_COUNT(4),
@@ -257,6 +275,12 @@ module vsp_uword_memory_system_wrapper_tb_top #(
     .program_error_o,
     .program_halted_o,
     .program_terminal_pc_o,
+    .ifetch_fault_valid_o,
+    .ifetch_fault_cause_o,
+    .ifetch_fault_eaddr_o,
+    .ifetch_fault_paddr_o,
+    .ifetch_fault_addr_space_o,
+    .ifetch_fault_addr_context_o,
     .action_cpl_valid_o,
     .action_cpl_ready_i,
     .action_cpl_class_o,
@@ -355,7 +379,7 @@ module vsp_uword_memory_system_wrapper_tb_top #(
     .PADDR_W(PADDR_W),
     .DATA_W(LOWER_DATA_W),
     .BASE_ADDR(PADDR_W'(0)),
-    .DEPTH_BEATS(8192/(LOWER_DATA_W/8)),
+    .DEPTH_BEATS(16384/(LOWER_DATA_W/8)),
     .INIT_FILE("")
   ) u_backing_sram (
     .clk_i,

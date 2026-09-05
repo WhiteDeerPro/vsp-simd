@@ -143,8 +143,14 @@ The behavioral store remains the focused verification source.  A separate
 product wrapper can select the external provider seam and fetch the same uword
 stream through a redirect-aware bridge, shared iMMU, independent I-region and
 read-only I-cache; I/D cache and PTW traffic then share one ordered physical
-fabric.  AXI/NoC, DMA, SoC target decode and precise IFetch fault export remain
-outside that wrapper.
+fabric.  The wrapper exports the first consumed IFetch fault on the current
+program path through host RTL ports, preserving cause, effective address,
+physical diagnostic and launch address metadata.  A committed redirect can
+revoke speculative fault state.  Sv32 fetch, warm iTLB reuse, fault attribution
+and recovery are covered by the combined regression; see the
+[IFetch fault contract](docs/integration/memory-subsystem.md#ifetch-fault-contract).
+AXI/NoC, DMA, SoC target decode and CSR/MMIO diagnostic mapping remain external
+integration work.
 
 ## Repository layout
 
@@ -199,6 +205,7 @@ make lint-memory-product-integration test-memory-product-integration
 make test-vsp-uncached-device-merge
 make lint-vsp-uword-cached-program test-vsp-uword-cached-program
 make lint-ifetch-product-integration lint-vsp-uword-memory-system
+make test-vsp-ifetch-fault
 make test-vsp-uword-memory-system
 ```
 

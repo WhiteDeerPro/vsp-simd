@@ -2,8 +2,9 @@
 
 > 状态：逻辑端口和仿真合同已形成；combined product RTL 已把 external IFetch/I-cache 与
 > D-side LSU/cache/local/uncached-device 接入共享 MMU/PTW 和 physical fabric，并以 ordered
-> lower port 结束。外部 SoC target/bus、DMA、一致性策略和精确 IFetch fault export 仍是
-> 后续集成项。本页描述分层，不固定 cache 容量、行宽或替换算法。
+> lower port 结束。精确 IFetch 诊断已输出到 host RTL 端口；外部 SoC target/bus、DMA、
+> 一致性策略和 CSR/MMIO 诊断映射仍是后续集成项。本页描述分层，不固定 cache 容量、
+> 行宽或替换算法。
 
 ![I-side / D-side 预期分层](memory-hierarchy.svg)
 
@@ -52,8 +53,10 @@ physical fabric；`vsp_uword_cached_program_wrapper` 直接连接 executable pro
 `vsp_uword_cluster_program_wrapper` 现在可在 elaboration 时选择 behavioral control store 或
 external provider。`vsp_uword_memory_system_wrapper` 选择后者，快照 launch 的 I-side
 `addr_space/addr_context`，并通过 redirect-aware bridge 接入共享 iMMU、独立 I-region 和
-read-only I-cache。program-source fault 仍只有一个 bit；canonical I-side 内部的详细 cause、
-effective address 和 physical diagnostic address 尚未输出到程序/host fault contract。
+read-only I-cache。既有 program source 使用一位 transport fault；VSP-owned wrapper 将
+详细 cause/eaddr/paddr 与同一 response 对齐，再导出当前有效路径的首个已消费 fault
+记录及 launch 地址元数据。该记录在 active 程序中仍可被 redirect 撤销，完整合同见
+[IFetch fault 诊断](../integration/memory-subsystem.md#ifetch-fault-contract)。
 
 ## 3. 地址空间和 MMU 扩展点
 
@@ -124,8 +127,8 @@ strict program wrapper 已把 CONTROL-state decoder、两词 MEMORY decoder、st
 
 ## 6. 后续实现顺序
 
-1. 在 combined I/D 的 PHYSICAL 动态程序基线上增加 TRANSLATED/fault/redirect-during-miss
-   回归，并输出精确 IFetch fault metadata；
+1. 在已有 combined I/D 的 Sv32/fault/recovery 回归上增加完整程序的
+   redirect-during-outstanding-miss 交错，并为 host fault ports 定义 CSR/MMIO 软件映射；
 2. 给 generic ordered lower port 接入真实 SoC target decode/bus，并覆盖 RAM/MMIO fault、
    response 背压、reset epoch 与 quiescence；
 3. 实现 LSU barrier 到已经接线的 global I/D cache、TLB 与 fabric maintenance 的 policy

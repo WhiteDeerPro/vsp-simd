@@ -43,6 +43,7 @@ make lint-memory-product-integration test-memory-product-integration
 make test-vsp-uncached-device-merge
 make lint-vsp-uword-cached-program test-vsp-uword-cached-program
 make lint-ifetch-product-integration lint-vsp-uword-memory-system
+make test-vsp-ifetch-fault
 make test-vsp-uword-memory-system
 ```
 
@@ -61,7 +62,8 @@ make test-vsp-uword-memory-system
 | product D-side integration | `vsp_dmem_cached_fabric_wrapper_tb` | real LSU/MMU, D-cache, local/uncached/device endpoints and physical fabric through an ordered lower SRAM |
 | endpoint merge | `vsp_uncached_device_merge_tb` | stalled grant/payload stability, fixed priority, response ownership, orphan handling and diagnostics |
 | cached program integration | `vsp_uword_cached_program_wrapper_tb` | three-iteration 16-byte physical/cacheable load/compute/store loop, completion backpressure/metadata, management interlock, cache events and final SRAM bytes |
-| combined I/D product integration | `test-vsp-uword-memory-system` plus explicit product lint targets | external provider, bridge, shared iMMU, independent I-region/I-cache, global maintenance and D-side execute through one ordered physical fabric; 1290 checks/1483 cycles/72 lower beats/4 I-cache misses cover startup quarantine, lower-resident PHYSICAL I+D loop, active-program interlock, MMU-config ownership/backpressure, maintenance priority, full host `FENCE_I` sequence and rerun |
+| combined I/D product integration | `test-vsp-uword-memory-system` plus explicit product lint targets | PHYSICAL and Sv32 I-fetch with real two-level PTW, warm iTLB/I-cache reuse, seven context/PTE/region/lower faults, detailed host diagnosis, recovery and older-branch revocation of a consumed sequential fault; retains startup quarantine, branch loop, MMU-config ownership/backpressure, full host `FENCE_I` sequence and SRAM data checks |
+| IFetch diagnostic boundary | `test-vsp-ifetch-fault` | source-response metadata holding, translation/region fault attribution, redirect poison while waiting, at canonical response capture and under source-response backpressure, followed by fresh-request recovery |
 
 Recent indexed-memory directed regressions specifically cover:
 
@@ -79,11 +81,14 @@ Recent indexed-memory directed regressions specifically cover:
 The product-integration tests prove both a behavioral-fetch D-side profile and
 an external-IFetch combined I/D profile against repository SRAM harnesses.  The
 combined result is a distinct same-top dynamic regression, not evidence borrowed
-from the cached-program test.  It still does not cover translated or injected
-IFetch faults.  Neither level proves an external SoC bus, real MMIO target or
-DMA exists, that precise IFetch fault metadata is exported, that the pipeline
-meets a target-process frequency/PPA point, that the memory engine has more than
-one outstanding beat, or that the internal uword encoding is a final ISA.
+from the cached-program test.  The IFetch client test isolates sideband
+alignment and redirect qualification; full product-program redirect during an
+outstanding I-cache miss remains separate work.  The detailed host RTL ports
+and their revocable active-program state are specified in the
+[IFetch fault contract](../integration/memory-subsystem.md#ifetch-fault-contract).
+These tests do not establish an external SoC bus, real MMIO target, DMA or
+CSR/MMIO diagnostic mapping, a target-process frequency/PPA point, multiple
+outstanding memory-engine beats, or a final public uword ISA.
 
 ## Synthesis smoke
 

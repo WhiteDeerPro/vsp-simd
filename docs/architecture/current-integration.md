@@ -214,9 +214,11 @@ DEVICE、BARE translation、cache maintenance 和 fabric drain。准确的物理
 combined wrapper 另有独立的同顶层动态回归：从 shared-lower SRAM 中的 program image
 取指，运行 PHYSICAL I+D branch loop，并覆盖 startup quarantine、程序活动时 maintenance
 interlock、MMU-config ownership/response 背压、maintenance 同拍优先、完整 host `FENCE_I`
-序列与重跑。当前结果为 1290 checks、1483 cycles、72 shared-lower beats、4 次 I-cache
-miss。它没有覆盖 TRANSLATED IFetch、精确 IFetch fault metadata 或真实 SoC lower target，
-不能从这项通过结果外推这些能力。
+序列与重跑。该回归现已扩展到真实两级 Sv32 TRANSLATED IFetch、warm iTLB/I-cache、
+context/PTE/region/lower fault 的详细归因及修复重跑；真实 SoC lower target 与完整程序
+outstanding-miss redirect 的交错仍待覆盖。VSP-owned client 定向测试单独检查 metadata
+背压和三种 redirect 时机。具体测试范围与诊断合同见
+[memory subsystem integration](../integration/memory-subsystem.md#ifetch-fault-contract)。
 
 ## 5. CONTROL、state 与结束 `[RTL事实]`
 
@@ -301,6 +303,8 @@ profile 采用 base zero）；trusted uword 是否有权直接指定 PHYSICAL/ad
 barrier 如何映射为 I/D cache、TLB 和 fabric maintenance；以及 lower port 下方怎样区分真实
 RAM 与具有副作用的 MMIO target。另一个现有接口不对称是顶层
 `protocol_error_clear_i` 不能清除 reset-only sticky 的外部 I/D cache adapter error；aggregate
-可能在 clear 后继续为高，不能把它当作统一 clear-all 操作。canonical IFetch 内部的详细
-fault cause/eaddr/paddr 也尚未穿过 legacy program-source response；当前只能观察折叠的一位
-live fetch fault。
+可能在 clear 后继续为高，不能把它当作统一 clear-all 操作。IFetch cause/eaddr/paddr
+现已与 bridge source response 对齐，并由 host RTL 端口记录有效路径上的首个已消费
+fault；程序 active 时该记录仍可被 committed redirect 撤销。CSR/MMIO 软件诊断映射尚未
+接入，详细资格与读取时点见
+[IFetch fault 合同](../integration/memory-subsystem.md#ifetch-fault-contract)。

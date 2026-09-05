@@ -62,6 +62,15 @@ module vsp_ifetch_cached_client_wrapper #(
                  vsp_ifetch_adapter_pkg::VSP_IFETCH_WORD_W)-1:0]
                                                      source_rsp_words_o,
   output logic                                      source_rsp_fault_o,
+  // Diagnostic sideband is valid only with source_rsp_valid_o &&
+  // source_rsp_fault_o.  Redirect sanitizes it with the bridge response.
+  // paddr preserves the canonical IP diagnostic value; it does not imply
+  // that translation succeeded or that a final physical address is valid.
+  output logic [vsp_mem_common_pkg::VSP_MEM_FAULT_W-1:0]
+                                                     source_rsp_fault_cause_o,
+  output logic [vsp_ifetch_adapter_pkg::VSP_IFETCH_EADDR_W-1:0]
+                                                     source_rsp_fault_eaddr_o,
+  output logic [PADDR_W-1:0]                        source_rsp_fault_paddr_o,
 
   // Shared instruction-translation client.
   output logic                                      i_tr_req_valid_o,
@@ -160,6 +169,10 @@ module vsp_ifetch_cached_client_wrapper #(
   logic [VSP_MEM_FAULT_W-1:0] canonical_rsp_fault;
   logic [31:0] canonical_rsp_fault_eaddr;
   logic [PADDR_W-1:0] canonical_rsp_fault_paddr;
+  logic [VSP_MEM_FAULT_W-1:0] source_rsp_fault_cause_q;
+  logic [31:0] source_rsp_fault_eaddr_q;
+  logic [PADDR_W-1:0] source_rsp_fault_paddr_q;
+  logic source_rsp_live_fault;
 
   logic region_req_valid;
   logic region_req_ready;
@@ -268,6 +281,42 @@ module vsp_ifetch_cached_client_wrapper #(
   assign busy_o = !quiescent_o;
   assign protocol_error_o = bridge_protocol_error_o ||
       ifetch_protocol_error_o || icache_adapter_protocol_error_o;
+
+  // The bridge registers the canonical response before exposing it to the
+  // source.  Capture metadata on that same edge, then use the bridge's live
+  // qualification, including same-cycle and remembered redirect poison.
+  // Do not publish a raw canonical fault: it may belong to stale work.
+  assign source_rsp_live_fault = source_rsp_valid_o && source_rsp_fault_o;
+  assign source_rsp_fault_cause_o = source_rsp_live_fault ?
+      source_rsp_fault_cause_q : VSP_MEM_FAULT_NONE;
+  assign source_rsp_fault_eaddr_o = source_rsp_live_fault ?
+      source_rsp_fault_eaddr_q : '0;
+  assign source_rsp_fault_paddr_o = source_rsp_live_fault ?
+      source_rsp_fault_paddr_q : '0;
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin : p_fault_metadata
+    if (!rst_ni) begin
+      source_rsp_fault_cause_q <= VSP_MEM_FAULT_NONE;
+      source_rsp_fault_eaddr_q <= '0;
+      source_rsp_fault_paddr_q <= '0;
+    end else if (source_req_valid_i && source_req_ready_o) begin
+      // Fail-closed source faults without a defined non-NONE canonical cause
+      // (e.g. malformed response count) use PROTOCOL, the accepted request PC
+      // and zero paddr.  There is no physical-valid claim for this fallback.
+      source_rsp_fault_cause_q <= VSP_MEM_FAULT_PROTOCOL;
+      source_rsp_fault_eaddr_q <= source_req_pc_i;
+      source_rsp_fault_paddr_q <= '0;
+    end else if (canonical_rsp_valid && canonical_rsp_ready) begin
+      if (vsp_mem_fault_defined(canonical_rsp_fault) &&
+          (canonical_rsp_fault != VSP_MEM_FAULT_NONE)) begin
+        source_rsp_fault_cause_q <= canonical_rsp_fault;
+        source_rsp_fault_eaddr_q <= canonical_rsp_fault_eaddr;
+        source_rsp_fault_paddr_q <= canonical_rsp_fault_paddr;
+      end
+      // Otherwise retain the request-seeded fallback.  Successful or stale
+      // source responses mask these registers; held live faults keep them.
+    end
+  end
 
   vsp_ifetch_request_bridge u_request_bridge (
     .clk_i,
@@ -558,7 +607,7 @@ module vsp_ifetch_cached_client_wrapper #(
   );
 
   /* verilator lint_off UNUSED */
-  wire unused_observation = &{1'b0, canonical_rsp_fault_paddr,
+  wire unused_observation = &{1'b0,
       unused_region_read_ok, unused_region_write_ok,
       unused_region_execute_ok, unused_region_idempotent,
       unused_region_match_index, unused_region_overlap,

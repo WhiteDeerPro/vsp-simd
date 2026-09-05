@@ -1,9 +1,10 @@
 # 内存子系统集成基线
 
 > 状态：D-side 产品路径及 I-side 产品组合 RTL 已闭合到同一个通用有序物理下级端口，
-> 2026-09-02。本页区分已经存在的接线、已有动态证据和仍由 SoC 集成承担的边界。新的
-> I/D 组合已有一项同顶层动态程序回归；该回归不等同于 translated/fault 路径、外部总线
-> 或 SoC target 已经验证。
+> 2026-09-05。本页区分已经存在的接线、动态回归范围和仍由 SoC 集成承担的边界。
+> I/D 同顶层回归已扩展到 Sv32 translated fetch、故障归因和修复重跑；host RTL 端口
+> 导出有效路径上的首个已消费 IFetch fault。CSR/MMIO 诊断映射、外部总线与 SoC target
+> 仍未接入。
 
 ## 1. 当前集成范围
 
@@ -94,9 +95,10 @@ maintenance、fabric drain、LSU barrier-policy 接缝和组件诊断。其中 P
 cached/fabric wrapper 暴露的 instruction-translation client 和 I-cache-native master 现已由
 memory-system wrapper 使用。共享 MMU 只负责 instruction translation；独立 I-region router
 完成 final-physical execute/endpoint 检查，随后只读 I-cache 形成 native lower transaction。
-精确 IFetch fault cause、effective fault address 和 physical fault address 仍未穿过 legacy
-program-source response：当前 bridge 把 live fault 折叠成一位 source fault，足以终止/标记
-本次程序，但不足以形成软件可读的精确故障报告。
+I-side wrapper 在 bridge 的 source response 边界保留 cause/eaddr/paddr sideband，并由
+memory-system wrapper 记录首个已消费且未被 redirect 撤销的故障。既有 program source
+继续使用一位 transport fault 结束当前 fetch；host 通过独立 RTL 诊断端口读取详细记录。
+完整资格、地址和清除合同见[第 5 节](#ifetch-fault-contract)。
 
 ## 2. 首版产品参数
 
@@ -153,6 +155,7 @@ make lint-memory-product-integration
 make lint-vsp-uword-cached-program
 make lint-ifetch-product-integration
 make lint-vsp-uword-memory-system
+make test-vsp-ifetch-fault
 make test-vsp-uword-memory-system
 ```
 
@@ -162,7 +165,7 @@ lock 用来探测 sibling workspace 中未审查的文件内容变化。它不�
 
 ## 4. 验证状态
 
-当前证据分为两个层次，应分别报告。
+当前证据按以下层次分别报告。
 
 ### 4.1 已运行的外部 IP 切片
 
@@ -236,14 +239,37 @@ fabric。
 quarantine、`program_active => !system_quiescent`、程序活动时 host maintenance 不被接受，
 以及程序结束后的 MMU-config 单项 ownership/response 背压和 maintenance 仲裁。host
 `FENCE_I` 路径按 client quiesce、fabric drain、D-cache drain、I-cache invalidate-all、统一
-TLB invalidate、completion 的顺序完成，completion 可背压，随后程序重跑。当前结果为
-1290 checks、1483 cycles、72 shared-lower beats 和 4 次 I-cache miss；其中 cold run 为 44
-lower beats，maintenance 后 D-cache 保持 warm 的重跑为 28 lower beats。
+TLB invalidate、completion 的顺序完成，completion 可背压，随后程序重跑。当前 PHYSICAL
+基线为 1292 checks、1483 cycles、72 shared-lower beats 和 4 次 I-cache miss；其中
+cold run 为 44 lower beats，maintenance 后 D-cache 保持 warm 的重跑为 28 lower beats。
+这些数字仅描述 baseline 子场景，不包含下面新增的检查。
 
-这项证据说明 external provider、I-cache 与 D-side 确实在同一 wrapper、同一 lower fabric
-上可执行，不再只是 lint/elaboration 闭包。它没有覆盖 TRANSLATED IFetch、精确 IFetch
-fault attribution、redirect during an outstanding I-cache miss、真实 MMIO target 或外部
-AXI/NoC backpressure；外部 IFetch 工程的分切片测试仍只作为这些组件各自的补充证据。
+同一测试现已增加真实两级 Sv32 页表：root 位于 `0x2000`，L0 位于 `0x3000`，程序从
+虚拟 PC `0x00400020` 启动并映射到物理 `0x20`。首次运行由真实 PTW 经 shared lower
+读取 `0x2004`、`0x3000` 两个 PTE，并从物理 code page refill；第二次运行验证 warm
+iTLB 不再产生页表读、warm I-cache 不再 refill。程序保持虚拟 END PC，D-side 仍执行
+PHYSICAL load/compute/store，并检查最终 SRAM 数据。
+
+故障场景覆盖 invalid context、context 禁止 FETCH、无效 PTE、PTE 无 X、translated
+mapping 被 I-region 拒绝执行、I-cache refill 被 lower SRAM 拒绝，以及 PHYSICAL 页无
+execute permission。每项检查详细 fault record、无年轻 action/data 副作用、失败收束和
+lower 请求数量；修复页表并维护后无 reset 重跑成功。诊断保持跨越 program completion、
+protocol clear 和 maintenance，下一次实际 launch/reset 清除。另一个完整程序场景用更老
+LI completion 背压延迟 J：顺序路径的 PTW page fault 已被 source 消费并进入 host 记录，
+释放 completion 后 J redirect 撤销该故障，目标 END 正常结束。新增 Sv32/IFetch 部分
+通过 2355 checks、2700 cycles；本目标合计 3647 checks。
+
+`make test-vsp-ifetch-fault` 是 VSP-owned client 边界的定向测试：实例化真实 bridge、
+IFetch adapter、I-region 和 I-cache，使用可控 translation responder 检查 fault metadata
+背压保持、有效地址与物理诊断区分，以及 MMU wait、canonical response 捕获同拍、held
+source response 三种 redirect 时机下的 poison/drain 和新请求恢复。当前通过 2626
+checks、163 cycles。它验证 wrapper 的 sideband 对齐与资格，不重做外部 IP 的独立功能
+验收。
+
+上述完整程序的新 redirect 场景发生在 PTW fault 已被 source 消费之后，client 定向测试
+使用可控 MMU response；二者都没有覆盖完整产品程序在 outstanding I-cache miss 期间
+redirect 的交错，也未覆盖真实 MMIO target 或外部 AXI/NoC backpressure。CSR/MMIO
+fault-register 映射尚未实现；当前详细诊断的产品边界是 host RTL 端口。
 
 ## 5. Product I-side 接线
 
@@ -267,9 +293,74 @@ request；redirect 后已经被 bridge/cache/MMU 接受的事务仍须完整排�
 
 launch 的 I-side address-space/context 已由 memory-system wrapper 在实际 start handshake
 快照，后续 host 输入不能改变在途 fetch。当前 profile 允许 PHYSICAL 或 TRANSLATED fetch
-进入 I-region/I-cache；direct I-side LOCAL endpoint 没有实例化。详细 fault metadata 仍是
-唯一明显的 program-source ABI 缺口：canonical path 内部保留 cause/eaddr/paddr，但 legacy
-provider response 只返回一位 fault。
+进入 I-region/I-cache；direct I-side LOCAL endpoint 没有实例化。program source 的既有
+一位 fault 继续控制 transport failure，详细 cause/eaddr/paddr 由 VSP-owned I-side
+wrapper 的 sideband 与同一 source response 对齐。
+
+<a id="ifetch-fault-contract"></a>
+
+### 5.1 IFetch fault 与 host 诊断合同
+
+`vsp_ifetch_cached_client_wrapper` 的 `source_rsp_fault_cause_o`、
+`source_rsp_fault_eaddr_o`、`source_rsp_fault_paddr_o` 只在
+`source_rsp_valid_o && source_rsp_fault_o` 时有意义，其余时间输出 NONE/零。metadata 在
+canonical response 被 bridge 接受时寄存，再按 bridge 的 live/stale 资格发布；没有
+redirect 时，held source response 的一位 fault 和全部 metadata 保持稳定。redirect
+可将尚未消费的 response 转成零 words、零 fault/metadata 的 drain token，包括 redirect
+与 canonical response 捕获同拍、以及 response 已被 source 背压的情形。原始 canonical
+fault 不能绕过这层资格直接成为 host 记录。若 bridge 因 response 协议形状错误产生一位
+fault，而没有定义良好的非 NONE canonical cause，sideband 使用 PROTOCOL、accepted
+request PC 和零 paddr。
+
+`vsp_uword_memory_system_wrapper` 导出六个 host 观察端口：
+
+| 端口 | 宽度 | 意义 |
+|---|---:|---|
+| `ifetch_fault_valid_o` | 1 | 当前有效路径已有一条已消费的 IFetch fault 记录 |
+| `ifetch_fault_cause_o` | COMMON fault，3 bit | NONE=0、TRANSLATION=1、PERMISSION=2、ACCESS=3、BUS=4、DATA_INTEGRITY=5、PROTOCOL=6 |
+| `ifetch_fault_eaddr_o` | 32 | 故障归属的实际请求 word effective byte address |
+| `ifetch_fault_paddr_o` | `PADDR_W` | 下层 IP 原样提供的 physical diagnostic address |
+| `ifetch_fault_addr_space_o` | 2 | 当前 launch 快照的 I-side address space |
+| `ifetch_fault_addr_context_o` | 8 | 当前 launch 快照的 address context；不是 execution context 或 ASID |
+
+记录只在 program source 接受 live fault response，即 `provider_rsp_valid &&
+provider_rsp_ready && provider_rsp_fault` 时更新；当前记录有效后不被后续 fault 覆盖。
+reset、实际 launch handshake 和 committed redirect 清除记录及全部字段；program
+completion、`protocol_error_clear_i`、MMU configuration 和 maintenance 不清除它。
+仅把 `start_valid_i` 拉高而没有握手也不清除记录。
+
+source 消费不是最终程序退休点：更老 branch 仍可能在之后 redirect，撤销已经消费的
+sequential fetch fault。host 在 `program_active=1` 时看到的记录因此是暂存诊断，必须
+允许 committed redirect 清除；被 poison 的旧 response 不建立新记录。host 应在
+`program_failed_o` 发生并且 `system_quiescent_o=1` 后读取失败运行的最终记录，再启动
+下一次运行。该机制没有定义 exception PC、自动 trap 或程序内 CSR 查询。
+
+`eaddr` 是架构归属地址，`paddr` 是诊断值，两者不能互换。`ifetch_fault_valid_o` 只表示
+记录有效，**不是 physical-address-valid**；接口没有独立的 paddr-valid bit。翻译阶段
+fault 的 paddr 为零，零值本身不能推导地址是否有效；refill fault 的 paddr 可以指向
+失败的物理 lower beat，而不是请求 PC 对应的 word。当前集成回归的对应关系如下：
+
+| 故障来源 | cause | eaddr | paddr |
+|---|---|---|---|
+| invalid/out-of-range context | ACCESS | `0x00400020` | 0 |
+| context 不允许 FETCH | PERMISSION | `0x00400020` | 0 |
+| L0 PTE 无效 | TRANSLATION | `0x00400020` | 0 |
+| 有效 V/R/U/A leaf 缺 X | PERMISSION | `0x00400020` | 0 |
+| translated 页映射到不可执行的 physical region | PERMISSION | `0x00400020` | `0x1020` |
+| region 允许但 backing SRAM 拒绝 refill | ACCESS | `0x00400024` | `0x4020` |
+| PHYSICAL 请求不可执行 region | PERMISSION | `0x1020` | `0x1020` |
+
+取指故障不生成 MEMORY action completion。source 停止交付故障 bundle，controller 保留
+更老完整 record 的退休机会并排空不完整尾部；有效路径最终以 `program_failed` 单拍和
+sticky `program_error` 收束。既有 `fetch_protocol_error_o` 汇总包含 source 的一位
+transport fault，所以普通 ACCESS/PERMISSION 也可能让这一 aggregate 为高，而
+IFetch/MMU/fabric 子模块本身没有发生协议错误。新的详细记录用于区分原因，不改变这些
+既有状态信号的合同。
+
+故障后可等路径 quiescent，修复 context/PTE，完成必要维护，再正常 launch。cfg 写入
+不自动 invalidate TLB；修改 PTE 权限或映射必须执行统一 TLB invalidate，或包含该步骤的
+host `FENCE_I`。CSR/MMIO register mapping、host driver ABI 与更完整异常策略仍由后续
+SoC/软件集成定义。
 
 ## 6. I-side admission 与 quiesce 规则
 
@@ -410,17 +501,17 @@ invalidate 边界。
    表示“一次有错误但已结束的运行”。当前没有 trap/redirect，也不能由程序读取 fault 后
    分支。该行为适合作为 host-observed bring-up policy，进入不可信或可恢复执行模型前需要
    决定是否改为 fail-stop、异常入口或显式状态查询。
-7. **精确 IFetch fault。** canonical I-side 内部产生 fault cause、effective fault address 和
-   physical diagnostic address，但 request bridge 向 legacy program source 只返回一位 fault。
-   stale redirect response 会被正确抑制；live fault 可使程序失败，却没有软件可读的精确
-   attribution。后续扩展必须保留 stale/live 资格，不能直接旁路内部 fault 信号。
+7. **IFetch 诊断的软件映射。** cause/eaddr/paddr 与 launch address-space/context 已由 host
+   RTL 端口导出，并遵守[有效路径与 redirect 合同](#ifetch-fault-contract)。CSR/MMIO
+   映射、driver 读取/重启 ABI、异常入口和完整产品的 outstanding-miss redirect 验证仍待
+   后续集成；不能把 host wire 等同于已经存在的软件寄存器。
 
 ## 10. 后续闭环顺序
 
 1. 当 sibling IP 改动时继续维护明确的外部源码闭包、content lock 和已有 D-side 回归。
-2. 在已有 combined I/D 动态程序回归上继续补 translated IFetch、fault injection、
-   redirect during an outstanding I-cache miss 和更有针对性的 I/D fabric 竞争；同时补足
-   精确 IFetch fault metadata 的软件可见路径。
+2. 在已有 Sv32/fault/recovery combined I/D 回归上继续补完整产品程序的 redirect during
+   an outstanding I-cache miss 和更有针对性的 I/D fabric 竞争；为现有 host IFetch
+   diagnosis ports 定义 CSR/MMIO 映射及软件读取/重启 ABI。
 3. 为 generic ordered lower port 接入具体 SoC target decode/bus adapter，并验证 RAM 与 MMIO
    fault、store acknowledgement、reset epoch 和 `lower_quiescent`。
 4. 定义 LSU barrier 到现有 global maintenance command 的 policy bridge；在此之前继续只

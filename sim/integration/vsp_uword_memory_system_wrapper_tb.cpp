@@ -24,6 +24,11 @@ constexpr unsigned kVectorBytes = 48;
 constexpr std::uint8_t kIncrement = 40;
 
 constexpr std::uint8_t kAddrSpacePhysical = 1;
+constexpr std::uint8_t kAddrSpaceTranslated = 2;
+constexpr std::uint32_t kVirtualPc = 0x00400020;
+constexpr std::uint32_t kRootEntry = 0x2004;
+constexpr std::uint32_t kLeafEntry = 0x3000;
+constexpr std::uint32_t kExecutablePte = 0x5b;  // V | R | X | U | A, PPN=0
 constexpr std::uint8_t kExec = 0;
 constexpr std::uint8_t kMemory = 1;
 constexpr std::uint8_t kControl = 2;
@@ -245,15 +250,24 @@ void install_image(Dut& dut, const std::vector<std::uint32_t>& program,
   init_word(dut, kOutputBase + kVectorBytes, 0x3c3c3c3cU);
 }
 
-void launch(Dut& dut, std::size_t word_count, std::uint8_t tag_seed) {
+void launch(Dut& dut, std::size_t word_count, std::uint8_t tag_seed,
+            std::uint32_t pc = kBasePc,
+            std::uint8_t space = kAddrSpacePhysical,
+            std::uint8_t context = 0x5a) {
   wait_for(dut, [&dut]() { return dut.start_ready_o != 0; },
            "program launch admission");
   drive_launch_fields(dut, word_count, tag_seed);
+  dut.start_pc_i = pc;
+  dut.end_pc_i = pc + static_cast<std::uint32_t>(4 * word_count);
+  dut.start_ifetch_addr_space_i = space;
+  dut.start_ifetch_addr_context_i = context;
   dut.start_valid_i = 1;
   eval_low(dut);
   expect_eq("launch handshake is ready", 1, dut.start_ready_o);
   tick(dut);
   dut.start_valid_i = 0;
+  expect_eq("accepted launch clears IFetch diagnosis", 0,
+            dut.ifetch_fault_valid_o);
 
   // All launch metadata is owned by the accepted run, not by live pins.
   dut.start_group_mask_i = 0x3;
@@ -665,18 +679,251 @@ void fence_instruction_stream(Dut& dut) {
             dut.lower_rsp_count_o);
 }
 
+void write_mmu_field(Dut& dut, std::uint8_t field, std::uint32_t value) {
+  dut.mmu_cfg_context_i = 1;
+  dut.mmu_cfg_field_i = field;
+  dut.mmu_cfg_wdata_i = value;
+  dut.mmu_cfg_write_i = 1;
+  dut.mmu_cfg_rsp_ready_i = 0;
+  dut.mmu_cfg_valid_i = 1;
+  wait_for(dut, [&dut]() { return dut.mmu_cfg_ready_o != 0; },
+           "Sv32 context configuration admission");
+  tick(dut);
+  dut.mmu_cfg_valid_i = 0;
+  wait_for(dut, [&dut]() { return dut.mmu_cfg_rsp_valid_o != 0; },
+           "Sv32 context configuration response");
+  expect_eq("Sv32 configuration status", kStatusOk, dut.mmu_cfg_rsp_status_o);
+  dut.mmu_cfg_rsp_ready_i = 1;
+  tick(dut);
+}
+
+void invalidate_instruction_state(Dut& dut) {
+  dut.maint_cmd_op_i = kMaintFenceI;
+  dut.maint_cmd_valid_i = 1;
+  dut.maint_cpl_ready_i = 0;
+  wait_for(dut, [&dut]() { return dut.maint_cmd_ready_o != 0; },
+           "instruction maintenance admission");
+  tick(dut);
+  dut.maint_cmd_valid_i = 0;
+  wait_for(dut, [&dut]() { return dut.maint_cpl_valid_o != 0; },
+           "instruction maintenance completion");
+  expect_eq("instruction maintenance status", kStatusOk,
+            dut.maint_cpl_status_o);
+  expect_eq("instruction maintenance fault", kFaultNone,
+            dut.maint_cpl_fault_o);
+  dut.maint_cpl_ready_i = 1;
+  tick(dut);
+  wait_for(dut, [&dut]() { return dut.system_quiescent_o != 0; },
+           "instruction maintenance drain");
+}
+
+void check_fault_record(const Dut& dut, unsigned cause, std::uint32_t eaddr,
+                        std::uint64_t paddr, unsigned space, unsigned context,
+                        const std::string& label) {
+  expect_eq(label + " diagnosis valid", 1, dut.ifetch_fault_valid_o);
+  expect_eq(label + " cause", cause, dut.ifetch_fault_cause_o);
+  expect_eq(label + " effective address", eaddr, dut.ifetch_fault_eaddr_o);
+  expect_eq(label + " physical diagnostic address", paddr,
+            dut.ifetch_fault_paddr_o);
+  expect_eq(label + " address space", space, dut.ifetch_fault_addr_space_o);
+  expect_eq(label + " accepted address context", context,
+            dut.ifetch_fault_addr_context_o);
+}
+
+void faulting_launch(Dut& dut, unsigned cause, std::uint32_t pc,
+                     std::uint64_t fault_paddr, unsigned space,
+                     unsigned context, unsigned expected_ptw_reads,
+                     unsigned expected_lower_reads, const std::string& label) {
+  const auto ptw_before = dut.page_table_read_count_o;
+  const auto lower_before = dut.lower_read_req_count_o;
+  const auto writes_before = dut.lower_write_req_count_o;
+  launch(dut, 1, 0x90, pc, space, context);
+  const Run run = run_program(dut);
+  expect_eq(label + " failed terminal", 1, run.failed);
+  expect_eq(label + " no successful END", 0, run.done);
+  expect_eq(label + " program error", 1, run.error);
+  expect_eq(label + " no partial instruction issued", 0, run.completions.size());
+  wait_for(dut, [&dut]() { return dut.system_quiescent_o != 0; },
+           label + " drain");
+  expect_eq(label + " PTW traffic", expected_ptw_reads,
+            dut.page_table_read_count_o - ptw_before);
+  expect_eq(label + " lower read traffic", expected_lower_reads,
+            dut.lower_read_req_count_o - lower_before);
+  expect_eq(label + " no memory side effects", writes_before,
+            dut.lower_write_req_count_o);
+  check_fault_record(dut, cause, pc, fault_paddr, space, context, label);
+
+  // Clearing transport diagnostics must not erase the host's first-fault
+  // record.  Mutating launch pins while idle is not a new launch either.
+  dut.protocol_error_clear_i = 1;
+  tick(dut);
+  dut.protocol_error_clear_i = 0;
+  dut.start_pc_i = 0xfeed0000;
+  dut.start_ifetch_addr_space_i = 0;
+  dut.start_ifetch_addr_context_i = 0xee;
+  for (unsigned hold = 0; hold < 3; ++hold) {
+    tick(dut);
+    check_fault_record(dut, cause, pc, fault_paddr, space, context,
+                       label + " retained");
+  }
+  expect_eq(label + " lower ownership balanced", dut.lower_req_count_o,
+            dut.lower_rsp_count_o);
+  expect_eq(label + " no I-side protocol violation", 0,
+            dut.ifetch_path_protocol_error_o);
+}
+
+void translated_fetch_and_faults(
+    Dut& dut, const std::vector<std::uint32_t>& program,
+    const std::vector<std::uint32_t>& redirect_prefix,
+    const std::array<std::uint8_t, kVectorBytes>& input,
+    const std::array<std::uint8_t, kVectorBytes>& expected) {
+  // VA 0x00400020 -> root[1] -> L0[0] -> PA 0x00000020.
+  // Real PTW reads bypass region policy; the executable I-side must still
+  // pass its final-physical execute permission check after translation.
+  init_word(dut, kRootEntry, (3U << 10) | 1U);
+  init_word(dut, kLeafEntry, kExecutablePte);
+  write_mmu_field(dut, 0, 0);  // configure while invalid
+  write_mmu_field(dut, 1, 1);  // Sv32
+  write_mmu_field(dut, 2, 2);  // root PPN
+  write_mmu_field(dut, 3, 7);  // ASID
+  write_mmu_field(dut, 4, 0);  // U privilege
+  write_mmu_field(dut, 7, 1);  // allow fetch
+  write_mmu_field(dut, 0, 1);
+  invalidate_instruction_state(dut);
+
+  const auto ptw_before = dut.page_table_read_count_o;
+  const auto misses_before = icache_misses;
+  launch(dut, program.size(), 0x60, kVirtualPc, kAddrSpaceTranslated, 1);
+  check_run(run_program(dut), 0x60, "Sv32 translated branch program");
+  wait_for(dut, [&dut]() { return dut.system_quiescent_o != 0; },
+           "translated program drain");
+  expect_eq("real two-level Sv32 walk", 2,
+            dut.page_table_read_count_o - ptw_before);
+  expect_eq("translated program refills physical instruction lines", 2,
+            icache_misses - misses_before);
+  expect_eq("translated END retains virtual PC",
+            kVirtualPc + 4 * (program.size() - 1), dut.program_terminal_pc_o);
+  expect_eq("successful translation has no IFetch diagnosis", 0,
+            dut.ifetch_fault_valid_o);
+  check_memory_image(dut, input, expected, "translated execution");
+
+  const auto warm_ptw = dut.page_table_read_count_o;
+  const auto warm_misses = icache_misses;
+  launch(dut, program.size(), 0x80, kVirtualPc, kAddrSpaceTranslated, 1);
+  check_run(run_program(dut), 0x80, "warm iTLB translated program");
+  wait_for(dut, [&dut]() { return dut.system_quiescent_o != 0; },
+           "warm translated program drain");
+  expect_eq("warm iTLB avoids PTW lower traffic", warm_ptw,
+            dut.page_table_read_count_o);
+  expect_eq("warm physical I-cache avoids refill", warm_misses, icache_misses);
+
+  faulting_launch(dut, 3, kVirtualPc, 0, kAddrSpaceTranslated, 0xfe,
+                   0, 0, "invalid translation context");
+  write_mmu_field(dut, 7, 0);
+  faulting_launch(dut, 2, kVirtualPc, 0, kAddrSpaceTranslated, 1,
+                   0, 0, "context disallows fetch");
+  write_mmu_field(dut, 7, 1);
+
+  init_word(dut, kLeafEntry, 0);  // invalid leaf
+  invalidate_instruction_state(dut);
+  faulting_launch(dut, 1, kVirtualPc, 0, kAddrSpaceTranslated, 1,
+                   2, 2, "unmapped instruction page");
+
+  init_word(dut, kLeafEntry, 0x53);  // V | R | U | A, no X
+  invalidate_instruction_state(dut);
+  faulting_launch(dut, 2, kVirtualPc, 0, kAddrSpaceTranslated, 1,
+                   2, 2, "non-executable PTE");
+
+  init_word(dut, kLeafEntry, (1U << 10) | kExecutablePte);
+  invalidate_instruction_state(dut);
+  faulting_launch(dut, 2, kVirtualPc, 0x1020, kAddrSpaceTranslated, 1,
+                   2, 2, "physical region overrides executable PTE");
+
+  // The region permits this page but the lower SRAM has no target there.
+  // eaddr identifies the requested word; paddr identifies the failed refill
+  // beat and intentionally need not have the same low address bits.
+  init_word(dut, kLeafEntry, (4U << 10) | kExecutablePte);
+  invalidate_instruction_state(dut);
+  faulting_launch(dut, 3, kVirtualPc + 4, 0x4020, kAddrSpaceTranslated, 1,
+                   2, 3, "lower target rejects instruction refill");
+
+  init_word(dut, kLeafEntry, kExecutablePte);
+  invalidate_instruction_state(dut);
+  expect_eq("maintenance preserves diagnosis until a new launch", 1,
+            dut.ifetch_fault_valid_o);
+  launch(dut, program.size(), 0xa0, kVirtualPc, kAddrSpaceTranslated, 1);
+  check_run(run_program(dut), 0xa0, "recovery without reset");
+  wait_for(dut, [&dut]() { return dut.system_quiescent_o != 0; },
+           "recovered program drain");
+  check_memory_image(dut, input, expected, "recovered execution");
+  expect_eq("new successful launch leaves no old diagnosis", 0,
+            dut.ifetch_fault_valid_o);
+  expect_eq("recovery leaves no transport error", 0, dut.protocol_error_o);
+
+  // A sequential fetch fault may already have been consumed when an older
+  // branch eventually executes. Its redirect cancels that path's diagnosis
+  // just as it cancels source_store_fault and transport_failure.
+  expect_eq("redirect prefix occupies exactly one bundle", 4,
+            redirect_prefix.size());
+  for (unsigned word = 0; word < redirect_prefix.size(); ++word)
+    init_word(dut, 0xff0 + 4 * word, redirect_prefix[word]);
+  init_word(dut, 0, program.back());  // END at translated target's PA 0
+  init_word(dut, kLeafEntry + 4, 0);  // sequential VA page is unmapped
+  init_word(dut, kLeafEntry + 8, kExecutablePte);  // target maps to PA page 0
+  invalidate_instruction_state(dut);
+  constexpr std::uint32_t redirect_start = 0x00400ff0;
+  constexpr std::uint32_t redirect_target = 0x00402000;
+  dut.action_cpl_ready_i = 0;
+  launch(dut, (redirect_target + 4 - redirect_start) / 4, 0xc0,
+         redirect_start, kAddrSpaceTranslated, 1);
+  wait_for(dut, [&dut]() { return dut.ifetch_fault_valid_o != 0; },
+           "sequential fault consumed behind an older stalled action");
+  expect_eq("older action prevents premature failure", 1, dut.program_active_o);
+  expect_eq("older completion is held", 1, dut.action_cpl_valid_o);
+  expect_eq("older held action tag", 0xc0, dut.action_cpl_tag_o);
+  check_fault_record(dut, 1, 0x00401000, 0, kAddrSpaceTranslated, 1,
+                     "provisional sequential-path fault");
+  const Run redirected = run_program(dut);
+  expect_eq("redirected program reaches END", 1, redirected.done);
+  expect_eq("discarded fault does not fail program", 0, redirected.failed);
+  expect_eq("only LI, J and target END execute", 3,
+            redirected.completions.size());
+  for (unsigned index = 0; index < redirected.completions.size(); ++index)
+    check_completion(redirected.completions[index], kControl, 0xc0 + index,
+                     0, index == 2, "redirect recovery action");
+  wait_for(dut, [&dut]() { return dut.system_quiescent_o != 0; },
+           "redirect recovery drain");
+  expect_eq("committed redirect clears consumed stale diagnosis", 0,
+            dut.ifetch_fault_valid_o);
+  expect_eq("redirected target terminal PC", redirect_target,
+            dut.program_terminal_pc_o);
+  expect_eq("discarded transport failure leaves no final error", 0,
+            dut.program_error_o);
+  expect_eq("redirect recovery has no final protocol error", 0,
+            dut.protocol_error_o);
+
+  faulting_launch(dut, 2, 0x1020, 0x1020, kAddrSpacePhysical, 0x77,
+                   0, 0, "physical non-executable page");
+  reset(dut, program.size());
+  expect_eq("reset clears IFetch diagnosis valid", 0, dut.ifetch_fault_valid_o);
+  expect_eq("reset clears IFetch diagnosis cause", 0, dut.ifetch_fault_cause_o);
+  expect_eq("reset clears IFetch diagnosis eaddr", 0, dut.ifetch_fault_eaddr_o);
+  expect_eq("reset clears IFetch diagnosis paddr", 0, dut.ifetch_fault_paddr_o);
+}
+
 }  // namespace
 
 double sc_time_stamp() { return static_cast<double>(cycles); }
 
 int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
-  if (argc != 2) {
-    std::cerr << "usage: " << argv[0] << " PROGRAM.hex\n";
+  if (argc != 3) {
+    std::cerr << "usage: " << argv[0] << " PROGRAM.hex REDIRECT_PREFIX.hex\n";
     return 2;
   }
 
   const std::vector<std::uint32_t> program = read_hex(argv[1]);
+  const std::vector<std::uint32_t> redirect_prefix = read_hex(argv[2]);
   if (program.size() != 15) {
     std::cerr << "physical-memory branch program currently encodes to 15 "
                  "words\n";
@@ -772,5 +1019,11 @@ int main(int argc, char** argv) {
             << " cycles; " << dut.lower_req_count_o
             << " shared-lower beats, " << icache_misses
             << " I-cache misses\n";
+  const auto extended_checks = checks;
+  const auto extended_cycles = cycles;
+  translated_fetch_and_faults(dut, program, redirect_prefix, input, expected);
+  std::cout << "Sv32/IFetch diagnosis: " << checks - extended_checks
+            << " additional checks passed in " << cycles - extended_cycles
+            << " cycles (" << checks << " total checks)\n";
   return 0;
 }

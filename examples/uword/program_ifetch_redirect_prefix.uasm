@@ -1,0 +1,6 @@
+# Hardware-contract fixture: install these four words at VA 0x00400ff0.
+# The harness maps the intervening VA page as invalid and separately installs
+# END at VA 0x00402000. Holding LI's completion lets sequential fetch fault
+# before the older J can redirect, without issuing any instruction in the gap.
+LI rd=1 imm=7
+J target=0x00402000

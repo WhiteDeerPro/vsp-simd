@@ -156,6 +156,13 @@ VSP_DMEM_CACHED_FABRIC_TEST_RTL := \
 	$(VSP_DMEM_CACHED_FABRIC_WRAPPER_RTL) \
 	$(VSP_DMEM_CACHED_FABRIC_TB_TOP)
 VSP_IFETCH_CACHED_CLIENT_TOP := vsp_ifetch_cached_client_wrapper
+VSP_IFETCH_FAULT_TOP := vsp_ifetch_fault_tb_top
+VSP_IFETCH_FAULT_OBJ := $(BUILD_DIR)/vsp_ifetch_fault_obj_dir
+VSP_IFETCH_FAULT_TB := $(abspath sim/integration/vsp_ifetch_fault_tb.cpp)
+VSP_IFETCH_FAULT_RTL := $(VSP_IFETCH_CACHED_CLIENT_WRAPPER_RTL) \
+	$(abspath sim/integration/vsp_ifetch_fault_tb_top.sv)
+VSP_IFETCH_REDIRECT_ASM := examples/uword/program_ifetch_redirect_prefix.uasm
+VSP_IFETCH_REDIRECT_HEX := $(BUILD_DIR)/program_ifetch_redirect_prefix.hex
 VSP_UWORD_MEMORY_SYSTEM_TOP := vsp_uword_memory_system_wrapper
 VSP_UWORD_MEMORY_SYSTEM_TEST_TOP := \
 	vsp_uword_memory_system_wrapper_tb_top
@@ -376,7 +383,7 @@ MUL32_MICRO_BIN := $(BUILD_DIR)/mul32_microcode_tb
 	lint-memory-integration test-memory-integration \
 	lint-memory-product-integration test-memory-product-integration \
 	lint-ifetch-product-integration lint-vsp-uword-memory-system \
-	test-vsp-uword-memory-system \
+	test-vsp-uword-memory-system test-vsp-ifetch-fault \
 	test-vsp-uncached-device-merge \
 	lint-vsp-uword-cached-program test-vsp-uword-cached-program \
 	test-vsp-memory-uword-decoder test-vsp-control-uword-decoder \
@@ -1168,11 +1175,27 @@ $(VSP_UWORD_MEMORY_SYSTEM_OBJ)/V$(VSP_UWORD_MEMORY_SYSTEM_TEST_TOP): \
 	$(MAKE) -C $(VSP_UWORD_MEMORY_SYSTEM_OBJ) \
 		-f V$(VSP_UWORD_MEMORY_SYSTEM_TEST_TOP).mk
 
+$(VSP_IFETCH_REDIRECT_HEX): $(VSP_IFETCH_REDIRECT_ASM) tools/vsp_uword_asm.py | $(BUILD_DIR)
+	$(PYTHON) tools/vsp_uword_asm.py $(VSP_IFETCH_REDIRECT_ASM) \
+		--base-pc 0x00400ff0 --output $@
+
 test-vsp-uword-memory-system: check-memory-ip-lock \
-		$(VSP_UWORD_PHYSICAL_MEMORY_HEX) \
+		$(VSP_UWORD_PHYSICAL_MEMORY_HEX) $(VSP_IFETCH_REDIRECT_HEX) \
 		$(VSP_UWORD_MEMORY_SYSTEM_OBJ)/V$(VSP_UWORD_MEMORY_SYSTEM_TEST_TOP)
 	$(VSP_UWORD_MEMORY_SYSTEM_OBJ)/V$(VSP_UWORD_MEMORY_SYSTEM_TEST_TOP) \
-		$(VSP_UWORD_PHYSICAL_MEMORY_HEX)
+		$(VSP_UWORD_PHYSICAL_MEMORY_HEX) $(VSP_IFETCH_REDIRECT_HEX)
+
+$(VSP_IFETCH_FAULT_OBJ)/V$(VSP_IFETCH_FAULT_TOP): \
+		$(VSP_IFETCH_FAULT_RTL) $(VSP_IFETCH_FAULT_TB) \
+		$(BUILD_META) $(VSP_MEMORY_IP_LOCK) | check-memory-ip-lock $(BUILD_DIR)
+	$(VERILATOR) -Wall -Wno-fatal --assert --cc --exe \
+		--top-module $(VSP_IFETCH_FAULT_TOP) --Mdir $(VSP_IFETCH_FAULT_OBJ) \
+		$(VSP_IFETCH_FAULT_RTL) $(VSP_IFETCH_FAULT_TB)
+	$(MAKE) -C $(VSP_IFETCH_FAULT_OBJ) -f V$(VSP_IFETCH_FAULT_TOP).mk
+
+test-vsp-ifetch-fault: check-memory-ip-lock \
+		$(VSP_IFETCH_FAULT_OBJ)/V$(VSP_IFETCH_FAULT_TOP)
+	$(VSP_IFETCH_FAULT_OBJ)/V$(VSP_IFETCH_FAULT_TOP)
 
 $(VSP_DMEM_SUBSYSTEM_OBJ)/V$(VSP_DMEM_SUBSYSTEM_TOP): \
 		$(VSP_DMEM_SUBSYSTEM_TEST_RTL) $(VSP_DMEM_SUBSYSTEM_TB) \

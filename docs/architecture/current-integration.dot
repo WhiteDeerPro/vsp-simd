@@ -304,7 +304,7 @@ digraph vsp_current_integration {
   }
 
   control_gap [
-    label="not closed in product path:\nprecise IFetch fault export, SoC lower decode/bus, DMA/coherence,\nLSU-barrier policy bridge, scalar L/S, CALL/RET,\nreduction-to-state, branch prediction, multi-PC",
+    label="not closed in product path:\nCSR/MMIO fault mapping, SoC lower decode/bus, DMA/coherence,\nLSU-barrier policy bridge, scalar L/S, CALL/RET,\nreduction-to-state, branch prediction, multi-PC",
     shape=note,
     style="filled,dashed",
     fillcolor="#fff0f0",

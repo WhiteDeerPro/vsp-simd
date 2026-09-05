@@ -13,8 +13,8 @@
 > 可配置 FIFO outstanding 的有序仿真 endpoint，但不代表物理 SRAM 已实现。
 > VSP-owned product wrapper 已把同一 D-side 接入外部 LSU、地址路由、共享 MMU、
 > D-cache、local SRAM、uncached/device endpoint 和 physical fabric，并直接承接 executable
-> uword MEMORY path；generic ordered lower 以下的 SoC target/bus、I-cache、DMA 与全局
-> maintenance policy 仍待接线。
+> uword MEMORY path；combined wrapper 又接入 I-cache 和 host global maintenance。
+> generic ordered lower 以下的 SoC target/bus、DMA 与 LSU barrier policy bridge 仍待接线。
 > 本文不规定总线宽度、SRAM 组织或 DMA 描述符格式。
 > 当前 MEMORY engine 同时支持 unit-stride 与 unsigned-byte indexed addressing；
 > `INDEX_U8+LOAD/STORE` 分别形成 gather/scatter。产品路径不再提供跨 group 的
@@ -235,9 +235,9 @@ state RF。
 `vsp_uword_memory_system_wrapper` 保持同一个执行合同，但从 external provider seam 经
 redirect bridge、共享 iMMU、独立 I-region 和 read-only I-cache 取得 uword，并让 I-cache
 与 D-cache/PTW/uncached-device 共用 physical fabric。独立的同顶层动态回归已从 lower
-program image 运行 PHYSICAL I+D branch loop，并在 1290 checks、1483 cycles 内观察到
-72 shared-lower beats 与 4 次 I-cache miss；它没有覆盖 TRANSLATED/fault I-fetch 或真实
-SoC lower target。
+program image 运行 PHYSICAL I+D branch loop，并已扩展到真实两级 Sv32 I-fetch、warm
+iTLB/I-cache、context/PTE/region/lower fault 归因及修复重跑。真实 SoC lower target 和完整
+产品的 outstanding-miss redirect 交错仍待覆盖。
 
 该闭环仍只消费 framer slot 0，并在全局 single-active controller 下逐项推进；它没有
 接入 `vsp_ordered_action_window`，也没有实现 multi-record 并发 admission、计算/搬运
@@ -245,8 +245,10 @@ SoC lower target。
 `J` 与六种双寄存器比较 branch 可以 redirect，但仍没有 memory/action overlap。
 
 当前 product path 已集成 local SRAM、I/D cache/MMU adapter 与 lower-width cache/fabric
-转换；DMA、SoC target/bus 和系统级 ingress/capture FIFO 仍未集成，详细 IFetch fault
-metadata 也尚未穿过 legacy program-source response。
+转换；DMA、SoC target/bus 和系统级 ingress/capture FIFO 仍未集成。详细 IFetch fault
+metadata 已与 source response 对齐并导出到 host RTL 诊断端口，CSR/MMIO 软件映射仍待
+定义；有效路径资格与 redirect 撤销规则见
+[IFetch fault 合同](../integration/memory-subsystem.md#ifetch-fault-contract)。
 `dmem_*` 继续作为 engine 与产品内存子系统间的 effective-address 逻辑边界。ping-pong、计算/搬运重叠、
 多 outstanding、二维地址和一致性在真实 trace 与 SoC 边界出现后再评估。
 

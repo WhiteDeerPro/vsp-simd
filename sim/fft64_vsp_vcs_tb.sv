@@ -166,6 +166,12 @@ module fft64_vsp_vcs_tb;
     .program_error_o(program_error_o),
     .program_halted_o(program_halted_o),
     .program_terminal_pc_o(program_terminal_pc_o),
+    .ifetch_fault_valid_o(),
+    .ifetch_fault_cause_o(),
+    .ifetch_fault_eaddr_o(),
+    .ifetch_fault_paddr_o(),
+    .ifetch_fault_addr_space_o(),
+    .ifetch_fault_addr_context_o(),
     .action_cpl_valid_o(action_cpl_valid_o),
     .action_cpl_ready_i(1'b1),
     .action_cpl_class_o(action_cpl_class_o),
@@ -243,6 +249,7 @@ module fft64_vsp_vcs_tb;
     .lower_req_count_o(lower_req_count_o),
     .lower_read_req_count_o(lower_read_req_count_o),
     .lower_write_req_count_o(lower_write_req_count_o),
+    .page_table_read_count_o(),
     .lower_rsp_count_o(lower_rsp_count_o)
   );
 

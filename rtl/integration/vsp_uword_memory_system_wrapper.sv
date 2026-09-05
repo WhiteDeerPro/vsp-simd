@@ -113,6 +113,23 @@ module vsp_uword_memory_system_wrapper #(
   output logic                                      program_halted_o,
   output logic [PC_W-1:0]                           program_terminal_pc_o,
 
+  // First consumed IFetch fault on this launch's current fetch path.  An
+  // older branch can redirect after a speculative fault was consumed, so
+  // committed redirect clears this record with the source's transport fault.
+  // Reset and actual start also clear it; protocol diagnostic clear and
+  // program completion do not.  The physical address is the IFetch IP's
+  // diagnostic value, with no implied physical-valid bit.
+  output logic                                      ifetch_fault_valid_o,
+  output logic [vsp_mem_common_pkg::VSP_MEM_FAULT_W-1:0]
+                                                     ifetch_fault_cause_o,
+  output logic [vsp_ifetch_adapter_pkg::VSP_IFETCH_EADDR_W-1:0]
+                                                     ifetch_fault_eaddr_o,
+  output logic [PADDR_W-1:0]                        ifetch_fault_paddr_o,
+  output logic [vsp_mem_common_pkg::VSP_MEM_ADDR_SPACE_W-1:0]
+                                                     ifetch_fault_addr_space_o,
+  output logic [vsp_ifetch_adapter_pkg::VSP_IFETCH_CONTEXT_W-1:0]
+                                                     ifetch_fault_addr_context_o,
+
   output logic                                      action_cpl_valid_o,
   input  logic                                      action_cpl_ready_i,
   output logic [vsp_action_pkg::VSP_ACTION_CLASS_W-1:0]
@@ -259,6 +276,9 @@ module vsp_uword_memory_system_wrapper #(
   logic provider_rsp_ready;
   logic [127:0] provider_rsp_words;
   logic provider_rsp_fault;
+  logic [VSP_MEM_FAULT_W-1:0] provider_rsp_fault_cause;
+  logic [31:0] provider_rsp_fault_eaddr;
+  logic [PADDR_W-1:0] provider_rsp_fault_paddr;
   logic redirect_commit;
 
   logic program_dmem_req_valid;
@@ -455,6 +475,36 @@ module vsp_uword_memory_system_wrapper #(
     end
   end
 
+  always_ff @(posedge clk_i or negedge rst_ni) begin : p_ifetch_fault_record
+    if (!rst_ni) begin
+      ifetch_fault_valid_o <= 1'b0;
+      ifetch_fault_cause_o <= VSP_MEM_FAULT_NONE;
+      ifetch_fault_eaddr_o <= '0;
+      ifetch_fault_paddr_o <= '0;
+      ifetch_fault_addr_space_o <= '0;
+      ifetch_fault_addr_context_o <= '0;
+    end else if (program_start_fire || redirect_commit) begin
+      ifetch_fault_valid_o <= 1'b0;
+      ifetch_fault_cause_o <= VSP_MEM_FAULT_NONE;
+      ifetch_fault_eaddr_o <= '0;
+      ifetch_fault_paddr_o <= '0;
+      ifetch_fault_addr_space_o <= '0;
+      ifetch_fault_addr_context_o <= '0;
+    end else if (!ifetch_fault_valid_o && provider_rsp_valid &&
+                 provider_rsp_ready && provider_rsp_fault) begin
+      // Capture only on consumption: a held response can still be poisoned.
+      // Even a consumed fault remains speculative relative to an older
+      // branch, so redirect above clears it before the new path can report.
+      // The bridge qualifies both fault and metadata before this edge.
+      ifetch_fault_valid_o <= 1'b1;
+      ifetch_fault_cause_o <= provider_rsp_fault_cause;
+      ifetch_fault_eaddr_o <= provider_rsp_fault_eaddr;
+      ifetch_fault_paddr_o <= provider_rsp_fault_paddr;
+      ifetch_fault_addr_space_o <= ifetch_addr_space_q;
+      ifetch_fault_addr_context_o <= ifetch_addr_context_q;
+    end
+  end
+
   always_ff @(posedge clk_i or negedge rst_ni) begin : p_cfg_owner
     if (!rst_ni) begin
       cfg_active_q <= 1'b0;
@@ -633,6 +683,9 @@ module vsp_uword_memory_system_wrapper #(
     .source_rsp_ready_i(provider_rsp_ready),
     .source_rsp_words_o(provider_rsp_words),
     .source_rsp_fault_o(provider_rsp_fault),
+    .source_rsp_fault_cause_o(provider_rsp_fault_cause),
+    .source_rsp_fault_eaddr_o(provider_rsp_fault_eaddr),
+    .source_rsp_fault_paddr_o(provider_rsp_fault_paddr),
     .i_tr_req_valid_o(i_tr_req_valid),
     .i_tr_req_ready_i(i_tr_req_ready),
     .i_tr_req_vaddr_o(i_tr_req_vaddr),
